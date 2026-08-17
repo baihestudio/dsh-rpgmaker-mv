@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { DSH_PACKAGE_NAME, DSH_RUNTIME_NAME, DSH_VERSION, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
 import { commandFailure, ProcessTerminationError, redactSensitive, runCommand, withoutCredentials, type CommandResult, type CommandRunner } from './process';
 import { pathExists } from './project';
-import { withHarnessLock } from './lock';
+import { withHarnessOperationLock } from './lock';
 
 const KOFFI_LOAD_EXPRESSION = "import('koffi').then(() => process.exit(0)).catch(() => process.exit(1))";
 const PACKAGE_SPEC = `${DSH_PACKAGE_NAME}@${DSH_VERSION}`;
@@ -236,7 +236,7 @@ async function restoreAfterPostSwapFailure(runtimeDir: string, rollbackDir: stri
 
 export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<BootstrapResult> {
   const paths: HarnessPaths = resolveHarnessPaths(options);
-  return withHarnessLock(paths.lockDir, () => bootstrapRuntimeUnlocked(options, paths), {
+  return withHarnessOperationLock(paths.lockDir, paths.sessionLeaseDir, () => bootstrapRuntimeUnlocked(options, paths), {
     timeoutMs: options.lockTimeoutMs ?? 15 * 60_000,
     retryMs: options.lockRetryMs
   });

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -14,6 +14,11 @@ export interface HarnessLock {
   release: () => Promise<void>;
 }
 
+export interface HarnessSessionLeases {
+  operation: HarnessLock;
+  session: HarnessLock;
+}
+
 export class HarnessLockTimeoutError extends Error {
   constructor(path: string, timeoutMs: number) {
     super(`Another harness operation owns ${path}; waited ${timeoutMs}ms. Retry after it finishes or inspect the lock owner before removing the lock.`);
@@ -23,6 +28,26 @@ export class HarnessLockTimeoutError extends Error {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+export async function isHarnessLockHeld(lockPathInput: string): Promise<boolean> {
+  try {
+    return (await stat(resolve(lockPathInput))).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+export async function waitForHarnessLockRelease(lockPathInput: string, options: HarnessLockOptions = {}): Promise<void> {
+  const lockPath = resolve(lockPathInput);
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const retryMs = options.retryMs ?? 25;
+  const deadline = Date.now() + timeoutMs;
+  while (await isHarnessLockHeld(lockPath)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new HarnessLockTimeoutError(lockPath, timeoutMs);
+    await delay(Math.min(retryMs, remaining));
+  }
 }
 
 export async function acquireHarnessLock(lockPathInput: string, options: HarnessLockOptions = {}): Promise<HarnessLock> {
@@ -63,6 +88,66 @@ export async function acquireHarnessLock(lockPathInput: string, options: Harness
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new HarnessLockTimeoutError(lockPath, timeoutMs);
       await delay(Math.min(retryMs, remaining));
+    }
+  }
+}
+
+export async function acquireHarnessSessionLeases(
+  operationPathInput: string,
+  sessionPathInput: string,
+  options: HarnessLockOptions = {}
+): Promise<HarnessSessionLeases> {
+  const operationPath = resolve(operationPathInput);
+  const sessionPath = resolve(sessionPathInput);
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const retryMs = options.retryMs ?? 25;
+  const deadline = Date.now() + timeoutMs;
+
+  while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new HarnessLockTimeoutError(sessionPath, timeoutMs);
+    const operation = await acquireHarnessLock(operationPath, { ...options, timeoutMs: remaining });
+    if (await isHarnessLockHeld(sessionPath)) {
+      await operation.release();
+      await waitForHarnessLockRelease(sessionPath, { retryMs, timeoutMs: Math.max(1, deadline - Date.now()) });
+      continue;
+    }
+    try {
+      const session = await acquireHarnessLock(sessionPath, { ...options, timeoutMs: 0 });
+      return { operation, session };
+    } catch (error) {
+      await operation.release();
+      if (!(error instanceof HarnessLockTimeoutError)) throw error;
+      await waitForHarnessLockRelease(sessionPath, { retryMs, timeoutMs: Math.max(1, deadline - Date.now()) });
+    }
+  }
+}
+
+export async function withHarnessOperationLock<T>(
+  operationPathInput: string,
+  sessionPathInput: string,
+  operation: () => Promise<T>,
+  options: HarnessLockOptions = {}
+): Promise<T> {
+  const operationPath = resolve(operationPathInput);
+  const sessionPath = resolve(sessionPathInput);
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const retryMs = options.retryMs ?? 25;
+  const deadline = Date.now() + timeoutMs;
+
+  while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new HarnessLockTimeoutError(sessionPath, timeoutMs);
+    const lock = await acquireHarnessLock(operationPath, { ...options, timeoutMs: remaining });
+    if (await isHarnessLockHeld(sessionPath)) {
+      await lock.release();
+      await waitForHarnessLockRelease(sessionPath, { retryMs, timeoutMs: Math.max(1, deadline - Date.now()) });
+      continue;
+    }
+    try {
+      return await operation();
+    } finally {
+      await lock.release();
     }
   }
 }

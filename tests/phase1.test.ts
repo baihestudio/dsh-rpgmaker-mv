@@ -44,7 +44,13 @@ async function makeRuntime(runtime: string, version = '0.1.0-rc.6'): Promise<voi
   await writeFile(join(runtime, 'node_modules', 'koffi', 'package.json'), JSON.stringify({ name: 'koffi', version: '2.12.0' }));
   await writeFile(join(runtime, 'node_modules', '.bin', 'dsh'), '#!/usr/bin/env bun\n');
 }
-
+function makeTrackedChild(pid = 1234): EventEmitter & { pid: number; exitCode: number | null; signalCode: NodeJS.Signals | null } {
+  const child = new EventEmitter() as EventEmitter & { pid: number; exitCode: number | null; signalCode: NodeJS.Signals | null };
+  child.pid = pid;
+  child.exitCode = null;
+  child.signalCode = null;
+  return child;
+}
 
   test('timeout does not resolve until process-tree termination completes', async () => {
     const child = new EventEmitter() as EventEmitter & { pid: number; exitCode: number | null; signalCode: NodeJS.Signals | null };
@@ -328,6 +334,43 @@ describe('staged DSH runtime bootstrap', () => {
 
 
 describe('runtime access lock', () => {
+
+  test('launch failure releases the session lease so bootstrap can recover', async () => {
+    const root = await disposableDirectory('runtime-session-failure');
+    try {
+      const runtime = join(root, 'runtime');
+      const dshHome = join(root, 'dsh-home');
+      const project = await makeMvProject(root);
+      await makeRuntime(runtime, '0.1.0-rc.5');
+      await expect(
+        launchProject({
+          platform: 'darwin',
+          runtimeDir: runtime,
+          dshHome,
+          projectPath: project,
+          env: { DSH_HOME: dshHome },
+          spawnInteractive: () => { throw new Error('spawn failed'); }
+        })
+      ).rejects.toThrow(/spawn failed/i);
+
+      const result = await bootstrapRuntime({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        bunExecutable: 'bun',
+        lockTimeoutMs: 500,
+        lockRetryMs: 5,
+        commandRunner: async (_command, args, options) => {
+          if (args[0] === 'add') await makeRuntime(options.cwd!);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+      });
+      expect(result.status).toBe('repaired');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('doctor and launcher wait while bootstrap owns the swap transaction', async () => {
     const root = await disposableDirectory('runtime-lock');
     try {
@@ -357,8 +400,9 @@ describe('runtime access lock', () => {
         if (name === 'pwsh') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
         if (name === 'bun') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
         if (name === 'git') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
-        if (name === 'coreutils-manager') return { exitCode: 0, stdout: 'Microsoft Coreutils 0.1.0', stderr: '' };
-        if (name === 'find' || name === 'grep') return { exitCode: 0, stdout: `${name} (Microsoft Coreutils) 0.1.0`, stderr: '' };
+        if (name === 'coreutils-manager' && args[0] === '--help') return { exitCode: 0, stdout: "coreutils-manager 0.1.0\nManage coreutils utilities and PowerShell profiles\nUsage: coreutils-manager <COMMAND>\nCommands:\n  enable    Enable one or more utilities\n  disable   Disable one or more utilities\n  status    List all utilities with their status\n", stderr: '' };
+        if (name === 'coreutils-manager' && args[0] === 'status') return { exitCode: 0, stdout: "find            enabled\ngrep            enabled\n", stderr: '' };
+        if (name === 'find' || name === 'grep') return { exitCode: 0, stdout: `${name} 0.1.0`, stderr: '' };
         return { exitCode: 0, stdout: '', stderr: '' };
       };
 
@@ -375,6 +419,7 @@ describe('runtime access lock', () => {
 
       let doctorFinished = false;
       let launched = false;
+      const launchChild = makeTrackedChild(99);
       const doctor = runDoctor({
         platform: 'darwin',
         runtimeDir: runtime,
@@ -391,7 +436,7 @@ describe('runtime access lock', () => {
         projectPath: project,
         env: { PATH: bin, DSH_HOME: dshHome },
         commandRunner,
-        spawnInteractive: () => { launched = true; return { pid: 99 }; },
+        spawnInteractive: () => { launched = true; return launchChild; },
         lockTimeoutMs: 1000,
         lockRetryMs: 5
       });
@@ -403,10 +448,82 @@ describe('runtime access lock', () => {
 
       await installing;
       const report = await doctor;
-      await launch;
+      const launchResult = await launch;
       expect(report.runtime.valid).toBe(true);
       expect(launched).toBe(true);
+      launchChild.exitCode = 0;
+      launchChild.emit('exit', 0);
+      await launchResult.releaseSession();
       expect(await readFile(join(runtime, 'package.json'), 'utf8')).toContain('0.1.0-rc.6');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  test('bootstrap waits for a live DSH session and swaps after child exit', async () => {
+    const root = await disposableDirectory('runtime-session-lease');
+    try {
+      const runtime = join(root, 'runtime');
+      const dshHome = join(root, 'dsh-home');
+      const project = await makeMvProject(root);
+      await makeRuntime(runtime, '0.1.0-rc.5');
+      const child = makeTrackedChild(701);
+      const launch = await launchProject({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        projectPath: project,
+        env: { DSH_HOME: dshHome },
+        spawnInteractive: () => child
+      });
+
+      const bin = join(root, 'bin');
+      await mkdir(bin, { recursive: true });
+      for (const name of ['pwsh', 'coreutils-manager', 'find', 'grep', 'git', 'bun']) await writeFile(join(bin, name), '');
+      const doctor = await runDoctor({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        env: { PATH: bin, DSH_HOME: dshHome },
+        commandRunner: async (command, args) => {
+          const name = command.split(/[\\\\/]/).pop();
+          if (name === 'pwsh') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
+          if (name === 'bun') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
+          if (name === 'git') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
+          if (name === 'coreutils-manager' && args[0] === '--help') return { exitCode: 0, stdout: 'manager help', stderr: '' };
+          if (name === 'coreutils-manager' && args[0] === 'status') return { exitCode: 0, stdout: 'find enabled\\ngrep enabled', stderr: '' };
+          if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
+          return { exitCode: 0, stdout: `${name ?? ''} 0.1.0`, stderr: '' };
+        }
+      });
+      expect(doctor.platform).toBe('darwin');
+
+      let swapStarted = false;
+      const installing = bootstrapRuntime({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        bunExecutable: 'bun',
+        lockTimeoutMs: 1000,
+        lockRetryMs: 5,
+        commandRunner: async (_command, args, options) => {
+          if (args[0] === 'add') {
+            swapStarted = true;
+            await makeRuntime(options.cwd!);
+          }
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(swapStarted).toBe(false);
+      expect(await readFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')).toContain('0.1.0-rc.5');
+
+      child.exitCode = 0;
+      child.emit('exit', 0);
+      await launch.releaseSession();
+      const result = await installing;
+      expect(result.status).toBe('repaired');
+      expect(await readFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')).toContain('0.1.0-rc.6');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -436,9 +553,10 @@ describe('doctor and launcher seams', () => {
           if (name === 'pwsh') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
           if (name === 'bun') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
           if (name === 'git') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
-          if (name === 'coreutils-manager') return { exitCode: 0, stdout: 'Microsoft Coreutils 0.1.0', stderr: '' };
-          if (name === 'find') return { exitCode: 0, stdout: 'find (Microsoft Coreutils) 0.1.0', stderr: '' };
-          if (name === 'grep') return { exitCode: 0, stdout: 'grep (Microsoft Coreutils) 0.1.0', stderr: '' };
+          if (name === 'coreutils-manager' && args[0] === '--help') return { exitCode: 0, stdout: "coreutils-manager 0.1.0\nManage coreutils utilities and PowerShell profiles\nUsage: coreutils-manager <COMMAND>\nCommands:\n  enable    Enable one or more utilities\n  disable   Disable one or more utilities\n  status    List all utilities with their status\n", stderr: '' };
+          if (name === 'coreutils-manager' && args[0] === 'status') return { exitCode: 0, stdout: "find            enabled\ngrep            enabled\n", stderr: '' };
+          if (name === 'find') return { exitCode: 0, stdout: 'find 0.1.0', stderr: '' };
+          if (name === 'grep') return { exitCode: 0, stdout: 'grep 0.1.0', stderr: '' };
           if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
           return { exitCode: 0, stdout: '', stderr: '' };
         }
@@ -479,6 +597,7 @@ describe('doctor and launcher seams', () => {
       const dsh = join(root, 'dsh.exe');
       await writeFile(dsh, '');
       let launched: { command: string; args: string[]; cwd?: string; env?: Record<string, string | undefined> } | undefined;
+      const child = makeTrackedChild();
       const result = await launchProject({
         platform: 'win32',
         projectPath: project,
@@ -488,13 +607,16 @@ describe('doctor and launcher seams', () => {
         dshArgs: ['--test'],
         spawnInteractive: (command, args, options) => {
           launched = { command, args, cwd: options.cwd, env: options.env };
-          return { pid: 1234 };
+          return child;
         }
       });
       expect(result.projectPath).toBe(project);
       expect(launched).toMatchObject({ command: dsh, args: ['--test'], cwd: project });
       expect(launched!.env?.DSH_HOME).toBe(join(root, 'dsh-home'));
       expect(result.onboardingMessage).toBeDefined();
+      child.exitCode = 0;
+      child.emit('exit', 0);
+      await result.releaseSession();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -532,7 +654,11 @@ describe('doctor and launcher seams', () => {
         platform: 'win32',
         env: {},
         io: { stdout: { write: (text) => { output += text; } }, stderr: { write: () => undefined } },
-        spawnInteractive: () => ({ pid: 1234 })
+        spawnInteractive: () => {
+          const child = makeTrackedChild();
+          setTimeout(() => { child.exitCode = 0; child.emit('exit', 0); }, 0);
+          return child;
+        }
       });
       expect(code).toBe(0);
       expect(output).toContain('The agent and RPG Maker MCP are the sole writers');

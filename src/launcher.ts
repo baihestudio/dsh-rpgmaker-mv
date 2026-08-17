@@ -6,7 +6,7 @@ import { resolveExecutable } from './executable';
 import { inspectCredentialMetadata } from './credentials';
 import { childExitCode, runCommand, spawnInteractive, withoutCredentials, type CommandRunner, type InteractiveSpawner } from './process';
 import { assertValidMvProject, pathExists, type ProjectValidation } from './project';
-import { withHarnessLock } from './lock';
+import { acquireHarnessSessionLeases } from './lock';
 
 export const SINGLE_WRITER_NOTICE = [
   'Agent single-writer contract',
@@ -47,6 +47,7 @@ export interface LaunchResult {
   cwd: string;
   onboardingMessage?: string;
   child: unknown;
+  releaseSession: () => Promise<void>;
 }
 
 export class LauncherError extends Error {
@@ -103,10 +104,39 @@ export async function launchProject(options: LaunchOptions = {}): Promise<Launch
     env,
     commandRunner: options.commandRunner
   });
-  return withHarnessLock(paths.lockDir, () => launchProjectUnlocked(options, platform, env, paths, projectPath), {
+  const leases = await acquireHarnessSessionLeases(paths.lockDir, paths.sessionLeaseDir, {
     timeoutMs: options.lockTimeoutMs,
     retryMs: options.lockRetryMs
   });
+  try {
+    const result = await launchProjectUnlocked(options, platform, env, paths, projectPath);
+    const releaseSession = attachSessionLease(result.child, leases.session.release);
+    await leases.operation.release();
+    return { ...result, releaseSession };
+  } catch (error) {
+    await leases.operation.release();
+    await leases.session.release();
+    throw error;
+  }
+}
+
+function attachSessionLease(child: unknown, release: () => Promise<void>): () => Promise<void> {
+  if (!child || typeof (child as { once?: unknown }).once !== 'function') {
+    throw new LauncherError('DSH launch did not return a trackable child process; the session lease was not retained.');
+  }
+  let releasePromise: Promise<void> | undefined;
+  const releaseOnce = (): Promise<void> => {
+    releasePromise ??= release();
+    return releasePromise;
+  };
+  const onEnd = (): void => { void releaseOnce(); };
+  const lifecycle = child as { once: (event: string, listener: () => void) => unknown; exitCode?: number | null; signalCode?: string | null };
+  lifecycle.once('exit', onEnd);
+  lifecycle.once('error', onEnd);
+  lifecycle.once('close', onEnd);
+  if (lifecycle.exitCode !== undefined && lifecycle.exitCode !== null) void releaseOnce();
+  if (lifecycle.signalCode !== undefined && lifecycle.signalCode !== null) void releaseOnce();
+  return releaseOnce;
 }
 
 async function launchProjectUnlocked(
@@ -115,7 +145,7 @@ async function launchProjectUnlocked(
   env: Record<string, string | undefined>,
   paths: ReturnType<typeof resolveHarnessPaths>,
   projectPath: string
-): Promise<LaunchResult> {
+): Promise<Omit<LaunchResult, 'releaseSession'>> {
   let validation: ProjectValidation;
   try {
     validation = await assertValidMvProject(projectPath);

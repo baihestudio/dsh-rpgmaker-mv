@@ -1,3 +1,5 @@
+import { basename, dirname } from 'node:path';
+
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
@@ -63,8 +65,29 @@ async function commandVersion(
   }
 }
 
-function identifiesMicrosoftCoreutils(output: string, executablePath?: string): boolean {
-  return /Microsoft Coreutils/i.test(output) || /Microsoft[.]Coreutils/i.test(executablePath ?? '');
+// Mirrors Microsoft coreutils-manager's manager.rs clap help and status subcommands; find/grep banners are intentionally not used as identity.
+function managerContract(helpOutput: string, statusOutput: string): boolean {
+  return /Manage coreutils utilities and PowerShell profiles/i.test(helpOutput)
+    && /\benable\b/i.test(helpOutput)
+    && /\bdisable\b/i.test(helpOutput)
+    && /\bstatus\b/i.test(helpOutput)
+    && /^\s*find\s+enabled\s*$/im.test(statusOutput)
+    && /^\s*grep\s+enabled\s*$/im.test(statusOutput);
+}
+
+function coreutilsInstallDir(managerPath: string | undefined): string | undefined {
+  if (!managerPath) return undefined;
+  const parent = dirname(managerPath);
+  const name = basename(parent).toLowerCase();
+  return name === 'bin' || name === 'cmd' ? dirname(parent) : parent;
+}
+
+function isWithinInstallDir(candidate: string | undefined, installDir: string | undefined): boolean {
+  if (!candidate || !installDir) return false;
+  const normalize = (value: string): string => value.replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase();
+  const child = normalize(candidate);
+  const root = normalize(installDir);
+  return child === root || child.startsWith(`${root}/`);
 }
 
 function check(id: string, label: string, ok: boolean, detail: string, path?: string): DoctorCheck {
@@ -112,20 +135,23 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     pwsh
   ));
 
-  const coreutilsVersion = await commandVersion(runner, coreutils, commandEnv);
+  const coreutilsHelp = await commandVersion(runner, coreutils, commandEnv, ['--help']);
+  const coreutilsStatus = await commandVersion(runner, coreutils, commandEnv, ['status']);
   const coreutilsFindVersion = await commandVersion(runner, coreutilsFind, commandEnv);
   const coreutilsGrepVersion = await commandVersion(runner, coreutilsGrep, commandEnv);
-  const coreutilsOk = coreutilsVersion.ok && coreutilsFindVersion.ok && coreutilsGrepVersion.ok
-    && identifiesMicrosoftCoreutils(coreutilsVersion.output, coreutils)
-    && identifiesMicrosoftCoreutils(coreutilsFindVersion.output, coreutilsFind)
-    && identifiesMicrosoftCoreutils(coreutilsGrepVersion.output, coreutilsGrep);
+  const coreutilsRoot = coreutilsInstallDir(coreutils);
+  const coreutilsOk = coreutilsHelp.ok && coreutilsStatus.ok
+    && managerContract(coreutilsHelp.output, coreutilsStatus.output)
+    && coreutilsFindVersion.ok && coreutilsGrepVersion.ok
+    && isWithinInstallDir(coreutilsFind, coreutilsRoot)
+    && isWithinInstallDir(coreutilsGrep, coreutilsRoot);
   checks.push(check(
     'coreutils',
     'Microsoft Coreutils',
     coreutilsOk,
     coreutilsOk
-      ? `Microsoft Coreutils manager and find/grep are available at ${coreutils}`
-      : 'Microsoft Coreutils manager plus Microsoft Coreutils find and grep were not verified; install Microsoft.Coreutils with WinGet',
+      ? `Microsoft Coreutils manager contract and enabled find/grep are available under ${coreutilsRoot}`
+      : 'Microsoft Coreutils manager contract and installation-relative enabled find/grep were not verified; install Microsoft.Coreutils with WinGet',
     coreutils
   ));
 

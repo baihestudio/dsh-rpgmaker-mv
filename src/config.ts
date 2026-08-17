@@ -9,6 +9,7 @@ export interface HarnessPaths {
   dshHome: string;
   runtimeDir: string;
   lockDir: string;
+  sessionLeaseDir: string;
 }
 
 export interface PathOptions {
@@ -36,7 +37,8 @@ export function resolveHarnessPaths(options: PathOptions = {}): HarnessPaths {
   return {
     dshHome,
     runtimeDir,
-    lockDir: `${runtimeDir}.lock`
+    lockDir: `${runtimeDir}.lock`,
+    sessionLeaseDir: `${runtimeDir}.session`
   };
 }
 
