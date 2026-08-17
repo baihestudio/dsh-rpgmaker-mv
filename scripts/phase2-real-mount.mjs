@@ -7,6 +7,13 @@ const environment = environmentModule.createLaunchEnvironmentSnapshot([{
   source: 'process',
   values: Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && key !== 'DEEPSEEK_API_KEY' && key !== 'DSH_API_KEY'))
 }]);
+
+function unwrap(value) {
+  const text = value?.content?.find?.((block) => block?.type === 'text')?.text;
+  if (typeof text !== 'string') return value;
+  try { return JSON.parse(text); } catch { return text; }
+}
+
 let mounted;
 try {
   mounted = await profileModule.runProfile({
@@ -18,36 +25,32 @@ try {
   const presets = mounted.ctx.get('agentPresets');
   if (!presets) throw new Error('official DSH agent preset service did not mount');
   const preset = await presets.resolve('rpgmaker');
-  if (preset.id !== 'rpgmaker') throw new Error(`unexpected preset ${preset.id}`);
+  const debugPreset = await presets.resolve('playtest-debug');
+  if (preset.id !== 'rpgmaker' || debugPreset.id !== 'playtest-debug') throw new Error(`unexpected presets ${preset.id}, ${debugPreset.id}`);
   await presets.standingKeyFor('rpgmaker');
-  const tools = mounted.ctx.get('tools');
   const debugKey = await presets.standingKeyFor('playtest-debug');
+  const tools = mounted.ctx.get('tools');
   const schemas = tools?.schemas?.() ?? [];
-  const standingSchemas = tools?.schemas?.(debugKey) ?? [];
+  const debugSchemas = tools?.schemas?.(debugKey) ?? [];
   const mcpTools = schemas.filter((schema) => schema.name?.startsWith('mcp__rpgmaker_mv__'));
+  const requiredPlaytestTools = ['playtest_start', 'playtest_status', 'playtest_log', 'playtest_stop'];
   if (mcpTools.length < 41) throw new Error(`official DSH registered only ${mcpTools.length} RPG Maker tools`);
+  if (requiredPlaytestTools.some((name) => !mcpTools.some((schema) => schema.name === `mcp__rpgmaker_mv__${name}`))) {
+    throw new Error(`official DSH did not register every RPG Maker Playtest tool: ${requiredPlaytestTools.join(', ')}`);
+  }
+  if (schemas.some((schema) => schema.name === 'playtest_debug') || debugSchemas.some((schema) => schema.name === 'playtest_debug')) {
+    throw new Error('playtest-debug mounted an unexpected custom workflow tool');
+  }
+
   const agentLoop = mounted.ctx.get('agentLoop');
   if (!agentLoop) throw new Error('official DSH agent-loop service did not mount');
   let agentHandle;
-  let workflowResult;
   try {
     agentHandle = await agentLoop.createAgent(mounted.ctx, {
       sessionId: randomUUID(),
       meta: { cwd: process.cwd(), agentPreset: 'playtest-debug' },
       setup: async (agentCtx) => { await presets.mount(agentCtx, 'playtest-debug'); }
     });
-    const workflowSchema = standingSchemas.find((schema) => schema.name === 'playtest_debug');
-    if (!workflowSchema) throw new Error(`playtest-debug workflow tool did not mount on its standing scope: [${standingSchemas.map((schema) => schema.name).join(', ')}]`);
-    const workflowCode = `return await tools.playtest_debug(${JSON.stringify({ runtimePath: process.env.MISSING_NWJS_PATH ?? '/missing/Game.exe' })})`;
-    workflowResult = await tools.execute({ agent: agentHandle.agent, callId: 'phase3-workflow', name: 'run_code', arguments: { code: workflowCode, description: 'Run the Playtest Debug workflow against the selected project.' }, signal: new AbortController().signal });
-    const workflowValue = workflowResult.value ?? workflowResult;
-    const workflowText = workflowValue?.content?.find?.((block) => block?.type === 'text')?.text;
-    const workflowReport = workflowValue?.result ?? (typeof workflowText === 'string' ? JSON.parse(workflowText) : workflowValue);
-    const firstStatus = Array.isArray(workflowReport?.statuses) ? workflowReport.statuses[0] : undefined;
-    const missingRuntimeEvidence = `${workflowReport?.error ?? ''}\n${workflowReport?.log ?? ''}`;
-    if (workflowResult.isError || workflowReport?.outcome !== 'launch-failed' || workflowReport?.staticValidation?.ok !== true || firstStatus?.running !== false || !/NW\.js runtime not found|missing runtime/i.test(missingRuntimeEvidence)) {
-      throw new Error(`playtest-debug workflow did not resolve the existing MCP scope and fail truthfully on missing runtime: ${JSON.stringify(workflowResult)}`);
-    }
   } finally {
     if (agentHandle) await agentHandle.dispose();
   }
@@ -63,11 +66,11 @@ try {
     if (result.isError) throw new Error(`official DSH MCP ${name} returned an error: ${JSON.stringify(result)}`);
     return result.value ?? result;
   };
-  const unwrap = (value) => {
-    const text = value?.content?.find((block) => block?.type === 'text')?.text;
-    if (typeof text !== 'string') return value;
-    try { return JSON.parse(text); } catch { return text; }
-  };
+
+  const playtestStatus = unwrap(await call('playtest_status', {}));
+  if (playtestStatus?.running !== false || (playtestStatus?.pid !== null && playtestStatus?.pid !== undefined)) {
+    throw new Error(`real MCP Playtest was not idle at mount acceptance: ${JSON.stringify(playtestStatus)}`);
+  }
   const validation = unwrap(await call('validate_project', {}));
   if (validation?.ok !== true) throw new Error(`startup project validation failed: ${JSON.stringify(validation)}`);
   const initial = unwrap(await call('get_record', { type: 'actors', id: 1 }));
@@ -90,7 +93,7 @@ try {
   if (restored?.name !== 'Hero') throw new Error('restore reread did not restore the actor record');
   const finalValidation = unwrap(await call('validate_project', {}));
   if (finalValidation?.ok !== true) throw new Error('restore validation failed');
-  console.log(JSON.stringify({ ok: true, preset: preset.id, debugWorkflow: 'launch-failed', mcpTools: mcpTools.length, calls: callNumber, mutation: reread.name, restored: restored.name }));
+  console.log(JSON.stringify({ ok: true, preset: preset.id, selectedDebugPreset: debugPreset.id, playtestStatus, mcpTools: mcpTools.length, calls: callNumber, mutation: reread.name, restored: restored.name }));
 } finally {
   if (mounted) await mounted.shutdown.shutdown(0);
 }

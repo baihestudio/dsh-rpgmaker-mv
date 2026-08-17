@@ -142,8 +142,9 @@ describe('RPG Maker MCP deployment', () => {
         schemaProbe
       });
       expect(debug.agentPreset).toBe('playtest-debug');
+      expect(debug.presetDir).toBe(join(dshHome, '.agent-presets', 'playtest-debug'));
       expect(await readFile(debug.compositionPath, 'utf8')).toContain('default: playtest-debug');
-      expect(await readFile(join(dshHome, '.agent-presets', 'playtest-debug', 'skills', 'playtest-debug', 'SKILL.md'), 'utf8')).toContain('playtest_start');
+      expect(JSON.parse(await readFile(join(debug.presetDir, '.dsh-rpgmaker-owned.json'), 'utf8')).presetId).toBe('playtest-debug');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

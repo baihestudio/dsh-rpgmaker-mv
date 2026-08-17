@@ -57,9 +57,9 @@ The generated preset and patch live under `DSH_HOME`; they contain executable pa
 
 ## Phase 3: Playtest Debug Agent
 
-Select `--preset playtest-debug` when creating a session. The Debug workflow statically validates the project first, calls `playtest_start(mode=nwjs)`, observes `playtest_status` and `playtest_log`, and calls `playtest_stop` on normal, failed, timed-out, or cancelled paths. Reports distinguish static validation, process launch, crash/log evidence, cleanup, and behavior/visual gameplay verification; a launched process is never reported as verified behavior.
+Select `--preset playtest-debug` when creating a session. The Debug skill directly sequences the existing `mcp__rpgmaker_mv__*` tools: static validation, idle status preflight, NW.js launch, bounded status/log polling, MCP stop, and post-stop status. It refuses an already-running Playtest, never adopts a PID or invokes OS process controls, and reports cleanup as unverified when MCP status cannot confirm it.
 
-The current automated tests use disposable projects and fake MCP tool callers. The real Windows NW.js/Game.exe process-tree gate remains owned by ticket 06; screenshot/input/gameplay automation is out of scope.
+Reports distinguish static validation, process launch, crash/log evidence, cleanup confirmation, and behavior/visual gameplay verification. A launched process and clean log are not behavior verification. Harness-owned process-tree cleanup belongs to the separate automated-playtest capability; screenshot/input/gameplay automation is out of scope here.
 
 ## Editing model
 

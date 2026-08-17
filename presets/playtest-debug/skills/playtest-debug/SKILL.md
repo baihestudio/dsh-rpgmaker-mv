@@ -3,29 +3,42 @@ name: playtest-debug
 description: Static validation and truthful RPG Maker MV NW.js Playtest diagnosis.
 ---
 
-# Playtest Debug workflow
+# Playtest Debug
 
-Use the preset's registered `playtest_debug` workflow for the complete loop;
-it delegates to the existing session-scoped `mcp__rpgmaker_mv__*` tools and does
-not start another MCP server. Use the individual tools only when the workflow
-report identifies a targeted follow-up. Before starting Playtest, call
-`validate_project` and stop if it reports errors. Call `playtest_status` first and refuse to start if another Playtest is already running; never rely on `playtest_start` to stop an unrelated session. Then call
-`playtest_start` with `mode: "nwjs"` and an explicit `runtimePath` when the
-Windows NW.js executable is known. A successful start is only process-launch
-success.
+Use only the existing session-scoped `mcp__rpgmaker_mv__*` tools. Do not start
+another MCP server, register a workflow, adopt a PID, or invoke OS process
+controls. The selected MCP owns the Playtest process.
 
-Observe with `playtest_status` and `playtest_log`. Classify immediate exit,
-MCP/startup errors, and useful stderr/stdout as launch or crash evidence. Call
-`playtest_stop` on normal, timeout, cancellation, or failed-launch paths only
-when this workflow owns the returned PID; after a failed/raced start with no
-PID, never stop an unrelated session. Check status and report cleanup as
-unconfirmed if ownership or descendants cannot be proven.
+Run this bounded sequence:
 
-Report separate fields/outcomes for:
+1. Call `mcp__rpgmaker_mv__validate_project`. If it reports errors, stop and
+   report static validation failure; do not launch Playtest.
+2. Call `mcp__rpgmaker_mv__playtest_status`. If `running` is `true`, refuse to
+   start and ask the Agent/user to resolve the existing Playtest. If `running`
+   is `false` but a PID is present, treat the status as inconsistent and also
+   refuse to start. Never adopt a PID. Require `running: false` with no PID
+   before continuing.
+3. Call `mcp__rpgmaker_mv__playtest_start` with `{ "mode": "nwjs" }` and an
+   explicit `runtimePath` when the Windows NW.js executable is known. A
+   successful response proves process launch only. An MCP error is launch
+   failure; do not infer ownership from a later status response.
+4. Poll `playtest_status` a finite number of times with a finite interval or
+   deadline. Capture `playtest_log` after launch and when diagnosing an early
+   exit, timeout, or MCP error. Classify launch errors, exit state, and useful
+   stdout/stderr separately from behavior.
+5. On a successfully started Playtest, call `mcp__rpgmaker_mv__playtest_stop`
+   on normal completion, timeout, cancellation, or failed observation. This is
+   the MCP stop operation; never replace it with `taskkill`, PowerShell, shell
+   commands, or another OS termination mechanism.
+6. Poll `playtest_status` after stop. Mark cleanup **confirmed** only when MCP
+   reports `running: false` with no PID. If stop/status cannot confirm that
+   state, mark cleanup **unverified**, explain the evidence, and ask the
+   Agent/user to resolve it. Do not claim cleanup success and do not kill a
+   process directly. This foundation skill does not guarantee descendant
+   cleanup; the later automated-playtest supervisor owns that guarantee.
 
-- static project validation;
-- process launch and PID/status;
-- crash or captured log evidence;
-- cleanup/stop result; and
-- behavior or visual verification, which remains **unverified** without a
-  gameplay/screenshot/input workflow.
+Report separate fields for static validation, process launch, status/log or
+crash evidence, cleanup confirmation, and behavior/visual verification.
+Behavior remains **unverified** unless a separate gameplay, screenshot, or
+input workflow supplies evidence; a running process and clean log are not
+behavior verification.

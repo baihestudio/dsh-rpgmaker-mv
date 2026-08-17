@@ -83,9 +83,12 @@ try {
   const mountResult = JSON.parse(mountLine);
   assert.equal(mountResult.ok, true);
   assert.equal(mountResult.preset, 'rpgmaker');
+  assert.equal(mountResult.selectedDebugPreset, 'playtest-debug');
+  assert.equal(mountResult.playtestStatus?.running, false);
+  assert.equal(mountResult.playtestStatus?.pid, null);
   assert.ok(mountResult.mcpTools >= 41, `official DSH registered only ${mountResult.mcpTools} RPG Maker tools`);
 
-  console.log(JSON.stringify({ ok: true, mountedPreset: mountResult.preset, debugWorkflow: mountResult.debugWorkflow, mountedTools: mountResult.mcpTools, mutation: mountResult.mutation, restored: mountResult.restored, composition: deployment.compositionPath }));
+  console.log(JSON.stringify({ ok: true, mountedPreset: mountResult.preset, selectedDebugPreset: mountResult.selectedDebugPreset, playtestStatus: mountResult.playtestStatus, mountedTools: mountResult.mcpTools, mutation: mountResult.mutation, restored: mountResult.restored, composition: deployment.compositionPath }));
 } finally {
   await rm(root, { recursive: true, force: true });
 }

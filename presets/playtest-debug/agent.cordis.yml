@@ -1,3 +1,2 @@
-# The workflow adapter invokes the existing rpgmaker_mv MCP scope; it starts no second server.
-- id: playtest-debug-workflow
-  name: './playtest-debug-workflow.js'
+# Playtest Debug uses the official Code composition and owns only this skill.
+[]
