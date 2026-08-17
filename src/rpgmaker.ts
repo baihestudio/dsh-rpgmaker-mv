@@ -116,6 +116,19 @@ async function readJson(path: string): Promise<Record<string, unknown> | undefin
   }
 }
 
+async function readBunLock(path: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const content = await readFile(path, 'utf8');
+    try {
+      return asRecord(JSON.parse(content));
+    } catch {
+      return asRecord(JSON.parse(content.replace(/,\s*([}\]])/g, '$1')));
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 function packageDirectory(runtimeDir: string): string {
   return join(runtimeDir, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp');
 }
@@ -148,6 +161,12 @@ export async function verifyMcpRuntime(runtimeDirInput: string, platform: string
   const rootPackage = await readJson(join(runtimeDir, 'package.json'));
   const dependencies = asRecord(rootPackage?.dependencies);
   if (dependencies?.[RPGMAKER_MCP_PACKAGE] !== RPGMAKER_MCP_VERSION) errors.push(`MCP dependency ${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION} is not pinned`);
+  const lock = await readBunLock(join(runtimeDir, 'bun.lock'));
+  const workspace = asRecord(asRecord(lock?.workspaces)?.['']);
+  const lockedDependencies = asRecord(workspace?.dependencies);
+  const lockedPackage = asRecord(lock?.packages)?.[RPGMAKER_MCP_PACKAGE];
+  if (!lock) errors.push('MCP bun.lock is missing or invalid');
+  else if (lockedDependencies?.[RPGMAKER_MCP_PACKAGE] !== RPGMAKER_MCP_VERSION || !Array.isArray(lockedPackage) || lockedPackage[0] !== `${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`) errors.push('MCP bun.lock does not resolve the pinned top-level package exactly');
   const packageJson = await readJson(join(packageDirectory(runtimeDir), 'package.json'));
   const packageVersion = typeof packageJson?.version === 'string' ? packageJson.version : undefined;
   if (packageVersion !== RPGMAKER_MCP_VERSION) errors.push(`installed MCP version is ${packageVersion ?? 'missing'}, expected ${RPGMAKER_MCP_VERSION}`);
@@ -191,7 +210,7 @@ async function installMcpRuntime(options: RpgMakerDeploymentOptions, runtimeDir:
     dependencies: { [RPGMAKER_MCP_PACKAGE]: RPGMAKER_MCP_VERSION }
   }, null, 2)}\n`);
   try {
-    await runRequired(runner, bun, ['add', '--exact', `${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`], staging, env, 'RPG Maker MCP installation');
+    await runRequired(runner, bun, ['add', '--exact', '--ignore-scripts', `${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`], staging, env, 'RPG Maker MCP installation');
     const staged = await verifyMcpRuntime(staging, platform);
     if (!staged.valid) throw new RpgMakerStartupError(`RPG Maker MCP verification failed: ${staged.errors.join('; ')}`);
     if (await pathExists(runtimeDir)) {
@@ -396,12 +415,17 @@ async function defaultSchemaProbe(request: McpSchemaProbeRequest): Promise<McpSc
   }
 }
 
-async function resolveMcpRunner(options: RpgMakerDeploymentOptions, platform: string, env: Record<string, string | undefined>): Promise<string> {
+export async function resolveMcpRunner(options: RpgMakerDeploymentOptions, platform: string, env: Record<string, string | undefined>): Promise<string> {
   const candidate = options.jsExecutable ?? options.bunExecutable ?? env.BUN_EXECUTABLE;
-  if (candidate && !/\.(?:cmd|bat|ps1)$/i.test(candidate)) {
-    return await resolveExecutable(candidate, { platform, env }) ?? candidate;
-  }
-  return await resolveExecutable('bun', { platform, env }) ?? await resolveExecutable('node', { platform, env }) ?? 'bun';
+  const direct = candidate ? await resolveExecutable(candidate, { platform, env }) : undefined;
+  if (platform !== 'win32') return direct ?? candidate ?? await resolveExecutable('bun', { platform, env }) ?? await resolveExecutable('node', { platform, env }) ?? 'bun';
+  const isNative = (path: string | undefined): path is string => Boolean(path && /\.(?:exe|com)$/i.test(path));
+  if (isNative(direct)) return direct;
+  const bunExe = await resolveExecutable('bun.exe', { platform, env });
+  if (isNative(bunExe)) return bunExe;
+  const nodeExe = await resolveExecutable('node.exe', { platform, env });
+  if (isNative(nodeExe)) return nodeExe;
+  throw new RpgMakerStartupError('Windows MCP startup requires a direct bun.exe or node.exe runner; only a command shim was found or no native runner is installed.');
 }
 
 async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: string): Promise<RpgMakerDeployment> {

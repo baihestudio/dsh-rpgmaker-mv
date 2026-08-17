@@ -4,7 +4,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promi
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { prepareRpgMakerDeployment, launchRpgmakerProject, RpgMakerStartupError, verifyMcpRuntime, type McpToolDefinition } from '../src/rpgmaker';
+import { prepareRpgMakerDeployment, launchRpgmakerProject, RpgMakerStartupError, resolveMcpRunner, verifyMcpRuntime, type McpToolDefinition } from '../src/rpgmaker';
 import { backupIgnoreGuidance, createRpgMakerEditingLoop } from '../src/mcp-loop';
 
 async function temp(prefix: string): Promise<string> {
@@ -41,6 +41,7 @@ async function makeMcpRuntime(runtime: string): Promise<void> {
   await mkdir(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'bin'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
   await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'rpgmaker-mcp-runtime', private: true, dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } }));
+  await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0'] } }));
   await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'package.json'), JSON.stringify({ name: '@xerolo44/rpgmaker-mv-mcp', version: '0.1.0', bin: { 'rpgmaker-mv-mcp': 'bin/server.js' } }));
   await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'bin', 'server.js'), '#!/usr/bin/env bun\n');
   await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'bin', 'server.cmd'), '@echo off\r\n');
@@ -58,6 +59,7 @@ describe('RPG Maker MCP deployment', () => {
       const project = await makeProject(root);
       const runtime = await makeDshRuntime(root);
       const dshHome = join(root, 'dsh-home');
+      await writeFile(join(root, 'bun.exe'), '');
       const sourceRoot = join(process.cwd(), 'presets', 'rpgmaker');
       let addCalls = 0;
       const requests: Array<{ command: string; args: string[]; cwd?: string }> = [];
@@ -85,6 +87,7 @@ describe('RPG Maker MCP deployment', () => {
         sourceRoot,
         commandRunner,
         bunExecutable: 'bun',
+        jsExecutable: join(root, 'bun.exe'),
         schemaProbe
       });
       expect(addCalls).toBe(1);
@@ -121,9 +124,39 @@ describe('RPG Maker MCP deployment', () => {
         sourceRoot,
         commandRunner,
         bunExecutable: 'bun',
+        jsExecutable: join(root, 'bun.exe'),
         schemaProbe
       });
       expect(addCalls).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects bun.cmd-only Windows runner paths without a shell fallback', async () => {
+    const root = await temp('phase2-bun-shim');
+    try {
+      const bin = join(root, '含 %! spaces', 'bin');
+      await mkdir(bin, { recursive: true });
+      await writeFile(join(bin, 'bun.cmd'), '@echo off\r\n');
+      await expect(resolveMcpRunner({ projectPath: 'C:\\含 %! spaces\\project', bunExecutable: 'bun' }, 'win32', { PATH: bin })).rejects.toThrow(/direct bun.exe or node.exe/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects missing or tampered MCP bun.lock metadata', async () => {
+    const root = await temp('phase2-lockfile');
+    try {
+      const runtime = join(root, 'mcp-runtime');
+      await makeMcpRuntime(runtime);
+      await rm(join(runtime, 'bun.lock'));
+      expect((await verifyMcpRuntime(runtime, 'win32')).valid).toBe(false);
+      await makeMcpRuntime(runtime);
+      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '9.9.9' } } }, packages: {} }));
+      const tampered = await verifyMcpRuntime(runtime, 'win32');
+      expect(tampered.valid).toBe(false);
+      expect(tampered.errors.join(' ')).toContain('bun.lock');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -135,6 +168,8 @@ describe('RPG Maker MCP deployment', () => {
       const project = await makeProject(root);
       const runtime = await makeDshRuntime(root);
       const dshHome = join(root, 'dsh-home');
+      const bun = join(root, 'bun.exe');
+      await writeFile(bun, '');
       const unowned = join(dshHome, '.agent-presets', 'rpgmaker');
       await mkdir(unowned, { recursive: true });
       await writeFile(join(unowned, 'user-note.txt'), 'keep me');
@@ -144,6 +179,7 @@ describe('RPG Maker MCP deployment', () => {
         runtimeDir: runtime,
         projectPath: project,
         sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'),
+        jsExecutable: bun,
         commandRunner: async (_command, args, options) => {
           if (args[0] === 'add') await makeMcpRuntime(options.cwd!);
           if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: agent-presets\n  default: rpgmaker\n', stderr: '' };
@@ -178,6 +214,8 @@ describe('RPG Maker MCP deployment', () => {
     try {
       const project = await makeProject(root);
       const runtime = await makeDshRuntime(root);
+      const bun = join(root, 'bun.exe');
+      await writeFile(bun, '');
       const tools = toolNames();
       tools[0] = { name: tools[0].name, inputSchema: { type: ['string', 'number'] } };
       await expect(prepareRpgMakerDeployment({
@@ -186,6 +224,7 @@ describe('RPG Maker MCP deployment', () => {
         runtimeDir: runtime,
         projectPath: project,
         sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'),
+        jsExecutable: bun,
         commandRunner: async (_command, args, options) => {
           if (args[0] === 'add') await makeMcpRuntime(options.cwd!);
           if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: agent-presets\n  default: rpgmaker\n', stderr: '' };
@@ -226,7 +265,9 @@ describe('RPG Maker MCP deployment', () => {
       const project = await makeProject(root);
       const runtime = await makeDshRuntime(root);
       const dsh = join(root, 'dsh');
+      const bun = join(root, 'bun.exe');
       await writeFile(dsh, '');
+      await writeFile(bun, '');
       const child = new EventEmitter() as EventEmitter & { exitCode: number | null; signalCode: NodeJS.Signals | null };
       child.exitCode = null;
       child.signalCode = null;
@@ -237,6 +278,7 @@ describe('RPG Maker MCP deployment', () => {
         runtimeDir: runtime,
         projectPath: project,
         dshExecutable: dsh,
+        jsExecutable: bun,
         sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'),
         commandRunner: async (_command, args, options) => {
           if (args[0] === 'add') await makeMcpRuntime(options.cwd!);
