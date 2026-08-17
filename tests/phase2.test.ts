@@ -39,11 +39,13 @@ async function makeDshRuntime(root: string): Promise<string> {
 
 async function makeMcpRuntime(runtime: string): Promise<void> {
   await mkdir(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'bin'), { recursive: true });
+  await mkdir(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
   await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'rpgmaker-mcp-runtime', private: true, dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } }));
-  await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0'] } }));
-  await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'package.json'), JSON.stringify({ name: '@xerolo44/rpgmaker-mv-mcp', version: '0.1.0', bin: { 'rpgmaker-mv-mcp': 'bin/server.js' } }));
+  await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0', '', { dependencies: { '@modelcontextprotocol/sdk': '^1.12.0', selfsigned: '^5.5.0', zod: '^3.24.0' }, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA=='] } }));
+  await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'package.json'), JSON.stringify({ name: '@xerolo44/rpgmaker-mv-mcp', version: '0.1.0', bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }));
   await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'bin', 'server.js'), '#!/usr/bin/env bun\n');
+  await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist', 'index.js'), '#!/usr/bin/env bun\n');
   await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'bin', 'server.cmd'), '@echo off\r\n');
   await writeFile(join(runtime, 'node_modules', '.bin', 'rpgmaker-mv-mcp.cmd'), '@echo off\r\n');
 }
@@ -139,7 +141,12 @@ describe('RPG Maker MCP deployment', () => {
       const bin = join(root, '含 %! spaces', 'bin');
       await mkdir(bin, { recursive: true });
       await writeFile(join(bin, 'bun.cmd'), '@echo off\r\n');
-      await expect(resolveMcpRunner({ projectPath: 'C:\\含 %! spaces\\project', bunExecutable: 'bun' }, 'win32', { PATH: bin })).rejects.toThrow(/direct bun.exe or node.exe/i);
+      await expect(resolveMcpRunner({ projectPath: 'C:\\含 %! spaces\\project', bunExecutable: 'bun' }, 'win32', { PATH: bin })).rejects.toThrow(/resolved bun.exe or node.exe/i);
+      for (const badRunner of ['cmd.exe', 'command.com']) {
+        const badPath = join(root, '含 %! spaces', badRunner);
+        await writeFile(badPath, '');
+        await expect(resolveMcpRunner({ projectPath: 'C:\\含 %! spaces\\project', jsExecutable: badPath }, 'win32', { PATH: bin })).rejects.toThrow(/resolved bun.exe or node.exe/i);
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -157,6 +164,11 @@ describe('RPG Maker MCP deployment', () => {
       const tampered = await verifyMcpRuntime(runtime, 'win32');
       expect(tampered.valid).toBe(false);
       expect(tampered.errors.join(' ')).toContain('bun.lock');
+      await makeMcpRuntime(runtime);
+      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0', '', { dependencies: { '@modelcontextprotocol/sdk': '^1.12.0', selfsigned: '^5.5.0', zod: '^3.24.0' }, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, 'sha512-wrong'] } }));
+      const wrongIntegrity = await verifyMcpRuntime(runtime, 'win32');
+      expect(wrongIntegrity.valid).toBe(false);
+      expect(wrongIntegrity.errors.join(' ')).toContain('npm integrity');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
