@@ -8,6 +8,7 @@ export const DSH_RUNTIME_NAME = 'dsh-rpgmaker-runtime';
 export interface HarnessPaths {
   dshHome: string;
   runtimeDir: string;
+  lockDir: string;
 }
 
 export interface PathOptions {
@@ -34,7 +35,8 @@ export function resolveHarnessPaths(options: PathOptions = {}): HarnessPaths {
   const runtimeDir = resolve(options.runtimeDir ?? env.DSH_RPGMAKER_RUNTIME ?? join(dshHome, 'rpgmaker-mv', 'runtime'));
   return {
     dshHome,
-    runtimeDir
+    runtimeDir,
+    lockDir: `${runtimeDir}.lock`
   };
 }
 

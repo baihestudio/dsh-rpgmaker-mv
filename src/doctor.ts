@@ -1,10 +1,9 @@
-import { join } from 'node:path';
-
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 import { resolveExecutable } from './executable';
-import { isRegularFile } from './files';
+import { withHarnessLock } from './lock';
+import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
 
 export interface DoctorOptions extends PathOptions {
   commandRunner?: CommandRunner;
@@ -12,6 +11,8 @@ export interface DoctorOptions extends PathOptions {
   pwshExecutable?: string;
   coreutilsExecutable?: string;
   gitExecutable?: string;
+  lockTimeoutMs?: number;
+  lockRetryMs?: number;
 }
 
 export interface DoctorCheck {
@@ -20,12 +21,6 @@ export interface DoctorCheck {
   ok: boolean;
   detail: string;
   path?: string;
-}
-
-export interface CredentialMetadata {
-  configured: boolean;
-  source: 'environment' | 'local-file' | 'missing';
-  path: string;
 }
 
 export interface DoctorReport {
@@ -68,26 +63,25 @@ async function commandVersion(
   }
 }
 
-function identifiesCoreutils(output: string): boolean {
-  return /microsoft|coreutils|uutils/i.test(output);
+function identifiesMicrosoftCoreutils(output: string, executablePath?: string): boolean {
+  return /Microsoft Coreutils/i.test(output) || /Microsoft[.]Coreutils/i.test(executablePath ?? '');
 }
 
 function check(id: string, label: string, ok: boolean, detail: string, path?: string): DoctorCheck {
   return { id, label, ok, detail: redactSensitive(detail), ...(path ? { path } : {}) };
 }
 
-export async function inspectCredentialMetadata(dshHome: string, env: Record<string, string | undefined>): Promise<CredentialMetadata> {
-  const path = join(dshHome, '.credentials.yaml');
-  const envConfigured = typeof env.DEEPSEEK_API_KEY === 'string' && env.DEEPSEEK_API_KEY.length > 0;
-  if (envConfigured) return { configured: true, source: 'environment', path };
-  if (await isRegularFile(path)) return { configured: true, source: 'local-file', path };
-  return { configured: false, source: 'missing', path };
-}
-
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const paths = resolveHarnessPaths({ ...options, platform, env });
+  return withHarnessLock(paths.lockDir, () => runDoctorUnlocked(options, platform, env, paths), {
+    timeoutMs: options.lockTimeoutMs,
+    retryMs: options.lockRetryMs
+  });
+}
+
+async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: Record<string, string | undefined>, paths: ReturnType<typeof resolveHarnessPaths>): Promise<DoctorReport> {
   const runner = options.commandRunner ?? runCommand;
   const commandEnv = withoutCredentials(env);
 
@@ -122,9 +116,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   const coreutilsFindVersion = await commandVersion(runner, coreutilsFind, commandEnv);
   const coreutilsGrepVersion = await commandVersion(runner, coreutilsGrep, commandEnv);
   const coreutilsOk = coreutilsVersion.ok && coreutilsFindVersion.ok && coreutilsGrepVersion.ok
-    && identifiesCoreutils(coreutilsVersion.output)
-    && identifiesCoreutils(coreutilsFindVersion.output)
-    && identifiesCoreutils(coreutilsGrepVersion.output);
+    && identifiesMicrosoftCoreutils(coreutilsVersion.output, coreutils)
+    && identifiesMicrosoftCoreutils(coreutilsFindVersion.output, coreutilsFind)
+    && identifiesMicrosoftCoreutils(coreutilsGrepVersion.output, coreutilsGrep);
   checks.push(check(
     'coreutils',
     'Microsoft Coreutils',

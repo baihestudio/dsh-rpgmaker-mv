@@ -1,17 +1,23 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename as fsRename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import { DSH_PACKAGE_NAME, DSH_RUNTIME_NAME, DSH_VERSION, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
-import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandResult, type CommandRunner } from './process';
+import { commandFailure, ProcessTerminationError, redactSensitive, runCommand, withoutCredentials, type CommandResult, type CommandRunner } from './process';
 import { pathExists } from './project';
+import { withHarnessLock } from './lock';
 
 const KOFFI_LOAD_EXPRESSION = "import('koffi').then(() => process.exit(0)).catch(() => process.exit(1))";
 const PACKAGE_SPEC = `${DSH_PACKAGE_NAME}@${DSH_VERSION}`;
+
+export type RenamePath = (from: string, to: string) => Promise<void>;
 
 export interface BootstrapOptions extends PathOptions {
   bunExecutable?: string;
   commandRunner?: CommandRunner;
   now?: () => Date;
+  lockTimeoutMs?: number;
+  lockRetryMs?: number;
+  renamePath?: RenamePath;
 }
 
 export interface RuntimeVerification {
@@ -30,9 +36,12 @@ export interface BootstrapResult {
 }
 
 export class BootstrapError extends Error {
-  constructor(message: string) {
+  readonly preserveStaging: boolean;
+
+  constructor(message: string, options: { preserveStaging?: boolean } = {}) {
     super(message);
     this.name = 'BootstrapError';
+    this.preserveStaging = options.preserveStaging ?? false;
   }
 }
 
@@ -169,34 +178,71 @@ async function runRequired(
     result = await runner(command, args, { cwd, env, timeoutMs: 15 * 60_000 });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    if (error instanceof ProcessTerminationError) {
+      throw new BootstrapError(`${label} could not confirm process-tree termination. The active runtime was not changed and staging was preserved at ${cwd}; inspect or remove it only after confirming no installer descendants remain.`, { preserveStaging: true });
+    }
     throw new BootstrapError(`${label} could not start. Install or repair Bun, then retry: ${redactSensitive(detail, redactionEnv)}`);
   }
   if (result.exitCode !== 0) throw failedCommand(command, args, result, redactionEnv);
 }
 
-async function swapRuntime(staging: string, runtimeDir: string, now: () => Date): Promise<string | undefined> {
+async function swapRuntime(staging: string, runtimeDir: string, now: () => Date, renamePath: RenamePath = fsRename): Promise<string | undefined> {
   await mkdir(dirname(runtimeDir), { recursive: true });
   const hadRuntime = await pathExists(runtimeDir);
   let rollbackDir: string | undefined;
   if (hadRuntime) {
     const stamp = now().toISOString().replace(/[-:.TZ]/g, '');
     rollbackDir = join(dirname(runtimeDir), `${basename(runtimeDir)}.rollback-${stamp}-${Math.random().toString(16).slice(2)}`);
-    await rename(runtimeDir, rollbackDir);
+    try {
+      await renamePath(runtimeDir, rollbackDir);
+    } catch (error) {
+      throw new BootstrapError(`Runtime swap could not move the current runtime; it remains usable at ${runtimeDir}. Staging will be discarded: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   try {
-    await rename(staging, runtimeDir);
+    await renamePath(staging, runtimeDir);
   } catch (error) {
     if (rollbackDir && await pathExists(rollbackDir) && !(await pathExists(runtimeDir))) {
-      await rename(rollbackDir, runtimeDir);
+      try {
+        await renamePath(rollbackDir, runtimeDir);
+      } catch (restoreError) {
+        throw new BootstrapError(`DEGRADED runtime swap: the active runtime is missing; prior runtime is preserved at ${rollbackDir}, staging is preserved at ${staging}, and restoration failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`, { preserveStaging: true });
+      }
+      throw new BootstrapError(`Runtime swap failed; the current runtime was restored at ${runtimeDir}. Staging can be discarded: ${error instanceof Error ? error.message : String(error)}`);
     }
-    throw new BootstrapError(`Runtime swap failed; current runtime was not changed: ${error instanceof Error ? error.message : String(error)}`);
+    throw new BootstrapError(`Runtime swap failed; active runtime remains ${await pathExists(runtimeDir) ? 'usable' : 'missing'} and staging is preserved at ${staging}: ${error instanceof Error ? error.message : String(error)}`, { preserveStaging: true });
   }
   return rollbackDir;
 }
 
+async function restoreAfterPostSwapFailure(runtimeDir: string, rollbackDir: string | undefined, now: () => Date, renamePath: RenamePath): Promise<string | undefined> {
+  const failedDir = join(dirname(runtimeDir), `${basename(runtimeDir)}.failed-${now().toISOString().replace(/[-:.TZ]/g, '')}-${Math.random().toString(16).slice(2)}`);
+  try {
+    await renamePath(runtimeDir, failedDir);
+  } catch (error) {
+    throw new BootstrapError(`DEGRADED post-swap verification: the active runtime at ${runtimeDir} is unverified, prior runtime remains at ${rollbackDir ?? 'none'}, and the failed tree could not be moved aside: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!rollbackDir) {
+    throw new BootstrapError(`DEGRADED post-swap verification: no active runtime remains; the unverified tree is preserved at ${failedDir}. Re-run bootstrap after inspecting it.`);
+  }
+  try {
+    await renamePath(rollbackDir, runtimeDir);
+  } catch (error) {
+    throw new BootstrapError(`DEGRADED post-swap verification: the active runtime is missing; unverified tree is preserved at ${failedDir}, prior runtime is preserved at ${rollbackDir}, and restoration failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return failedDir;
+}
+
 export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<BootstrapResult> {
   const paths: HarnessPaths = resolveHarnessPaths(options);
+  return withHarnessLock(paths.lockDir, () => bootstrapRuntimeUnlocked(options, paths), {
+    timeoutMs: options.lockTimeoutMs ?? 15 * 60_000,
+    retryMs: options.lockRetryMs
+  });
+}
+
+async function bootstrapRuntimeUnlocked(options: BootstrapOptions, paths: HarnessPaths): Promise<BootstrapResult> {
   const runtimeDir = paths.runtimeDir;
   const env = options.env ?? process.env;
   const commandEnv = withoutCredentials(env);
@@ -221,14 +267,13 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     }
 
     const wasPresent = await pathExists(runtimeDir);
-    const rollbackDir = await swapRuntime(staging, runtimeDir, now);
+    const renamePath = options.renamePath ?? fsRename;
+    const rollbackDir = await swapRuntime(staging, runtimeDir, now, renamePath);
     staging = undefined;
     const verification = await verifyRuntime(runtimeDir, { bunExecutable, commandRunner: runner, env: commandEnv, platform: options.platform });
     if (!verification.valid) {
-      // The staged tree was already verified, but do not leave a broken active tree if the filesystem changed during swap.
-      await rm(runtimeDir, { recursive: true, force: true });
-      if (rollbackDir && await pathExists(rollbackDir)) await rename(rollbackDir, runtimeDir);
-      throw new BootstrapError(`Post-swap runtime verification failed: ${verification.errors.join('; ')}. The current runtime was restored.`);
+      const failedDir = await restoreAfterPostSwapFailure(runtimeDir, rollbackDir, now, renamePath);
+      throw new BootstrapError(`Post-swap runtime verification failed: ${verification.errors.join('; ')}. The prior runtime was restored; unverified tree preserved at ${failedDir}.`);
     }
     return {
       status: wasPresent ? 'repaired' : 'installed',
@@ -237,7 +282,9 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       verification
     };
   } catch (error) {
-    if (staging) await rm(staging, { recursive: true, force: true });
+    if (staging && !(error instanceof BootstrapError && error.preserveStaging)) {
+      await rm(staging, { recursive: true, force: true });
+    }
     if (error instanceof BootstrapError) throw error;
     throw new BootstrapError(`Bootstrap failed; existing runtime was not changed: ${error instanceof Error ? error.message : String(error)}`);
   }

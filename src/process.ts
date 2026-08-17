@@ -1,10 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { join } from 'node:path';
 
 export interface CommandOptions {
   cwd?: string;
   env?: Record<string, string | undefined>;
   timeoutMs?: number;
   platform?: string;
+  signal?: AbortSignal;
 }
 
 export interface CommandResult {
@@ -28,9 +30,26 @@ export interface ProcessInvocation {
   args: string[];
 }
 
+export type ProcessTreeTerminator = (child: ChildProcess, options: CommandOptions) => Promise<void>;
+
+export interface CommandExecutionDependencies {
+  spawnProcess?: typeof spawn;
+  terminateProcessTree?: ProcessTreeTerminator;
+}
+
+export class ProcessTerminationError extends Error {
+  readonly processTreeTerminated = false;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProcessTerminationError';
+  }
+}
+
 function quoteWindowsCommandArgument(value: string): string {
   if (value.length > 0 && !/[\s\"&|<>^]/.test(value)) return value;
-  return `\"${value.replace(/(\\*)\"/g, '$1$1\\\"').replace(/(\\*)$/g, '$1$1')}\"`;
+  const escaped = value.replaceAll('"', `${String.fromCharCode(92)}"`);
+  return `"${escaped}"`;
 }
 
 export function prepareProcessInvocation(
@@ -53,13 +72,65 @@ function mergedEnvironment(env?: Record<string, string | undefined>): Record<str
   return result;
 }
 
-export const runCommand: CommandRunner = async (command, args, options) => {
+function waitForChildExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    child.once('close', done);
+    child.once('error', done);
+  });
+}
+
+async function runTaskkill(pid: number, env?: Record<string, string | undefined>): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const taskkill = env?.SystemRoot ? join(env.SystemRoot, 'System32', 'taskkill.exe') : 'taskkill.exe';
+    const child = spawn(taskkill, ['/PID', String(pid), '/T', '/F'], {
+      env: mergedEnvironment(env),
+      shell: false,
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'ignore']
+    });
+    child.once('error', reject);
+    child.once('close', (code) => resolve(code ?? 1));
+  });
+}
+
+export const terminateProcessTree: ProcessTreeTerminator = async (child, options) => {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  if ((options.platform ?? process.platform) === 'win32' && child.pid) {
+    const exitCode = await runTaskkill(child.pid, options.env);
+    if (exitCode !== 0 && child.exitCode === null && child.signalCode === null) {
+      throw new ProcessTerminationError(`taskkill could not terminate process tree for PID ${child.pid}`);
+    }
+  } else {
+    if (!child.kill('SIGTERM')) throw new ProcessTerminationError('the child process rejected termination');
+  }
+  await waitForChildExit(child);
+};
+
+export async function executeCommand(
+  command: string,
+  args: string[],
+  options: CommandOptions,
+  dependencies: CommandExecutionDependencies = {}
+): Promise<CommandResult> {
   return new Promise<CommandResult>((resolve, reject) => {
     let settled = false;
+    let terminating = false;
+    let terminationStarted = false;
     let stdout = '';
     let stderr = '';
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let onAbort = (): void => undefined;
+    const spawnProcess = dependencies.spawnProcess ?? spawn;
+    const terminate = dependencies.terminateProcessTree ?? terminateProcessTree;
     const invocation = prepareProcessInvocation(command, args, options.platform, options.env);
-    const child = spawn(invocation.command, invocation.args, {
+    const child = spawnProcess(invocation.command, invocation.args, {
       cwd: options.cwd,
       env: mergedEnvironment(options.env),
       shell: false,
@@ -70,6 +141,8 @@ export const runCommand: CommandRunner = async (command, args, options) => {
     const finish = (result: CommandResult): void => {
       if (settled) return;
       settled = true;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (options.signal) options.signal.removeEventListener('abort', onAbort);
       resolve(result);
     };
 
@@ -78,23 +151,52 @@ export const runCommand: CommandRunner = async (command, args, options) => {
     child.stdout?.on('data', (chunk: string) => { stdout += chunk; });
     child.stderr?.on('data', (chunk: string) => { stderr += chunk; });
     child.once('error', (error) => {
+      if (terminating) {
+        stderr += `\n${error instanceof Error ? error.message : String(error)}`;
+        return;
+      }
       if (settled) return;
       settled = true;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (options.signal) options.signal.removeEventListener('abort', onAbort);
       reject(error);
     });
     child.once('close', (code) => {
+      if (terminating) return;
       finish({ exitCode: code ?? 1, stdout, stderr });
     });
 
+    const startTermination = (exitCode: number, message: string): void => {
+      if (terminationStarted || settled) return;
+      terminationStarted = true;
+      terminating = true;
+      void (async () => {
+        try {
+          await terminate(child, options);
+          finish({ exitCode, stdout, stderr: `${stderr}\n${message}`.trim() });
+        } catch (error) {
+          if (settled) return;
+          settled = true;
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          if (options.signal) options.signal.removeEventListener('abort', onAbort);
+          reject(error instanceof ProcessTerminationError ? error : new ProcessTerminationError(error instanceof Error ? error.message : String(error)));
+        }
+      })();
+    };
+
+    onAbort = (): void => startTermination(130, 'command cancelled');
+    if (options.signal) {
+      options.signal.addEventListener('abort', onAbort, { once: true });
+      if (options.signal.aborted) onAbort();
+    }
     if (options.timeoutMs && options.timeoutMs > 0) {
-      setTimeout(() => {
-        if (settled) return;
-        child.kill();
-        finish({ exitCode: 124, stdout, stderr: `${stderr}\ncommand timed out`.trim() });
-      }, options.timeoutMs).unref();
+      timeoutHandle = setTimeout(() => startTermination(124, 'command timed out'), options.timeoutMs);
+      timeoutHandle.unref?.();
     }
   });
-};
+}
+
+export const runCommand: CommandRunner = (command, args, options) => executeCommand(command, args, options);
 
 export const spawnInteractive: InteractiveSpawner = (command, args, options) => {
   const invocation = prepareProcessInvocation(command, args, options.platform, options.env);

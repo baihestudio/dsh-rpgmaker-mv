@@ -3,9 +3,10 @@ import { resolve } from 'node:path';
 import { findDshExecutable } from './bootstrap';
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
-import { inspectCredentialMetadata } from './doctor';
+import { inspectCredentialMetadata } from './credentials';
 import { childExitCode, runCommand, spawnInteractive, withoutCredentials, type CommandRunner, type InteractiveSpawner } from './process';
 import { assertValidMvProject, pathExists, type ProjectValidation } from './project';
+import { withHarnessLock } from './lock';
 
 export const SINGLE_WRITER_NOTICE = [
   'Agent single-writer contract',
@@ -31,11 +32,11 @@ export interface LaunchOptions extends PathOptions {
   projectPath?: string;
   dshExecutable?: string;
   dshArgs?: string[];
-  platform?: string;
-  env?: Record<string, string | undefined>;
   commandRunner?: CommandRunner;
   spawnInteractive?: InteractiveSpawner;
   notify?: (message: string) => void;
+  lockTimeoutMs?: number;
+  lockRetryMs?: number;
 }
 
 export interface LaunchResult {
@@ -102,6 +103,19 @@ export async function launchProject(options: LaunchOptions = {}): Promise<Launch
     env,
     commandRunner: options.commandRunner
   });
+  return withHarnessLock(paths.lockDir, () => launchProjectUnlocked(options, platform, env, paths, projectPath), {
+    timeoutMs: options.lockTimeoutMs,
+    retryMs: options.lockRetryMs
+  });
+}
+
+async function launchProjectUnlocked(
+  options: LaunchOptions,
+  platform: string,
+  env: Record<string, string | undefined>,
+  paths: ReturnType<typeof resolveHarnessPaths>,
+  projectPath: string
+): Promise<LaunchResult> {
   let validation: ProjectValidation;
   try {
     validation = await assertValidMvProject(projectPath);

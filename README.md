@@ -14,7 +14,7 @@ Install Bun, PowerShell 7.4+, Git for Windows, and Microsoft Coreutils for Windo
 ./doctor.ps1
 ```
 
-`bootstrap.ps1` builds a fresh staging tree with the pinned `@deepseek-ai/dsh@0.1.0-rc.6`, runs `bun pm trust --all`, verifies the installed DSH package and `koffi`, then swaps it into place. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched. Re-running against a valid runtime is a no-op.
+`bootstrap.ps1` builds a fresh staging tree with the pinned `@deepseek-ai/dsh@0.1.0-rc.6`, runs `bun pm trust --all`, verifies the installed DSH package and `koffi`, then swaps it into place. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched. If process termination or rollback cannot be confirmed, the lock reports a degraded state and preserves recoverable staging/rollback paths for manual recovery. Re-running against a valid runtime is a no-op; bootstrap, doctor, and launch serialize through the same runtime lock.
 
 The app-owned runtime defaults under the configured DSH home. Set `DSH_HOME` or `DSH_RPGMAKER_RUNTIME` to use a test-owned or alternate location. The doctor checks the actual executable paths and versions visible to the launcher, rather than trusting package-manager metadata.
 
@@ -43,7 +43,7 @@ bun test
 bun run check
 ```
 
-Tests use disposable runtime, DSH home, credential, and MV project directories. They do not touch a user's installed DSH state, RPG Maker projects, applications, or credentials.
+Tests use disposable runtime, DSH home, credential, and MV project directories. They do not touch a user's installed DSH state, RPG Maker projects, applications, or credentials. The current macOS substitute suite uses fake prerequisite/runtime executables; the real PowerShell/Coreutils identity, Windows `.cmd` launch, spaces/CJK path, and installed DSH checks remain a release gate on a Windows runner in foundation ticket 06.
 
 ## Editing model
 

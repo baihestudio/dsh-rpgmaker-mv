@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -7,7 +8,7 @@ import { bootstrapRuntime, findDshExecutable } from '../src/bootstrap';
 import { runDoctor } from '../src/doctor';
 import { launchProject, pickProjectDirectory } from '../src/launcher';
 import { runCli } from '../src/cli';
-import { prepareProcessInvocation } from '../src/process';
+import { executeCommand, prepareProcessInvocation, ProcessTerminationError } from '../src/process';
 import { validateMvProject } from '../src/project';
 
 async function disposableDirectory(prefix: string): Promise<string> {
@@ -44,6 +45,57 @@ async function makeRuntime(runtime: string, version = '0.1.0-rc.6'): Promise<voi
   await writeFile(join(runtime, 'node_modules', '.bin', 'dsh'), '#!/usr/bin/env bun\n');
 }
 
+
+  test('timeout does not resolve until process-tree termination completes', async () => {
+    const child = new EventEmitter() as EventEmitter & { pid: number; exitCode: number | null; signalCode: NodeJS.Signals | null };
+    child.pid = 4123;
+    child.exitCode = null;
+    child.signalCode = null;
+    let releaseTermination: (() => void) | undefined;
+    let terminationStarted = false;
+    const command = executeCommand('fake-process', [], { platform: 'win32', timeoutMs: 5 }, {
+      spawnProcess: (() => child) as never,
+      terminateProcessTree: async () => {
+        terminationStarted = true;
+        await new Promise<void>((resolve) => { releaseTermination = resolve; });
+        child.exitCode = 1;
+        child.emit('close', 1);
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(terminationStarted).toBe(true);
+    let resolved = false;
+    void command.then(() => { resolved = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(resolved).toBe(false);
+    releaseTermination?.();
+    await expect(command).resolves.toMatchObject({ exitCode: 124 });
+  });
+  test('bootstrap preserves staging when installer process-tree termination is unconfirmed', async () => {
+    const root = await disposableDirectory('runtime-timeout-preserve');
+    try {
+      let caught: unknown;
+      try {
+        await bootstrapRuntime({
+          runtimeDir: join(root, 'runtime'),
+          bunExecutable: 'bun',
+          commandRunner: async (_command, args) => {
+            if (args[0] === 'add') throw new ProcessTerminationError('installer descendants are still running');
+            return { exitCode: 0, stdout: '', stderr: '' };
+          }
+        });
+      } catch (error) {
+        caught = error;
+      }
+      const entries = await readdir(root);
+      expect(String(caught)).toContain('staging was preserved');
+      expect(entries.some((entry) => entry.startsWith('.runtime.staging-'))).toBe(true);
+      await expect(readFile(join(root, 'runtime', 'package.json'), 'utf8')).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 describe('RPG Maker MV project boundary', () => {
   test('accepts a project marker and data/js directories in a path with spaces and CJK', async () => {
     const root = await disposableDirectory('mv-project');
@@ -207,8 +259,45 @@ describe('staged DSH runtime bootstrap', () => {
             return { exitCode: 0, stdout: '', stderr: '' };
           }
         })
-      ).rejects.toThrow(/current runtime was restored/i);
+      ).rejects.toThrow(/prior runtime was restored/i);
       expect(await readFile(join(runtime, 'package.json'), 'utf8')).toBe(oldPackage);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reports degraded state and preserves paths when rollback restoration fails', async () => {
+    const root = await disposableDirectory('runtime-degraded');
+    try {
+      const runtime = join(root, 'runtime');
+      await makeRuntime(runtime, '0.1.0-rc.5');
+      let renameCalls = 0;
+      let caught: unknown;
+      try {
+        await bootstrapRuntime({
+          runtimeDir: runtime,
+          bunExecutable: 'bun',
+          renamePath: async (from, to) => {
+            renameCalls += 1;
+            if (renameCalls === 2 || renameCalls === 3) throw new Error(`injected rename failure ${renameCalls}`);
+            await rename(from, to);
+          },
+          commandRunner: async (_command, args, options) => {
+            if (args[0] === 'add') await makeRuntime(options.cwd!);
+            return { exitCode: 0, stdout: '', stderr: '' };
+          }
+        });
+      } catch (error) {
+        caught = error;
+      }
+      const entries = await readdir(root);
+      expect(String(caught)).toContain('DEGRADED');
+      expect(String(caught)).toContain('active runtime is missing');
+      expect(String(caught)).not.toContain('current runtime was not changed');
+      expect(renameCalls).toBe(3);
+      expect(entries.some((entry) => entry.startsWith('runtime.rollback-'))).toBe(true);
+      expect(entries.some((entry) => entry.startsWith('.runtime.staging-'))).toBe(true);
+      await expect(readFile(join(runtime, 'package.json'), 'utf8')).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -237,6 +326,92 @@ describe('staged DSH runtime bootstrap', () => {
   });
 });
 
+
+describe('runtime access lock', () => {
+  test('doctor and launcher wait while bootstrap owns the swap transaction', async () => {
+    const root = await disposableDirectory('runtime-lock');
+    try {
+      const runtime = join(root, 'runtime');
+      const dshHome = join(root, 'dsh-home');
+      const project = await makeMvProject(root);
+      const bin = join(root, 'bin');
+      await mkdir(bin, { recursive: true });
+      for (const name of ['pwsh', 'coreutils-manager', 'find', 'grep', 'git', 'bun']) await writeFile(join(bin, name), '');
+
+      let signalBootstrapHold: (() => void) | undefined;
+      let releaseBootstrapHold: (() => void) | undefined;
+      const bootstrapHoldStarted = new Promise<void>((resolve) => { signalBootstrapHold = resolve; });
+      const bootstrapHold = new Promise<void>((resolve) => { releaseBootstrapHold = resolve; });
+      const commandRunner = async (command: string, args: string[], options: { cwd?: string }) => {
+        if (args[0] === 'add') {
+          await makeRuntime(options.cwd!);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'pm') {
+          signalBootstrapHold?.();
+          await bootstrapHold;
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
+        const name = command.split(/[\\/]/).pop();
+        if (name === 'pwsh') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
+        if (name === 'bun') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
+        if (name === 'git') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
+        if (name === 'coreutils-manager') return { exitCode: 0, stdout: 'Microsoft Coreutils 0.1.0', stderr: '' };
+        if (name === 'find' || name === 'grep') return { exitCode: 0, stdout: `${name} (Microsoft Coreutils) 0.1.0`, stderr: '' };
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+
+      const installing = bootstrapRuntime({
+        runtimeDir: runtime,
+        dshHome,
+        env: { PATH: bin, DSH_HOME: dshHome },
+        bunExecutable: 'bun',
+        commandRunner,
+        lockTimeoutMs: 1000,
+        lockRetryMs: 5
+      });
+      await bootstrapHoldStarted;
+
+      let doctorFinished = false;
+      let launched = false;
+      const doctor = runDoctor({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        env: { PATH: bin, DSH_HOME: dshHome },
+        commandRunner,
+        lockTimeoutMs: 1000,
+        lockRetryMs: 5
+      }).then((report) => { doctorFinished = true; return report; });
+      const launch = launchProject({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        projectPath: project,
+        env: { PATH: bin, DSH_HOME: dshHome },
+        commandRunner,
+        spawnInteractive: () => { launched = true; return { pid: 99 }; },
+        lockTimeoutMs: 1000,
+        lockRetryMs: 5
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(doctorFinished).toBe(false);
+      expect(launched).toBe(false);
+      releaseBootstrapHold?.();
+
+      await installing;
+      const report = await doctor;
+      await launch;
+      expect(report.runtime.valid).toBe(true);
+      expect(launched).toBe(true);
+      expect(await readFile(join(runtime, 'package.json'), 'utf8')).toContain('0.1.0-rc.6');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 describe('doctor and launcher seams', () => {
   test('doctor reports prerequisites and never echoes the credential value', async () => {
     const root = await disposableDirectory('doctor');
@@ -272,6 +447,26 @@ describe('doctor and launcher seams', () => {
       expect(report.credentials.configured).toBe(true);
       expect(JSON.stringify(report)).not.toContain(secret);
       expect(report.checks.map((check) => check.id)).toEqual(expect.arrayContaining(['powershell', 'coreutils', 'git', 'bun', 'dsh-runtime', 'credentials']));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('doctor rejects non-Microsoft uutils/coreutils lookalikes', async () => {
+    const root = await disposableDirectory('doctor-coreutils-identity');
+    try {
+      const bin = join(root, 'bin');
+      await mkdir(bin, { recursive: true });
+      for (const name of ['coreutils-manager', 'find', 'grep']) await writeFile(join(bin, name), '');
+      const report = await runDoctor({
+        platform: 'darwin',
+        env: { PATH: bin },
+        commandRunner: async (command) => {
+          const name = command.split(/[\\/]/).pop();
+          return { exitCode: 0, stdout: `${name} (uutils/coreutils) 0.1.0`, stderr: '' };
+        }
+      });
+      expect(report.checks.find((check) => check.id === 'coreutils')?.ok).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
