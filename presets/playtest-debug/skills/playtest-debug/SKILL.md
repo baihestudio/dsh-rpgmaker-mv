@@ -6,15 +6,17 @@ description: Static validation and truthful RPG Maker MV NW.js Playtest diagnosi
 # Playtest Debug workflow
 
 Use the existing `rpgmaker_mv` MCP. Before starting Playtest, call
-`validate_project` and stop if it reports errors. Call `playtest_status` first and refuse to start if another Playtest is already running; `playtest_start` stops any existing tracked process. Then call
+`validate_project` and stop if it reports errors. Call `playtest_status` first and refuse to start if another Playtest is already running; never rely on `playtest_start` to stop an unrelated session. Then call
 `playtest_start` with `mode: "nwjs"` and an explicit `runtimePath` when the
 Windows NW.js executable is known. A successful start is only process-launch
 success.
 
 Observe with `playtest_status` and `playtest_log`. Classify immediate exit,
 MCP/startup errors, and useful stderr/stdout as launch or crash evidence. Call
-`playtest_stop` on every normal, timeout, cancellation, or failed-launch path,
-then check status so no tracked Playtest process remains. Report cleanup as unconfirmed unless status is explicitly stopped and the owning process-tree verifier confirms no descendants.
+`playtest_stop` on normal, timeout, cancellation, or failed-launch paths only
+when this workflow owns the returned PID; after a failed/raced start with no
+PID, never stop an unrelated session. Check status and report cleanup as
+unconfirmed if ownership or descendants cannot be proven.
 
 Report separate fields/outcomes for:
 

@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
 
 const profileModule = await import(pathToFileURL(process.env.PROFILE_FILE).href);
 const environmentModule = await import(pathToFileURL(process.env.ENVIRONMENT_MODULE).href);
@@ -20,9 +21,32 @@ try {
   if (preset.id !== 'rpgmaker') throw new Error(`unexpected preset ${preset.id}`);
   await presets.standingKeyFor('rpgmaker');
   const tools = mounted.ctx.get('tools');
+  const debugKey = await presets.standingKeyFor('playtest-debug');
   const schemas = tools?.schemas?.() ?? [];
+  const standingSchemas = tools?.schemas?.(debugKey) ?? [];
   const mcpTools = schemas.filter((schema) => schema.name?.startsWith('mcp__rpgmaker_mv__'));
   if (mcpTools.length < 41) throw new Error(`official DSH registered only ${mcpTools.length} RPG Maker tools`);
+  const agentLoop = mounted.ctx.get('agentLoop');
+  if (!agentLoop) throw new Error('official DSH agent-loop service did not mount');
+  let agentHandle;
+  let workflowResult;
+  try {
+    agentHandle = await agentLoop.createAgent(mounted.ctx, {
+      sessionId: randomUUID(),
+      meta: { cwd: process.cwd(), agentPreset: 'playtest-debug' },
+      setup: async (agentCtx) => { await presets.mount(agentCtx, 'playtest-debug'); }
+    });
+    const workflowSchema = standingSchemas.find((schema) => schema.name === 'playtest_debug');
+    if (!workflowSchema) throw new Error(`playtest-debug workflow tool did not mount on its standing scope: [${standingSchemas.map((schema) => schema.name).join(', ')}]`);
+    const workflowCode = `return await tools.playtest_debug(${JSON.stringify({ runtimePath: process.env.MISSING_NWJS_PATH ?? '/missing/Game.exe' })})`;
+    workflowResult = await tools.execute({ agent: agentHandle.agent, callId: 'phase3-workflow', name: 'run_code', arguments: { code: workflowCode, description: 'Run the Playtest Debug workflow against the selected project.' }, signal: new AbortController().signal });
+    const workflowValue = workflowResult.value ?? workflowResult;
+    const workflowText = workflowValue?.content?.find?.((block) => block?.type === 'text')?.text;
+    const workflowReport = workflowValue?.result ?? (typeof workflowText === 'string' ? JSON.parse(workflowText) : workflowValue);
+    if (workflowResult.isError || workflowReport?.outcome !== 'launch-failed') throw new Error(`playtest-debug workflow did not fail truthfully on missing runtime: ${JSON.stringify(workflowResult)}`);
+  } finally {
+    if (agentHandle) await agentHandle.dispose();
+  }
 
   let callNumber = 0;
   const call = async (name, args) => {
@@ -62,7 +86,7 @@ try {
   if (restored?.name !== 'Hero') throw new Error('restore reread did not restore the actor record');
   const finalValidation = unwrap(await call('validate_project', {}));
   if (finalValidation?.ok !== true) throw new Error('restore validation failed');
-  console.log(JSON.stringify({ ok: true, preset: preset.id, mcpTools: mcpTools.length, calls: callNumber, mutation: reread.name, restored: restored.name }));
+  console.log(JSON.stringify({ ok: true, preset: preset.id, debugWorkflow: 'launch-failed', mcpTools: mcpTools.length, calls: callNumber, mutation: reread.name, restored: restored.name }));
 } finally {
   if (mounted) await mounted.shutdown.shutdown(0);
 }
