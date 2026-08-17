@@ -5,7 +5,10 @@ description: Static validation and truthful RPG Maker MV NW.js Playtest diagnosi
 
 # Playtest Debug workflow
 
-Use the existing `rpgmaker_mv` MCP. Before starting Playtest, call
+Use the preset's registered `playtest_debug` workflow for the complete loop;
+it delegates to the existing session-scoped `mcp__rpgmaker_mv__*` tools and does
+not start another MCP server. Use the individual tools only when the workflow
+report identifies a targeted follow-up. Before starting Playtest, call
 `validate_project` and stop if it reports errors. Call `playtest_status` first and refuse to start if another Playtest is already running; never rely on `playtest_start` to stop an unrelated session. Then call
 `playtest_start` with `mode: "nwjs"` and an explicit `runtimePath` when the
 Windows NW.js executable is known. A successful start is only process-launch

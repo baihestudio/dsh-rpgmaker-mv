@@ -43,7 +43,11 @@ try {
     const workflowValue = workflowResult.value ?? workflowResult;
     const workflowText = workflowValue?.content?.find?.((block) => block?.type === 'text')?.text;
     const workflowReport = workflowValue?.result ?? (typeof workflowText === 'string' ? JSON.parse(workflowText) : workflowValue);
-    if (workflowResult.isError || workflowReport?.outcome !== 'launch-failed') throw new Error(`playtest-debug workflow did not fail truthfully on missing runtime: ${JSON.stringify(workflowResult)}`);
+    const firstStatus = Array.isArray(workflowReport?.statuses) ? workflowReport.statuses[0] : undefined;
+    const missingRuntimeEvidence = `${workflowReport?.error ?? ''}\n${workflowReport?.log ?? ''}`;
+    if (workflowResult.isError || workflowReport?.outcome !== 'launch-failed' || workflowReport?.staticValidation?.ok !== true || firstStatus?.running !== false || !/NW\.js runtime not found|missing runtime/i.test(missingRuntimeEvidence)) {
+      throw new Error(`playtest-debug workflow did not resolve the existing MCP scope and fail truthfully on missing runtime: ${JSON.stringify(workflowResult)}`);
+    }
   } finally {
     if (agentHandle) await agentHandle.dispose();
   }

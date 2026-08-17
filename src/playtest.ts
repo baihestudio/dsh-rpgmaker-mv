@@ -1,7 +1,6 @@
-import { assertValidMvProject } from './project';
 import type { PlaytestProcessController } from './playtest-process';
 // @ts-ignore The preset copy is the runtime-shared JS module loaded by DSH and tests.
-import { runPlaytestWorkflow } from '../presets/playtest-debug/playtest-debug-core.js';
+import { runPlaytestDebug as runCorePlaytestDebug } from '../presets/playtest-debug/playtest-debug-core.js';
 
 export type PlaytestToolCaller = (tool: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
 
@@ -14,6 +13,8 @@ export interface PlaytestDebugOptions {
   pollIntervalMs?: number;
   timeoutMs?: number;
   callTimeoutMs?: number;
+  cleanupTimeoutMs?: number;
+  lateGraceMs?: number;
   verifyProcessTree?: (pid: number) => Promise<boolean>;
   terminateProcessTree?: (pid: number) => Promise<void>;
   processTree?: PlaytestProcessController;
@@ -38,19 +39,5 @@ export interface PlaytestDebugReport {
 }
 
 export async function runPlaytestDebug(options: PlaytestDebugOptions): Promise<PlaytestDebugReport> {
-  try {
-    await assertValidMvProject(options.projectPath);
-  } catch (error) {
-    return {
-      outcome: 'static-validation-failed',
-      staticValidation: { ok: false, errors: [error instanceof Error ? error.message : String(error)], warnings: [] },
-      processLaunched: false,
-      behaviorVerified: false,
-      statuses: [],
-      log: '',
-      cleanupVerified: false,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-  return runPlaytestWorkflow(options) as Promise<PlaytestDebugReport>;
+  return runCorePlaytestDebug(options) as Promise<PlaytestDebugReport>;
 }

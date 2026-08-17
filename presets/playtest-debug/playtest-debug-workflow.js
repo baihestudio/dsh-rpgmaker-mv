@@ -1,7 +1,9 @@
-import { runPlaytestWorkflow } from './playtest-debug-core.js'
+import { runPlaytestDebug } from './playtest-debug-core.js'
 
 export const name = 'playtest-debug-workflow'
 export const inject = ['tools']
+
+let nestedCallNumber = 0
 
 export function apply(ctx) {
   ctx.effect(() => ctx.tools.register({
@@ -13,15 +15,19 @@ export function apply(ctx) {
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }]
     },
     timeoutMs: 120000,
-    execute: (args, exec) => runPlaytestWorkflow({
+    execute: (args, exec) => runPlaytestDebug({
       projectPath: process.cwd(),
       runtimePath: args?.runtimePath,
       signal: exec.signal,
-      callTool: (tool, input, signal) => {
-        const request = { callId: `playtest-debug-${Date.now()}-${tool}`, name: `mcp__rpgmaker_mv__${tool}`, arguments: input, signal: signal ?? exec.signal }
-        if (exec.parent !== undefined) request.parent = exec.parent
-        return ctx.tools.execute(request)
-      }
+      callTool: (tool, input, signal) => ctx.tools.execute({
+        callId: `${exec.callId}:playtest:${++nestedCallNumber}:${tool}`,
+        rootCallId: exec.rootCallId,
+        agent: exec.agent,
+        parent: exec.token,
+        name: `mcp__rpgmaker_mv__${tool}`,
+        arguments: input,
+        signal: signal ?? exec.signal
+      })
     })
   }))
 }
