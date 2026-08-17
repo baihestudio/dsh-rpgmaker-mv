@@ -9,7 +9,8 @@
     "check": "bunx tsc --noEmit",
     "bootstrap": "bun run src/cli.ts bootstrap",
     "doctor": "bun run src/cli.ts doctor",
-    "launch": "bun run src/cli.ts launch"
+    "launch": "bun run src/cli.ts launch",
+    "phase2:real": "bun run scripts/phase2-real-acceptance.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",

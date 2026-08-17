@@ -1,6 +1,7 @@
 import { bootstrapRuntime, BootstrapError } from './bootstrap';
 import { runDoctor, renderDoctorReport } from './doctor';
 import { launchProject, SINGLE_WRITER_NOTICE, LauncherError } from './launcher';
+import { launchRpgmakerProject } from './rpgmaker';
 import { childExitCode, redactSensitive, type CommandRunner, type InteractiveSpawner } from './process';
 
 export interface CliIO {
@@ -14,6 +15,7 @@ export interface CliDependencies {
   io?: CliIO;
   commandRunner?: CommandRunner;
   spawnInteractive?: InteractiveSpawner;
+  rpgmaker?: boolean;
 }
 
 interface ParsedArgs {
@@ -118,14 +120,17 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
     if (parsed.command === 'launch') {
       // This notice is intentionally unconditional: do not detect editor processes or infer write ownership.
       io.stdout.write(`${SINGLE_WRITER_NOTICE}\n\n`);
-      const result = await launchProject({
+      const launchOptions = {
         ...baseOptions(parsed, dependencies),
         projectPath: option(parsed.values, 'project'),
         dshExecutable: option(parsed.values, 'dsh-executable'),
         dshArgs: [],
         spawnInteractive: dependencies.spawnInteractive,
-        notify: (message) => io.stdout.write(`${message}\n`)
-      });
+        notify: (message: string) => io.stdout.write(`${message}\n`)
+      };
+      const result = dependencies.rpgmaker === false
+        ? await launchProject(launchOptions)
+        : await launchRpgmakerProject(launchOptions);
       io.stdout.write(`Launching official DSH in ${result.projectPath}\n`);
       return await childExitCode(result.child);
     }

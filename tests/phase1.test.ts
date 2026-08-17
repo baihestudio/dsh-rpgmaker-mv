@@ -653,6 +653,7 @@ describe('doctor and launcher seams', () => {
       const code = await runCli(['launch', '--project', project, '--dsh-executable', dsh, '--dsh-home', join(root, 'dsh-home')], {
         platform: 'win32',
         env: {},
+        rpgmaker: false,
         io: { stdout: { write: (text) => { output += text; } }, stderr: { write: () => undefined } },
         spawnInteractive: () => {
           const child = makeTrackedChild();
