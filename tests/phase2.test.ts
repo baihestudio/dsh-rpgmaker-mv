@@ -71,7 +71,8 @@ describe('RPG Maker MCP deployment', () => {
         return { exitCode: 0, stdout: '', stderr: '' };
       };
       const schemaProbe = async (request: { command: string; args: string[]; cwd: string }) => {
-        expect(request.args).toEqual(['--project', project]);
+        expect(request.args[0].endsWith('.js')).toBe(true);
+        expect(request.args.slice(1)).toEqual(['--project', project]);
         expect(request.cwd).toBe(project);
         return { tools: toolNames() };
       };
@@ -87,14 +88,19 @@ describe('RPG Maker MCP deployment', () => {
         schemaProbe
       });
       expect(addCalls).toBe(1);
+      expect(requests.some((request) => request.args[0] === 'pm')).toBe(false);
       expect(deployment.mcpPackageVersion).toBe('0.1.0');
-      expect(deployment.mcpExecutable.endsWith('.cmd')).toBe(true);
+      expect(deployment.mcpScript.endsWith('.js')).toBe(true);
+      expect(deployment.mcpArgs.slice(1)).toEqual(['--project', project]);
       expect(deployment.toolNames).toContain('update_record');
       expect(await readFile(deployment.compositionPath, 'utf8')).toContain("name: '@deepseek-ai/dsh-mcp-client'");
       const composition = await readFile(deployment.compositionPath, 'utf8');
       expect(composition).toContain('serverName: rpgmaker_mv');
       expect(composition).toContain('failOnStartupError: true');
-      expect(composition).toContain("args: ['--project', !!js process.cwd()]");
+      expect(composition).toContain('args: [');
+      expect(composition).toContain("'--project', !!js process.cwd()");
+      expect(composition).not.toContain('.cmd');
+      expect(composition).not.toContain('cmd.exe');
       expect(composition).toContain('- patch:\n    id: agent-presets');
       expect(composition).toContain('default: rpgmaker');
       expect((composition.match(/id: mcp-rpgmaker-mv/g) ?? [])).toHaveLength(1);
@@ -105,6 +111,7 @@ describe('RPG Maker MCP deployment', () => {
       expect(await readFile(join(deployment.presetDir, 'skills', 'rpgmaker-mv', 'SKILL.md'), 'utf8')).toContain('validate_project');
       expect(composition).not.toContain('DEEPSEEK_API_KEY');
       expect(deployment.presetRoot).toContain('.agent-presets');
+      expect(JSON.parse(await readFile(join(deployment.presetDir, '.dsh-rpgmaker-owned.json'), 'utf8')).owner).toBe('dsh-rpgmaker-mv');
 
       await prepareRpgMakerDeployment({
         platform: 'win32',
@@ -122,6 +129,34 @@ describe('RPG Maker MCP deployment', () => {
     }
   });
 
+  test('refuses to replace an unowned rpgmaker preset directory', async () => {
+    const root = await temp('phase2-preset-owner');
+    try {
+      const project = await makeProject(root);
+      const runtime = await makeDshRuntime(root);
+      const dshHome = join(root, 'dsh-home');
+      const unowned = join(dshHome, '.agent-presets', 'rpgmaker');
+      await mkdir(unowned, { recursive: true });
+      await writeFile(join(unowned, 'user-note.txt'), 'keep me');
+      await expect(prepareRpgMakerDeployment({
+        platform: 'win32',
+        dshHome,
+        runtimeDir: runtime,
+        projectPath: project,
+        sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'),
+        commandRunner: async (_command, args, options) => {
+          if (args[0] === 'add') await makeMcpRuntime(options.cwd!);
+          if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: agent-presets\n  default: rpgmaker\n', stderr: '' };
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+        schemaProbe: async () => ({ tools: toolNames() })
+      })).rejects.toThrow(/unowned preset directory/i);
+      expect(await readFile(join(unowned, 'user-note.txt'), 'utf8')).toBe('keep me');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('rejects an MCP package bin that escapes the app-owned runtime', async () => {
     const root = await temp('phase2-mcp-trust');
     try {
@@ -133,6 +168,31 @@ describe('RPG Maker MCP deployment', () => {
       const verification = await verifyMcpRuntime(runtime, 'win32');
       expect(verification.valid).toBe(false);
       expect(verification.executable).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('fails visibly when MCP schemas are outside DSH supported JSON Schema', async () => {
+    const root = await temp('phase2-schema-shape');
+    try {
+      const project = await makeProject(root);
+      const runtime = await makeDshRuntime(root);
+      const tools = toolNames();
+      tools[0] = { name: tools[0].name, inputSchema: { type: ['string', 'number'] } };
+      await expect(prepareRpgMakerDeployment({
+        platform: 'win32',
+        dshHome: join(root, 'dsh-home'),
+        runtimeDir: runtime,
+        projectPath: project,
+        sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'),
+        commandRunner: async (_command, args, options) => {
+          if (args[0] === 'add') await makeMcpRuntime(options.cwd!);
+          if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: agent-presets\n  default: rpgmaker\n', stderr: '' };
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+        schemaProbe: async () => ({ tools })
+      })).rejects.toThrow(/type array unsupported/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -255,7 +315,7 @@ describe('RPG Maker mutation verification loop', () => {
       await loop.updateEventDialogue(1, 1, ['Welcome, hero.']);
       await loop.updateMapMetadata(1, { displayName: 'Opening' });
       await loop.configurePlugin('TestPlugin', { status: false });
-      await loop.restoreBackup('session-1');
+      await loop.restoreBackup('session-1', undefined, { tool: 'get_project_info', args: {}, matches: (value) => (value as { root?: string }).root === project });
       expect(JSON.parse(await readFile(join(project, 'data', 'Actors.json'), 'utf8'))[1].name).toBe('Hero');
       expect(JSON.parse(await readFile(join(project, 'data', 'Map001.json'), 'utf8')).displayName).toBe('Opening');
       expect(calls).toEqual([
@@ -265,6 +325,26 @@ describe('RPG Maker mutation verification loop', () => {
         'configure_plugin', 'list_plugins', 'validate_project',
         'restore_backup', 'get_project_info', 'validate_project'
       ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects MCP isError and unchanged rereads before reporting success', async () => {
+    const root = await temp('phase2-receipt-errors');
+    try {
+      const project = await makeProject(root);
+      const loop = await createRpgMakerEditingLoop(project, async (tool) => {
+        if (tool === 'update_record') return { isError: true, content: [{ type: 'text', text: 'mutation denied' }] };
+        if (tool === 'get_record') return { id: 1, name: 'Old' };
+        return { ok: true, errors: [] };
+      });
+      await expect(loop.updateDatabaseRecord('actors', 1, { name: 'New' })).rejects.toThrow(/mutation denied|isError/i);
+      const unchangedLoop = await createRpgMakerEditingLoop(project, async (tool) => {
+        if (tool === 'get_record') return { id: 1, name: 'Old' };
+        return { ok: true, errors: [] };
+      });
+      await expect(unchangedLoop.updateDatabaseRecord('actors', 1, { name: 'New' })).rejects.toThrow(/did not reflect/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

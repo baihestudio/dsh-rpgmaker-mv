@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 
 import { findDshExecutable } from './bootstrap';
 import { resolveHarnessPaths, type PathOptions } from './config';
+import { resolveExecutable } from './executable';
 import { commandFailure, prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, withoutCredentials, type CommandRunner } from './process';
 import { assertValidMvProject, pathExists } from './project';
 import { withHarnessOperationLock } from './lock';
@@ -16,6 +17,7 @@ export const RPGMAKER_MCP_VERSION = '0.1.0';
 export const RPGMAKER_MCP_SERVER_NAME = 'rpgmaker_mv';
 export const RPGMAKER_PRESET_ID = 'rpgmaker';
 export const RPGMAKER_DSH_PROFILE = 'web';
+const PRESET_OWNERSHIP_FILE = '.dsh-rpgmaker-owned.json';
 
 const REQUIRED_MCP_TOOLS = [
   'get_project_info',
@@ -61,6 +63,7 @@ export interface RpgMakerDeploymentOptions extends PathOptions {
   mcpRuntimeDir?: string;
   dshExecutable?: string;
   bunExecutable?: string;
+  jsExecutable?: string;
   commandRunner?: CommandRunner;
   schemaProbe?: McpSchemaProbe;
   lockTimeoutMs?: number;
@@ -70,6 +73,8 @@ export interface RpgMakerDeploymentOptions extends PathOptions {
 export interface RpgMakerDeployment {
   mcpRuntimeDir: string;
   mcpExecutable: string;
+  mcpScript: string;
+  mcpArgs: string[];
   mcpPackageVersion: string;
   presetRoot: string;
   presetDir: string;
@@ -115,43 +120,27 @@ function packageDirectory(runtimeDir: string): string {
   return join(runtimeDir, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp');
 }
 
-async function findMcpExecutable(runtimeDir: string, platform: string = process.platform): Promise<string | undefined> {
+async function findMcpScript(runtimeDir: string): Promise<string | undefined> {
   const packageDir = packageDirectory(runtimeDir);
   const packageJson = await readJson(join(packageDir, 'package.json'));
   const bin = packageJson?.bin;
   const bins = asRecord(bin);
   const entry = typeof bin === 'string' ? bin : bins?.['rpgmaker-mv-mcp'] ?? Object.values(bins ?? {}).find((value): value is string => typeof value === 'string');
-  const candidates: string[] = [];
-  if (typeof entry === 'string') {
-    const base = resolve(packageDir, entry);
-    if (platform === 'win32') {
-      if (/\.(?:cmd|bat|exe|ps1)$/i.test(base)) candidates.push(base);
-      else candidates.push(`${base}.cmd`, `${base}.exe`, `${base}.ps1`);
-    } else {
-      candidates.push(base);
-    }
-  }
-  const shim = join(runtimeDir, 'node_modules', '.bin', 'rpgmaker-mv-mcp');
-  if (platform === 'win32') candidates.push(`${shim}.cmd`, `${shim}.exe`, `${shim}.ps1`);
-  else candidates.push(shim);
+  if (typeof entry !== 'string' || !/\.(?:c?m?js)$/i.test(entry)) return undefined;
+  const candidate = resolve(packageDir, entry);
+  if (!(await pathExists(candidate))) return undefined;
   let runtimeRoot: string;
   try {
     runtimeRoot = await realpath(runtimeDir);
+    const target = await realpath(candidate);
+    const pathFromRoot = relative(runtimeRoot, target);
+    if (isAbsolute(pathFromRoot) || pathFromRoot.startsWith(`..${sep}`) || pathFromRoot === '..') return undefined;
   } catch {
     return undefined;
   }
-  for (const candidate of candidates) {
-    if (!(await pathExists(candidate))) continue;
-    try {
-      const target = await realpath(candidate);
-      const pathFromRoot = relative(runtimeRoot, target);
-      if (!isAbsolute(pathFromRoot) && !pathFromRoot.startsWith(`..${sep}`) && pathFromRoot !== '..') return candidate;
-    } catch {
-      // A dangling or unreadable executable is not trusted.
-    }
-  }
-  return undefined;
+  return candidate;
 }
+
 
 export async function verifyMcpRuntime(runtimeDirInput: string, platform: string = process.platform): Promise<McpVerification> {
   const runtimeDir = resolve(runtimeDirInput);
@@ -162,8 +151,8 @@ export async function verifyMcpRuntime(runtimeDirInput: string, platform: string
   const packageJson = await readJson(join(packageDirectory(runtimeDir), 'package.json'));
   const packageVersion = typeof packageJson?.version === 'string' ? packageJson.version : undefined;
   if (packageVersion !== RPGMAKER_MCP_VERSION) errors.push(`installed MCP version is ${packageVersion ?? 'missing'}, expected ${RPGMAKER_MCP_VERSION}`);
-  const executable = await findMcpExecutable(runtimeDir, platform);
-  if (!executable) errors.push('installed RPG Maker MCP executable was not found');
+  const executable = await findMcpScript(runtimeDir);
+  if (!executable) errors.push('installed RPG Maker MCP JavaScript entry was not found inside the app-owned runtime');
   return { valid: errors.length === 0, errors, packageVersion, executable };
 }
 
@@ -203,7 +192,6 @@ async function installMcpRuntime(options: RpgMakerDeploymentOptions, runtimeDir:
   }, null, 2)}\n`);
   try {
     await runRequired(runner, bun, ['add', '--exact', `${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`], staging, env, 'RPG Maker MCP installation');
-    await runRequired(runner, bun, ['pm', 'trust', '--all'], staging, env, 'RPG Maker MCP dependency trust');
     const staged = await verifyMcpRuntime(staging, platform);
     if (!staged.valid) throw new RpgMakerStartupError(`RPG Maker MCP verification failed: ${staged.errors.join('; ')}`);
     if (await pathExists(runtimeDir)) {
@@ -244,8 +232,8 @@ function yamlSingle(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-function renderMcpPatch(mcpExecutable: string, presetRoot: string): string {
-  return `# Generated by dsh-rpgmaker-mv. Paths only; no credentials are stored here.\n- insert:\n    - id: mcp-rpgmaker-mv\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: ${RPGMAKER_MCP_SERVER_NAME}\n        transport: stdio\n        command: ${yamlSingle(mcpExecutable)}\n        args: ['--project', !!js process.cwd()]\n        cwd: !!js process.cwd()\n        toolCallTimeoutMs: 60000\n        failOnStartupError: true\n\n- patch:\n    id: agent-presets\n    config:\n      default: ${RPGMAKER_PRESET_ID}\n      roots:\n        - path: ${yamlSingle(presetRoot)}\n          trust: system\n      includeUserRoot: true\n`;
+function renderMcpPatch(mcpRunner: string, mcpScript: string, presetRoot: string): string {
+  return `# Generated by dsh-rpgmaker-mv. Paths only; no credentials are stored here.\n- insert:\n    - id: mcp-rpgmaker-mv\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: ${RPGMAKER_MCP_SERVER_NAME}\n        transport: stdio\n        command: ${yamlSingle(mcpRunner)}\n        args: [${yamlSingle(mcpScript)}, '--project', !!js process.cwd()]\n        cwd: !!js process.cwd()\n        toolCallTimeoutMs: 60000\n        failOnStartupError: true\n\n- patch:\n    id: agent-presets\n    config:\n      default: ${RPGMAKER_PRESET_ID}\n      roots:\n        - path: ${yamlSingle(presetRoot)}\n          trust: system\n      includeUserRoot: true\n`;
 }
 
 
@@ -266,16 +254,50 @@ async function installPreset(sourceRoot: string, dshHome: string, codePresetPath
     : code.replace(skillFilesystem, `${skillFilesystem}\n  config:\n    customSkillDirs:\n      - !!js \"process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))\"`);
   const overlay = await readFile(sourceComposition, 'utf8');
   const overlayRows = overlay.trim();
-  const composed = overlayRows === '[]' ? `${codeWithSkill.trimEnd()}\n` : `${codeWithSkill.trimEnd()}\n\n${overlayRows}\n`;
+  const overlayIsEmpty = overlayRows.split(/\r?\n/).filter((line) => !line.trim().startsWith('#')).join('').trim() === '[]';
+  const composed = overlayIsEmpty ? `${codeWithSkill.trimEnd()}\n` : `${codeWithSkill.trimEnd()}\n\n${overlayRows}\n`;
   const ids = topLevelIds(composed);
   if (new Set(ids).size !== ids.length) throw new RpgMakerStartupError('RPG Maker preset derived from Code contains duplicate top-level row ids.');
   const presetRoot = join(dshHome, '.agent-presets');
   const presetDir = join(presetRoot, RPGMAKER_PRESET_ID);
+  const ownershipPath = join(presetDir, PRESET_OWNERSHIP_FILE);
   await mkdir(presetRoot, { recursive: true });
-  await rm(presetDir, { recursive: true, force: true });
+  if (await pathExists(presetDir)) {
+    const ownership = await readJson(ownershipPath);
+    if (ownership?.owner !== 'dsh-rpgmaker-mv' || ownership.presetId !== RPGMAKER_PRESET_ID) {
+      throw new RpgMakerStartupError(`Refusing to replace unowned preset directory ${presetDir}; move it aside or remove it with user consent.`);
+    }
+    await rm(presetDir, { recursive: true, force: true });
+  }
   await cp(source, presetDir, { recursive: true, force: true });
   await writeFile(join(presetDir, 'agent.cordis.yml'), composed);
+  await writeFile(join(presetDir, PRESET_OWNERSHIP_FILE), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId: RPGMAKER_PRESET_ID, format: 1 })}\n`);
   return { presetRoot, presetDir };
+}
+
+function schemaProblem(schema: unknown, at: string): string | undefined {
+  const object = asRecord(schema);
+  if (!object) return `${at} has no inputSchema object`;
+  if (Array.isArray(object.type)) return `${at} uses a type array unsupported by DSH`;
+  if (object.nullable === true) return `${at} uses nullable unsupported by DSH`;
+  if ('$ref' in object) return `${at} uses $ref unsupported by DSH`;
+  if (object.type !== undefined && !['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'].includes(String(object.type))) return `${at} uses unsupported type ${String(object.type)}`;
+  if (object.oneOf !== undefined) {
+    if (!Array.isArray(object.oneOf) || object.oneOf.length < 2) return `${at} has an invalid oneOf`;
+    for (const [index, branch] of object.oneOf.entries()) {
+      const problem = schemaProblem(branch, `${at}.oneOf[${index}]`);
+      if (problem) return problem;
+    }
+  }
+  const properties = asRecord(object.properties);
+  if (properties) {
+    for (const [name, property] of Object.entries(properties)) {
+      const problem = schemaProblem(property, `${at}.properties.${name}`);
+      if (problem) return problem;
+    }
+  }
+  if (object.items !== undefined) return schemaProblem(object.items, `${at}.items`);
+  return undefined;
 }
 
 function validateToolSet(tools: McpToolDefinition[]): string[] {
@@ -284,6 +306,10 @@ function validateToolSet(tools: McpToolDefinition[]): string[] {
   if (names.length !== tools.length) return ['tools/list returned a tool without a name'];
   const duplicates = names.filter((name, index) => names.indexOf(name) !== index);
   if (duplicates.length > 0) return [`tools/list returned duplicate tool names: ${[...new Set(duplicates)].join(', ')}`];
+  for (const tool of tools) {
+    const problem = schemaProblem(tool.inputSchema, `tool ${tool.name}`);
+    if (problem) return [problem];
+  }
   const missing = REQUIRED_MCP_TOOLS.filter((name) => !names.includes(name));
   return missing.length > 0 ? [`tools/list is missing required RPG Maker tools: ${missing.join(', ')}`] : [];
 }
@@ -300,6 +326,7 @@ async function defaultSchemaProbe(request: McpSchemaProbeRequest): Promise<McpSc
   let stderr = '';
   let buffer = '';
   let resolved = false;
+  let discoveredTools: McpToolDefinition[] | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const response = new Promise<McpSchemaProbeResult>((resolveResponse, rejectResponse) => {
     const finish = (error?: Error, value?: McpSchemaProbeResult): void => {
@@ -318,10 +345,29 @@ async function defaultSchemaProbe(request: McpSchemaProbeRequest): Promise<McpSc
         buffer = buffer.slice(newline + 1);
         if (line) {
           try {
-            const message = JSON.parse(line) as { id?: number; result?: { tools?: McpToolDefinition[] }; error?: { message?: string } };
+            const message = JSON.parse(line) as { id?: number; result?: { tools?: McpToolDefinition[]; content?: unknown[] }; error?: { message?: string } };
             if (message.id === 2) {
               if (message.error) finish(new RpgMakerStartupError(`RPG Maker MCP schema discovery failed: ${message.error.message ?? 'unknown MCP error'}`));
-              else finish(undefined, { tools: message.result?.tools ?? [] });
+              else {
+                discoveredTools = message.result?.tools ?? [];
+                child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'validate_project', arguments: {} } })}\n`);
+              }
+            }
+            if (message.id === 3) {
+              if (message.error) finish(new RpgMakerStartupError(`RPG Maker MCP project validation failed: ${message.error.message ?? 'unknown MCP error'}`));
+              else {
+                if ((message.result as { isError?: unknown } | undefined)?.isError === true) {
+                  finish(new RpgMakerStartupError('RPG Maker MCP project validation returned isError=true'));
+                }
+                const content = message.result?.content ?? [];
+                const text = content.find((block: unknown) => (block as { type?: unknown })?.type === 'text') as { text?: unknown } | undefined;
+                let validation: unknown = message.result;
+                if (typeof text?.text === 'string') {
+                  try { validation = JSON.parse(text.text); } catch { validation = undefined; }
+                }
+                if (!validation || (validation as { ok?: unknown }).ok !== true) finish(new RpgMakerStartupError(`RPG Maker MCP project validation failed: ${JSON.stringify(validation)}`));
+                else finish(undefined, { tools: discoveredTools ?? [] });
+              }
             }
           } catch {
             // MCP servers may write human diagnostics to stdout; only JSON-RPC responses matter.
@@ -350,6 +396,14 @@ async function defaultSchemaProbe(request: McpSchemaProbeRequest): Promise<McpSc
   }
 }
 
+async function resolveMcpRunner(options: RpgMakerDeploymentOptions, platform: string, env: Record<string, string | undefined>): Promise<string> {
+  const candidate = options.jsExecutable ?? options.bunExecutable ?? env.BUN_EXECUTABLE;
+  if (candidate && !/\.(?:cmd|bat|ps1)$/i.test(candidate)) {
+    return await resolveExecutable(candidate, { platform, env }) ?? candidate;
+  }
+  return await resolveExecutable('bun', { platform, env }) ?? await resolveExecutable('node', { platform, env }) ?? 'bun';
+}
+
 async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: string): Promise<RpgMakerDeployment> {
   const paths = resolveHarnessPaths(options);
   const platform = options.platform ?? process.platform;
@@ -357,10 +411,12 @@ async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: 
   const mcp = await installMcpRuntime(options, mcpRuntimeDir);
   if (!mcp.valid || !mcp.executable || !mcp.packageVersion) throw new RpgMakerStartupError(`RPG Maker MCP is not usable: ${mcp.errors.join('; ')}`);
   const env = withoutCredentials(options.env ?? process.env);
+  const mcpRunner = await resolveMcpRunner(options, platform, env);
+  const mcpArgs = [mcp.executable!, '--project', projectPath];
   const probe = options.schemaProbe ?? defaultSchemaProbe;
   let discovered: McpSchemaProbeResult;
   try {
-    discovered = await probe({ command: mcp.executable, args: ['--project', projectPath], cwd: projectPath, env, platform });
+    discovered = await probe({ command: mcpRunner, args: mcpArgs, cwd: projectPath, env, platform });
   } catch (error) {
     throw error instanceof RpgMakerStartupError ? error : new RpgMakerStartupError(`RPG Maker MCP schema discovery failed: ${redactSensitive(error instanceof Error ? error.message : String(error), options.env ?? process.env)}`);
   }
@@ -372,7 +428,7 @@ async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: 
   const backupGuidance = await backupIgnoreGuidance(projectPath);
   const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
   await mkdir(dirname(compositionPath), { recursive: true });
-  await writeFile(compositionPath, renderMcpPatch(mcp.executable, installed.presetRoot));
+  await writeFile(compositionPath, renderMcpPatch(mcpRunner, mcp.executable, installed.presetRoot));
   const dshExecutable = options.dshExecutable ?? await findDshExecutable(paths.runtimeDir, platform);
   if (!dshExecutable) throw new RpgMakerStartupError('Pinned DSH executable was not found; refusing to launch an unvalidated RPG Maker composition.');
   const dshRunner = options.commandRunner ?? runCommand;
@@ -388,7 +444,9 @@ async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: 
   if (!/id: agent-presets/.test(compositionCheck.stdout)) throw new RpgMakerStartupError('DSH composition validation did not expose the agent-presets row.');
   return {
     mcpRuntimeDir,
-    mcpExecutable: mcp.executable,
+    mcpExecutable: mcpRunner,
+    mcpScript: mcp.executable,
+    mcpArgs,
     mcpPackageVersion: mcp.packageVersion,
     presetRoot: installed.presetRoot,
     presetDir: installed.presetDir,

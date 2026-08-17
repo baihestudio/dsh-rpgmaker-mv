@@ -1,13 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawn, type ChildProcess } from 'node:child_process';
 import { strict as assert } from 'node:assert';
 
 import { findDshExecutable } from '../src/bootstrap';
 import { prepareRpgMakerDeployment } from '../src/rpgmaker';
-import { createRpgMakerEditingLoop } from '../src/mcp-loop';
-import { prepareProcessInvocation, terminateProcessTree, runCommand } from '../src/process';
+import { runCommand } from '../src/process';
 
 const DATABASE_TYPES = ['Actors', 'Classes', 'Skills', 'Items', 'Weapons', 'Armors', 'Enemies', 'Troops', 'States', 'Animations', 'Tilesets', 'CommonEvents'];
 
@@ -16,7 +14,7 @@ function json(value: unknown): string {
 }
 
 async function makeFixture(root: string): Promise<string> {
-  const project = join(root, '选择 project with spaces');
+  const project = join(root, '选择 %! project with spaces');
   await mkdir(join(project, 'data'), { recursive: true });
   await mkdir(join(project, 'js', 'plugins'), { recursive: true });
   await writeFile(join(project, 'Game.rpgproject'), '{}\n');
@@ -29,81 +27,30 @@ async function makeFixture(root: string): Promise<string> {
   return project;
 }
 
-class StdioMcpClient {
-  private nextId = 1;
-  private buffer = '';
-  private readonly pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
-
-  constructor(readonly child: ChildProcess) {
-    child.stdout?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => {
-      this.buffer += chunk;
-      let newline = this.buffer.indexOf('\n');
-      while (newline >= 0) {
-        const line = this.buffer.slice(0, newline).trim();
-        this.buffer = this.buffer.slice(newline + 1);
-        if (line) {
-          try {
-            const message = JSON.parse(line) as { id?: number; result?: unknown; error?: { message?: string } };
-            if (message.id !== undefined) {
-              const waiter = this.pending.get(message.id);
-              if (waiter) {
-                this.pending.delete(message.id);
-                if (message.error) waiter.reject(new Error(message.error.message ?? 'MCP error'));
-                else waiter.resolve(message.result);
-              }
-            }
-          } catch {
-            // Ignore non-JSON diagnostics on stdout; the response IDs remain authoritative.
-          }
-        }
-        newline = this.buffer.indexOf('\n');
-      }
-    });
-    child.once('error', (error) => {
-      for (const waiter of this.pending.values()) waiter.reject(error);
-      this.pending.clear();
-    });
-  }
-
-  send(message: Record<string, unknown>): void {
-    this.child.stdin?.write(`${JSON.stringify(message)}\n`);
-  }
-
-  request(method: string, params: Record<string, unknown>): Promise<any> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.send({ jsonrpc: '2.0', id, method, params });
-    });
-  }
-
-  async close(platform: string, cwd: string): Promise<void> {
-    this.child.stdin?.end();
-    if (this.child.exitCode === null && this.child.signalCode === null) await terminateProcessTree(this.child, { cwd, platform });
-  }
-}
-
-function mcpText(result: any): any {
-  const text = result?.content?.find((block: any) => block?.type === 'text')?.text;
-  if (typeof text !== 'string') return result;
-  try { return JSON.parse(text); } catch { return text; }
-}
-
 const root = await mkdtemp(join(tmpdir(), 'dsh-rpgmaker-phase2-real-'));
-const safeEnv = { ...process.env };
-delete safeEnv.DEEPSEEK_API_KEY;
-delete safeEnv.DSH_API_KEY;
+const allowedEnvironment = ['PATH', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP', 'SystemRoot', 'ComSpec', 'COMSPEC', 'PATHEXT', 'LANG', 'LC_ALL', 'TERM', 'BUN_INSTALL', 'NODE_PATH', 'NODE_OPTIONS'];
+const safeEnv: Record<string, string> = {};
+for (const key of allowedEnvironment) {
+  const value = process.env[key];
+  if (value !== undefined) safeEnv[key] = value;
+}
+safeEnv.DSH_HOME = join(root, 'dsh-home');
 try {
   const project = await makeFixture(root);
   const runtime = join(root, 'runtime');
+  const mcpRuntime = join(root, 'mcp-runtime');
   await mkdir(runtime, { recursive: true });
+  await mkdir(mcpRuntime, { recursive: true });
   const install = await runCommand('bun', ['init', '-y'], { cwd: runtime, env: safeEnv, timeoutMs: 60_000 });
   if (install.exitCode !== 0) throw new Error(install.stderr);
-  const add = await runCommand('bun', ['add', '--exact', '@deepseek-ai/dsh@0.1.0-rc.6', '@xerolo44/rpgmaker-mv-mcp@0.1.0'], { cwd: runtime, env: safeEnv, timeoutMs: 15 * 60_000 });
-  if (add.exitCode !== 0) throw new Error(add.stderr || add.stdout);
+  const addDsh = await runCommand('bun', ['add', '--exact', '@deepseek-ai/dsh@0.1.0-rc.6'], { cwd: runtime, env: safeEnv, timeoutMs: 15 * 60_000 });
+  if (addDsh.exitCode !== 0) throw new Error(addDsh.stderr || addDsh.stdout);
   const trust = await runCommand('bun', ['pm', 'trust', '--all'], { cwd: runtime, env: safeEnv, timeoutMs: 15 * 60_000 });
   if (trust.exitCode !== 0) throw new Error(trust.stderr || trust.stdout);
+  const installMcp = await runCommand('bun', ['init', '-y'], { cwd: mcpRuntime, env: safeEnv, timeoutMs: 60_000 });
+  if (installMcp.exitCode !== 0) throw new Error(installMcp.stderr);
+  const addMcp = await runCommand('bun', ['add', '--exact', '@xerolo44/rpgmaker-mv-mcp@0.1.0'], { cwd: mcpRuntime, env: safeEnv, timeoutMs: 15 * 60_000 });
+  if (addMcp.exitCode !== 0) throw new Error(addMcp.stderr || addMcp.stdout);
   const platform = process.platform;
   const dsh = await findDshExecutable(runtime, platform);
   if (!dsh) throw new Error('real DSH executable not found after Bun install');
@@ -111,7 +58,7 @@ try {
     platform,
     dshHome: join(root, 'dsh-home'),
     runtimeDir: runtime,
-    mcpRuntimeDir: runtime,
+    mcpRuntimeDir: mcpRuntime,
     dshExecutable: dsh,
     env: safeEnv,
     projectPath: project,
@@ -120,24 +67,25 @@ try {
   assert.equal(deployment.mcpPackageVersion, '0.1.0');
   assert.equal(deployment.toolNames.length, 41);
 
-  const invocation = prepareProcessInvocation(deployment.mcpExecutable, ['--project', project], platform, {});
-  const child = spawn(invocation.command, invocation.args, { cwd: project, env: safeEnv, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-  const client = new StdioMcpClient(child);
-  await client.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'phase2-real-probe', version: '1.0.0' } });
-  client.send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
-  const listed = await client.request('tools/list', {});
-  assert.equal(listed.tools.length, 41);
-  const loop = await createRpgMakerEditingLoop(project, async (tool, args) => client.request('tools/call', { name: tool, arguments: args }));
-  const mutation = await loop.updateDatabaseRecord('actors', 1, { name: 'Updated Hero' });
-  const reread = mcpText(mutation.reread);
-  assert.equal(reread.name, 'Updated Hero');
-  const backups = mcpText(await loop.listBackups());
-  assert.ok(Array.isArray(backups) && backups.length > 0, 'real MCP did not create a backup');
-  await loop.restoreBackup(backups[0].session);
-  const restored = mcpText(await loop.getDatabaseRecord('actors', 1));
-  assert.equal(restored.name, 'Hero');
-  await client.close(platform, project);
-  console.log(JSON.stringify({ ok: true, tools: listed.tools.length, mutation: reread.name, restored: restored.name, composition: deployment.compositionPath }));
+  const dshLib = join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib');
+  const profileFile = (await readdir(dshLib)).find((file) => file.startsWith('profile-boot-') && file.endsWith('.js'));
+  assert.ok(profileFile, 'compiled DSH profile boot module missing');
+  const environmentModulePath = join(runtime, 'node_modules', '@deepseek-ai', 'dsh-launch-environment', 'lib', 'index.js');
+  const mountProbe = await runCommand(process.env.NODE_EXECUTABLE ?? 'node', [join(process.cwd(), 'scripts', 'phase2-real-mount.mjs')], {
+    cwd: project,
+    env: { ...safeEnv, DSH_HOME: join(root, 'dsh-home'), PROFILE_FILE: join(dshLib, profileFile), ENVIRONMENT_MODULE: environmentModulePath, COMPOSITION_FILE: deployment.compositionPath },
+    platform,
+    timeoutMs: 120_000
+  });
+  if (mountProbe.exitCode !== 0) throw new Error(`official DSH mount probe failed: ${mountProbe.stderr || mountProbe.stdout}`);
+  const mountLine = mountProbe.stdout.split(String.fromCharCode(10)).map((line) => line.trim()).find((line) => line.startsWith('{"ok"'));
+  assert.ok(mountLine, `official DSH mount probe returned no structured result: ${mountProbe.stdout}`);
+  const mountResult = JSON.parse(mountLine);
+  assert.equal(mountResult.ok, true);
+  assert.equal(mountResult.preset, 'rpgmaker');
+  assert.ok(mountResult.mcpTools >= 41, `official DSH registered only ${mountResult.mcpTools} RPG Maker tools`);
+
+  console.log(JSON.stringify({ ok: true, mountedPreset: mountResult.preset, mountedTools: mountResult.mcpTools, mutation: mountResult.mutation, restored: mountResult.restored, composition: deployment.compositionPath }));
 } finally {
   await rm(root, { recursive: true, force: true });
 }
