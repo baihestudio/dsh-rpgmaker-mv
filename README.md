@@ -55,6 +55,12 @@ The RPG Maker preset treats the MCP/agent as the sole writer. Database, event/di
 
 The generated preset and patch live under `DSH_HOME`; they contain executable paths and project-independent `process.cwd()` references only, never credentials. The pinned DSH Code preset is read from the installed runtime and is not edited.
 
+## Phase 3: Playtest Debug Agent
+
+Select `--preset playtest-debug` when creating a session. The Debug workflow statically validates the project first, calls `playtest_start(mode=nwjs)`, observes `playtest_status` and `playtest_log`, and calls `playtest_stop` on normal, failed, timed-out, or cancelled paths. Reports distinguish static validation, process launch, crash/log evidence, cleanup, and behavior/visual gameplay verification; a launched process is never reported as verified behavior.
+
+The current automated tests use disposable projects and fake MCP tool callers. The real Windows NW.js/Game.exe process-tree gate remains owned by ticket 06; screenshot/input/gameplay automation is out of scope.
+
 ## Editing model
 
 In the first release, the agent is the sole writer while an RPG Maker MV project is under agent control. The editor may remain open only for read-only reference: users must not save from it, and must reopen the project before inspecting agent changes.

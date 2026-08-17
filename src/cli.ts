@@ -59,6 +59,7 @@ function helpText(): string {
     '  --dsh-home <path>         Override DSH_HOME for this invocation',
     '  --runtime-dir <path>      Override the app-owned runtime tree',
     '  --dsh-executable <path>   Use an explicit DSH executable',
+    '  --preset <id>              Agent preset (rpgmaker or playtest-debug)',
     '  --bun-executable <path>   Use an explicit Bun executable',
     '  --pwsh-executable <path>  Use an explicit PowerShell executable',
     '  --json                    Render doctor output as JSON',
@@ -125,6 +126,7 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         projectPath: option(parsed.values, 'project'),
         dshExecutable: option(parsed.values, 'dsh-executable'),
         dshArgs: [],
+        agentPreset: option(parsed.values, 'preset'),
         spawnInteractive: dependencies.spawnInteractive,
         notify: (message: string) => io.stdout.write(`${message}\n`)
       };

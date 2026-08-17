@@ -51,7 +51,7 @@ async function makeMcpRuntime(runtime: string): Promise<void> {
 }
 
 function toolNames(): McpToolDefinition[] {
-  return ['get_project_info', 'list_records', 'get_record', 'update_record', 'create_record', 'create_event', 'get_event', 'update_event', 'add_dialogue', 'update_map', 'get_map', 'configure_plugin', 'list_plugins', 'validate_project', 'list_backups', 'restore_backup'].map((name) => ({ name, inputSchema: { type: 'object' } }));
+  return ['get_project_info', 'list_records', 'get_record', 'update_record', 'create_record', 'create_event', 'get_event', 'update_event', 'add_dialogue', 'update_map', 'get_map', 'configure_plugin', 'list_plugins', 'validate_project', 'list_backups', 'restore_backup', 'playtest_start', 'playtest_status', 'playtest_log', 'playtest_stop'].map((name) => ({ name, inputSchema: { type: 'object' } }));
 }
 
 describe('RPG Maker MCP deployment', () => {
@@ -130,6 +130,20 @@ describe('RPG Maker MCP deployment', () => {
         schemaProbe
       });
       expect(addCalls).toBe(1);
+      const debug = await prepareRpgMakerDeployment({
+        platform: 'win32',
+        dshHome,
+        runtimeDir: runtime,
+        projectPath: project,
+        sourceRoot,
+        agentPreset: 'playtest-debug',
+        commandRunner,
+        jsExecutable: join(root, 'bun.exe'),
+        schemaProbe
+      });
+      expect(debug.agentPreset).toBe('playtest-debug');
+      expect(await readFile(debug.compositionPath, 'utf8')).toContain('default: playtest-debug');
+      expect(await readFile(join(dshHome, '.agent-presets', 'playtest-debug', 'skills', 'playtest-debug', 'SKILL.md'), 'utf8')).toContain('playtest_start');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

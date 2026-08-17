@@ -1,0 +1,3 @@
+name: Playtest Debug Agent
+description: Validate one RPG Maker MV project, launch and observe Windows NW.js Playtest, inspect logs, and stop it without claiming unverified gameplay.
+order: 1
