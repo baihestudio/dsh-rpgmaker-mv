@@ -11,6 +11,12 @@ import { assertValidMvProject, pathExists } from './project';
 import { withHarnessOperationLock } from './lock';
 import { launchProject, pickProjectDirectory, type LaunchOptions, type LaunchResult } from './launcher';
 import { backupIgnoreGuidance, type BackupIgnoreGuidance } from './mcp-loop';
+import {
+  ASSET_WORKSHOP_PRESET_ID,
+  prepareImageToolchain,
+  type ImageToolchain,
+  type ImageToolchainPreparationOptions
+} from './image-workshop';
 
 export const RPGMAKER_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
 export const RPGMAKER_MCP_VERSION = '0.1.0';
@@ -74,6 +80,10 @@ export interface RpgMakerDeploymentOptions extends PathOptions {
   bunExecutable?: string;
   jsExecutable?: string;
   agentPreset?: string;
+  imageMagickExecutable?: string;
+  imageToolchainRoot?: string;
+  imageHelperRuntimeDir?: string;
+  oxipngExecutable?: string;
   commandRunner?: CommandRunner;
   schemaProbe?: McpSchemaProbe;
   lockTimeoutMs?: number;
@@ -93,6 +103,7 @@ export interface RpgMakerDeployment {
   toolNames: string[];
   backupGuidance: BackupIgnoreGuidance;
   agentPreset: string;
+  imageToolchain?: ImageToolchain;
 }
 
 export type RpgMakerLaunchOptions = LaunchOptions & Omit<RpgMakerDeploymentOptions, 'projectPath' | 'dshHome' | 'runtimeDir' | 'platform' | 'env' | 'commandRunner' | 'lockTimeoutMs' | 'lockRetryMs'> & {
@@ -483,10 +494,32 @@ async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: 
   if (schemaErrors.length > 0) throw new RpgMakerStartupError(schemaErrors.join('; '));
   const codePresetPath = await findCodeComposition(paths.runtimeDir);
   const agentPreset = options.agentPreset ?? RPGMAKER_PRESET_ID;
-  if (agentPreset !== RPGMAKER_PRESET_ID && agentPreset !== PLAYTEST_DEBUG_PRESET_ID) throw new RpgMakerStartupError(`Unknown RPG Maker agent preset: ${agentPreset}`);
+  if (agentPreset !== RPGMAKER_PRESET_ID && agentPreset !== PLAYTEST_DEBUG_PRESET_ID && agentPreset !== ASSET_WORKSHOP_PRESET_ID) {
+    throw new RpgMakerStartupError(`Unknown RPG Maker agent preset: ${agentPreset}`);
+  }
   const rpgmakerSourceRoot = options.sourceRoot ?? defaultSourceRoot(RPGMAKER_PRESET_ID);
   const rpgmakerInstalled = await installPreset(rpgmakerSourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
   await installPreset(defaultSourceRoot(PLAYTEST_DEBUG_PRESET_ID), paths.dshHome, codePresetPath, PLAYTEST_DEBUG_PRESET_ID);
+  await installPreset(defaultSourceRoot(ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
+  let imageToolchain: ImageToolchain | undefined;
+  if (agentPreset === ASSET_WORKSHOP_PRESET_ID) {
+    try {
+      const preparationOptions: ImageToolchainPreparationOptions = {
+        platform,
+        env: options.env,
+        dshHome: paths.dshHome,
+        toolchainRoot: options.imageToolchainRoot,
+        helperRuntimeDir: options.imageHelperRuntimeDir,
+        imageMagickExecutable: options.imageMagickExecutable,
+        oxipngExecutable: options.oxipngExecutable,
+        bunExecutable: options.bunExecutable,
+        commandRunner: options.commandRunner
+      };
+      imageToolchain = (await prepareImageToolchain(preparationOptions)).toolchain;
+    } catch (error) {
+      throw new RpgMakerStartupError(`Asset Workshop toolchain is not ready: ${redactSensitive(error instanceof Error ? error.message : String(error), options.env ?? process.env)}`);
+    }
+  }
   const installed = agentPreset === RPGMAKER_PRESET_ID
     ? rpgmakerInstalled
     : { presetRoot: rpgmakerInstalled.presetRoot, presetDir: join(rpgmakerInstalled.presetRoot, agentPreset) };
@@ -519,7 +552,8 @@ async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: 
     compositionPath,
     toolNames: discovered.tools.map((tool) => tool.name),
     backupGuidance,
-    agentPreset
+    agentPreset,
+    ...(imageToolchain ? { imageToolchain } : {})
   };
 }
 
@@ -546,9 +580,18 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
     schemaProbe: options.schemaProbe
   });
   if (options.notify) options.notify(`${deployment.backupGuidance.message}\n`);
+  const imageEnvironment = deployment.imageToolchain ? {
+    DSH_IMAGE_WORKSHOP_ROOT: deployment.imageToolchain.toolchainRoot,
+    DSH_IMAGE_WORKSHOP_MANIFEST: deployment.imageToolchain.manifestPath,
+    DSH_IMAGE_WORKSHOP_CLI: fileURLToPath(new URL('./cli.ts', import.meta.url)),
+    DSH_IMAGE_MAGICK: deployment.imageToolchain.imageMagick,
+    DSH_IMAGE_HELPER_ROOT: deployment.imageToolchain.helperRoot,
+    ...(deployment.imageToolchain.oxipng ? { DSH_OXIPNG: deployment.imageToolchain.oxipng } : {})
+  } : undefined;
   const result = await launchProject({
     ...options,
     projectPath,
+    extraEnv: { ...(options.extraEnv ?? {}), ...(imageEnvironment ?? {}) },
     dshArgs: ['--profile', RPGMAKER_DSH_PROFILE, ...(options.dshArgs ?? []), '--patch', deployment.compositionPath]
   });
   return { ...result, deployment };

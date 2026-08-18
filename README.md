@@ -61,6 +61,37 @@ Select `--preset playtest-debug` when creating a session. The Debug skill direct
 
 Reports distinguish static validation, process launch, crash/log evidence, cleanup confirmation, and behavior/visual gameplay verification. A launched process and clean log are not behavior verification. Harness-owned process-tree cleanup belongs to the separate automated-playtest capability; screenshot/input/gameplay automation is out of scope here.
 
+## Phase 4: Asset Workshop Agent
+
+Select the deterministic image preset when launching a project:
+
+```powershell
+./launch.ps1 --project 'C:\Games\My RPG 游戏' --preset asset-workshop --image-magick 'C:\DSH\tools\ImageMagick\magick.exe'
+```
+
+The launcher requires the resolved ImageMagick executable to report exactly
+`7.1.2-29`, stages the exact `free-tex-packer-core@0.3.9` helper under
+`DSH_HOME`, and writes an app-owned image tool manifest. The helper is installed
+with Bun and native dependencies are trusted in its staging tree. An existing
+manifest can supply the pinned ImageMagick path; PATH aliases and `convert` are
+not accepted. `oxipng@10.2.0` is optional and is only invoked by an explicit
+`optimize-png` operation with a distinct output path.
+
+The skill owns pixel-safe resize, transparent trim/pad, fixed-grid sheet
+slice/assembly, and no-rotation atlas packing. Every mutation refuses an
+existing output or source overwrite and emits a JSON manifest containing tool
+paths/versions, dimensions, alpha mode, hashes, and fidelity evidence. Optional
+Photoshop, Aseprite, and TexturePacker installations are detected as hints only;
+they are never downloaded or required.
+
+The same operations are available at the helper seam for disposable checks:
+
+```powershell
+bun src/cli.ts image resize-pixel --input source.png --output generated.png --scale 3
+bun src/cli.ts image sheet-slice --input sheet.png --output-dir frames --cell-width 48 --cell-height 48
+bun src/cli.ts image atlas-pack --inputs-json '["a.png","b.png"]' --output atlas.png --max-size 2048
+```
+
 ## Editing model
 
 In the first release, the agent is the sole writer while an RPG Maker MV project is under agent control. The editor may remain open only for read-only reference: users must not save from it, and must reopen the project before inspecting agent changes.

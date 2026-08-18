@@ -35,6 +35,7 @@ export interface LaunchOptions extends PathOptions {
   commandRunner?: CommandRunner;
   spawnInteractive?: InteractiveSpawner;
   notify?: (message: string) => void;
+  extraEnv?: Record<string, string | undefined>;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
 }
@@ -165,7 +166,11 @@ async function launchProjectUnlocked(
   const onboardingMessage = onboardingMessageFor(configured);
   if (onboardingMessage && options.notify) options.notify(`${onboardingMessage}\n`);
 
-  const childEnv: Record<string, string | undefined> = { ...env, DSH_HOME: paths.dshHome };
+  const childEnv: Record<string, string | undefined> = {
+    ...env,
+    DSH_HOME: paths.dshHome,
+    ...(options.extraEnv ?? {})
+  };
   const args = [...(options.dshArgs ?? [])];
   const child = (options.spawnInteractive ?? spawnInteractive)(executable, args, {
     cwd: validation.projectPath,
