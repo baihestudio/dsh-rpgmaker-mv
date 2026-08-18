@@ -371,7 +371,7 @@ async function runRequired(runner: CommandRunner, command: string, args: string[
 
 async function ensureRpgmPackerRuntime(options: BuildReleaseOptions, platform: string, env: Record<string, string | undefined>): Promise<RpgmPackerRuntime> {
   const paths = resolveHarnessPaths(options);
-  const runtimeDir = resolve(options.releaseRuntimeDir ?? join(paths.dshHome, 'rpgmaker-mv', RELEASE_RUNTIME_NAME));
+  const runtimeDir = resolve(options.releaseRuntimeDir ?? join(paths.programRoot, 'runtime', RELEASE_RUNTIME_NAME));
   const current = await verifyRpgmPackerRuntime(runtimeDir);
   const runner = await resolveReleaseRunner({ jsExecutable: options.jsExecutable, bunExecutable: options.bunExecutable }, platform, env);
   if (current.valid && current.script) return { runtimeDir, runner, script: current.script, version: RPGMPACKER_VERSION };

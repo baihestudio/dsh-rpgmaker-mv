@@ -1,4 +1,5 @@
 import { basename, dirname } from 'node:path';
+import { stat } from 'node:fs/promises';
 
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
@@ -13,6 +14,8 @@ export interface DoctorOptions extends PathOptions {
   pwshExecutable?: string;
   coreutilsExecutable?: string;
   gitExecutable?: string;
+  nodeExecutable?: string;
+  npmExecutable?: string;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
 }
@@ -30,6 +33,8 @@ export interface DoctorReport {
   platform: string;
   runtimeDir: string;
   dshHome: string;
+  programRoot: string;
+  mutableRoot: string;
   executablePaths: Record<string, string | undefined>;
   credentials: CredentialMetadata;
   checks: DoctorCheck[];
@@ -114,6 +119,8 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   const coreutilsGrep = await resolveExecutable('grep', { platform, env });
   const git = options.gitExecutable ?? env.GIT_EXECUTABLE ?? await resolveExecutable('git', { platform, env });
   const bun = options.bunExecutable ?? env.BUN_EXECUTABLE ?? await resolveExecutable('bun', { platform, env });
+  const node = options.nodeExecutable ?? env.NODE_EXECUTABLE ?? await resolveExecutable('node', { platform, env });
+  const npm = options.npmExecutable ?? env.NPM_EXECUTABLE ?? await resolveExecutable('npm', { platform, env });
 
   const checks: DoctorCheck[] = [];
   const executablePaths: Record<string, string | undefined> = {
@@ -122,7 +129,9 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     coreutilsFind,
     coreutilsGrep,
     git,
-    bun
+    bun,
+    node,
+    npm
   };
 
   const pwshVersion = await commandVersion(runner, pwsh, commandEnv);
@@ -173,6 +182,21 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     bun
   ));
 
+  if (platform === 'win32') {
+    const nodeVersion = await commandVersion(runner, node, commandEnv);
+    const nodeLts = await commandVersion(runner, node, commandEnv, ['-p', 'process.release.lts']);
+    const npmVersion = await commandVersion(runner, npm, commandEnv);
+    const nodeParsed = versionNumbers(nodeVersion.output);
+    const nodeLtsName = nodeLts.output.trim().split(/\r?\n/).find(Boolean);
+    checks.push(check(
+      'node',
+      'Node.js LTS 18+ and npm',
+      nodeVersion.ok && Boolean(nodeParsed) && atLeast(nodeParsed, [18, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && Boolean(versionNumbers(npmVersion.output)),
+      nodeVersion.ok && npmVersion.ok ? `Node.js LTS ${nodeParsed?.join('.')} (${nodeLtsName}) and npm ${versionNumbers(npmVersion.output)?.join('.')}` : 'Node.js LTS and npm were not both verified; install OpenJS.NodeJS.LTS',
+      node
+    ));
+  }
+
   const runtime = await verifyRuntime(paths.runtimeDir, { bunExecutable: bun ?? 'bun', commandRunner: runner, env: commandEnv, platform });
   checks.push(check(
     'dsh-runtime',
@@ -202,11 +226,26 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     credentials.path
   ));
 
+  if (platform === 'win32') {
+    const layoutPaths = [paths.mutableRoot, paths.dshHome, paths.logsDir, paths.cacheDir];
+    const layoutValues = await Promise.all(layoutPaths.map(async (path) => (await stat(path).catch(() => undefined))?.isDirectory() ?? false));
+    const layoutOk = layoutValues.every(Boolean);
+    checks.push(check(
+      'app-layout',
+      'Per-user DSH state layout',
+      layoutOk,
+      layoutOk ? `Program files use ${paths.programRoot}; mutable state uses ${paths.mutableRoot} with DSH_HOME at ${paths.dshHome}` : `Mutable state layout is incomplete under ${paths.mutableRoot}; run Install.cmd or repair the installation`,
+      paths.mutableRoot
+    ));
+  }
+
   return {
     ok: checks.every((item) => item.ok),
     platform,
     runtimeDir: paths.runtimeDir,
     dshHome: paths.dshHome,
+    programRoot: paths.programRoot,
+    mutableRoot: paths.mutableRoot,
     executablePaths,
     credentials,
     checks,
@@ -215,7 +254,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
 }
 
 export function renderDoctorReport(report: DoctorReport): string {
-  const lines = [`DSH RPG Maker doctor (${report.platform})`, `DSH_HOME: ${report.dshHome}`, `Runtime: ${report.runtimeDir}`, ''];
+  const lines = [`DSH RPG Maker doctor (${report.platform})`, `Program root: ${report.programRoot}`, `Mutable root: ${report.mutableRoot}`, `DSH_HOME: ${report.dshHome}`, `Runtime: ${report.runtimeDir}`, ''];
   for (const item of report.checks) {
     lines.push(`${item.ok ? 'PASS' : 'FAIL'} ${item.label}: ${item.detail}`);
   }

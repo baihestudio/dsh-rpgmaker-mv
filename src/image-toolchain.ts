@@ -16,7 +16,7 @@ export const IMAGE_WORKSHOP_MANIFEST_FORMAT = 2;
 
 const FREE_TEX_PACKAGE = 'free-tex-packer-core';
 const FREE_TEX_LOCK_INTEGRITY = 'sha512-Ah4FuRZc57oVLOtkyUjGB9YAjF0ot3T6ccvXw/lvhkndneHwbfkrNT8yz9E7kFak26DPsWJhXS6JjYEsCJkiFA==';
-const DEFAULT_TOOLCHAIN_RELATIVE = join('rpgmaker-mv', 'image-workshop');
+const DEFAULT_TOOLCHAIN_RELATIVE = join('tools', 'image-workshop');
 const IMAGE_MANIFEST_NAME = 'toolchain.json';
 const NATIVE_TOOLS_DIRECTORY = 'native-tools';
 const IMAGE_MAGICK_INSTALL_DIRECTORY = 'image-magick';
@@ -150,7 +150,7 @@ async function readJson(path: string): Promise<JsonObject | undefined> {
 function imageToolchainRoot(options: ImageToolchainOptions): string {
   const paths = resolveHarnessPaths(options);
   const env = options.env ?? process.env;
-  return resolve(options.toolchainRoot ?? env.DSH_IMAGE_WORKSHOP_ROOT ?? join(paths.dshHome, DEFAULT_TOOLCHAIN_RELATIVE));
+  return resolve(options.toolchainRoot ?? env.DSH_IMAGE_WORKSHOP_ROOT ?? join(paths.programRoot, DEFAULT_TOOLCHAIN_RELATIVE));
 }
 
 function manifestPathFor(options: ImageToolchainOptions, root: string): string {
@@ -753,7 +753,7 @@ async function runHelperInstall(
 export async function ensureImageHelperRuntime(options: ImageHelperRuntimeOptions = {}): Promise<string> {
   const paths = resolveHarnessPaths(options);
   const env = options.env ?? process.env;
-  const runtimeDir = resolve(options.helperRuntimeDir ?? options.helperRoot ?? join(paths.dshHome, DEFAULT_TOOLCHAIN_RELATIVE, 'runtime'));
+  const runtimeDir = resolve(options.helperRuntimeDir ?? options.helperRoot ?? join(paths.programRoot, DEFAULT_TOOLCHAIN_RELATIVE, 'runtime'));
   try {
     await helperPackageInfo(runtimeDir);
     return runtimeDir;
@@ -866,7 +866,8 @@ export function toolchainSummary(toolchain: ImageToolchain): {
 }
 
 export function defaultImageToolchainRoot(dshHome?: string): string {
-  return resolve(dshHome ?? resolveHarnessPaths().dshHome, DEFAULT_TOOLCHAIN_RELATIVE);
+  const paths = resolveHarnessPaths(dshHome ? { dshHome } : {});
+  return resolve(paths.programRoot, DEFAULT_TOOLCHAIN_RELATIVE);
 }
 
 export function toolchainManifestForRoot(root: string): string {

@@ -9,7 +9,7 @@ import { resolveExecutable } from './executable';
 import { commandFailure, prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, withoutCredentials, type CommandRunner } from './process';
 import { assertValidMvProject, backupIgnoreGuidance, type BackupIgnoreGuidance, pathExists } from './project';
 import { withHarnessOperationLock } from './lock';
-import { launchProject, pickProjectDirectory, type LaunchOptions, type LaunchResult } from './launcher';
+import { ensureLaunchPort, launchProject, resolveLaunchProjectPath, type LaunchOptions, type LaunchResult } from './launcher';
 import {
   ASSET_WORKSHOP_PRESET_ID,
   prepareImageToolchain,
@@ -503,7 +503,7 @@ export async function resolveMcpRunner(options: RpgMakerDeploymentOptions, platf
 async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: string): Promise<RpgMakerDeployment> {
   const paths = resolveHarnessPaths(options);
   const platform = options.platform ?? process.platform;
-  const mcpRuntimeDir = resolve(options.mcpRuntimeDir ?? join(paths.dshHome, 'rpgmaker-mv', 'mcp-runtime'));
+  const mcpRuntimeDir = resolve(options.mcpRuntimeDir ?? join(paths.programRoot, 'runtime', 'mcp'));
   const mcp = await installMcpRuntime(options, mcpRuntimeDir);
   if (!mcp.valid || !mcp.executable || !mcp.packageVersion) throw new RpgMakerStartupError(`RPG Maker MCP is not usable: ${mcp.errors.join('; ')}`);
   const env = withoutCredentials(options.env ?? process.env);
@@ -609,7 +609,8 @@ export interface RpgMakerLaunchResult extends LaunchResult {
 }
 
 export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Promise<RpgMakerLaunchResult> {
-  const projectPath = options.projectPath ? resolve(options.projectPath) : await pickProjectDirectory({ platform: options.platform, env: options.env, commandRunner: options.commandRunner });
+  const projectPath = await resolveLaunchProjectPath(options);
+  await ensureLaunchPort({ ...options, projectPath, bindWeb: true, webHost: '127.0.0.1', webPort: 3081 });
   const deployment = await prepareRpgMakerDeployment({
     ...options,
     projectPath,
@@ -630,6 +631,10 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
   const result = await launchProject({
     ...options,
     projectPath,
+    bindWeb: true,
+    portAlreadyChecked: true,
+    webHost: '127.0.0.1',
+    webPort: 3081,
     extraEnv: { ...(options.extraEnv ?? {}), ...(imageEnvironment ?? {}), ...releaseEnvironment },
     dshArgs: ['--profile', RPGMAKER_DSH_PROFILE, ...(options.dshArgs ?? []), '--patch', deployment.compositionPath]
   });

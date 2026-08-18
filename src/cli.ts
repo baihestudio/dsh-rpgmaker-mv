@@ -12,6 +12,9 @@ import {
 } from './image-workshop';
 import type { ImageReleasePin } from './image-releases';
 import { childExitCode, redactSensitive, type CommandRunner, type InteractiveSpawner } from './process';
+import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, uninstallWindowsRelease } from './release-gate';
+import type { PrerequisiteConsent } from './prerequisites';
+import type { PortConflictAction, ExistingSessionOpener, PortProbe, RecentProject, RecentProjectChoice } from './windows';
 
 export interface CliIO {
   stdout: { write: (text: string) => unknown };
@@ -28,6 +31,12 @@ export interface CliDependencies {
   imageMagickRelease?: ImageReleasePin;
   oxipngRelease?: ImageReleasePin;
   spawnInteractive?: InteractiveSpawner;
+  prerequisiteConsent?: PrerequisiteConsent;
+  portProbe?: PortProbe;
+  onPortConflict?: (url: string) => Promise<PortConflictAction> | PortConflictAction;
+  openExistingSession?: ExistingSessionOpener;
+  chooseRecentProject?: (last: RecentProject, recent: RecentProject[]) => Promise<RecentProjectChoice> | RecentProjectChoice;
+  pickProject?: () => Promise<string>;
   rpgmaker?: boolean;
 }
 
@@ -71,6 +80,9 @@ function helpText(): string {
     'Commands:',
     '  bootstrap   Install or repair the pinned DSH runtime using Bun',
     '  doctor      Check Windows prerequisites and DSH metadata',
+    '  install     Install a Release ZIP into the per-user Windows roots',
+    '  uninstall   Remove program files/cache (use --purge for state/credentials)',
+    '  release-zip Build and inspect a distributable Release ZIP',
     '  launch      Pick or launch an RPG Maker MV project in DSH',
     '  build-release  Package and smoke-test Windows and Browser artifacts',
     '  image       Run a deterministic Asset Workshop image operation',
@@ -78,6 +90,10 @@ function helpText(): string {
     'Options:',
     '  --project <path>          Project to launch or package',
     '  --output <path>           Fresh release output directory (build-release)',
+    '  --release-root <path>     Extracted Release ZIP root (install)',
+    '  --zip <path>              Release ZIP path (release-zip)',
+    '  --program-root <path>     Per-user installed program root override',
+    '  --mutable-root <path>     Per-user mutable data root override',
     '  --dsh-home <path>         Override DSH_HOME for this invocation',
     '  --runtime-dir <path>      Override the app-owned runtime tree',
     '  --dsh-executable <path>   Use an explicit DSH executable',
@@ -99,6 +115,13 @@ function helpText(): string {
     '  --source-root <path>      Preset source root override',
     '  --platforms <list>        Comma-separated Windows and/or Browser targets',
     '  --pwsh-executable <path>  Use an explicit PowerShell executable',
+    '  --node-executable <path>  Use an explicit Node.js executable',
+    '  --npm-executable <path>   Use an explicit npm executable',
+    '  --winget-executable <path> Use an explicit WinGet executable',
+    '  --git-executable <path>   Use an explicit Git executable',
+    '  --coreutils-executable <path> Use an explicit Coreutils manager',
+    '  --yes                     Consent to prerequisite installation',
+    '  --purge                   Explicitly delete mutable state/credentials (uninstall)',
     '  --json                    Render doctor output as JSON',
     '',
     'Image operations:',
@@ -124,6 +147,8 @@ function baseOptions(parsed: ParsedArgs, dependencies: CliDependencies): Record<
     env: dependencies.env,
     dshHome: option(parsed.values, 'dsh-home'),
     runtimeDir: option(parsed.values, 'runtime-dir'),
+    programRoot: option(parsed.values, 'program-root'),
+    mutableRoot: option(parsed.values, 'mutable-root'),
     imageMagickExecutable: option(parsed.values, 'image-magick'),
     imageMagickSha256: option(parsed.values, 'image-magick-sha256'),
     imageMagickUrl: option(parsed.values, 'image-magick-url'),
@@ -292,6 +317,56 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
       return 0;
     }
 
+    if (parsed.command === 'install') {
+      const result = await installWindowsRelease({
+        platform: dependencies.platform,
+        env: dependencies.env,
+        releaseRoot: option(parsed.values, 'release-root') ?? process.cwd(),
+        dshHome: option(parsed.values, 'dsh-home'),
+        runtimeDir: option(parsed.values, 'runtime-dir'),
+        programRoot: option(parsed.values, 'program-root'),
+        mutableRoot: option(parsed.values, 'mutable-root'),
+        bunExecutable: option(parsed.values, 'bun-executable'),
+        pwshExecutable: option(parsed.values, 'pwsh-executable'),
+        nodeExecutable: option(parsed.values, 'node-executable'),
+        npmExecutable: option(parsed.values, 'npm-executable'),
+        gitExecutable: option(parsed.values, 'git-executable'),
+        coreutilsExecutable: option(parsed.values, 'coreutils-executable'),
+        wingetExecutable: option(parsed.values, 'winget-executable'),
+        consent: dependencies.prerequisiteConsent ?? parsed.flags.has('yes'),
+        commandRunner: dependencies.commandRunner
+      });
+      io.stdout.write(`Installed DSH for RPG Maker MV under ${result.paths.programRoot}\n`);
+      io.stdout.write(`Mutable state: ${result.paths.mutableRoot}; DSH_HOME: ${result.paths.dshHome}\n`);
+      io.stdout.write(`Start Menu shortcut: ${result.shortcutPath}\n`);
+      return 0;
+    }
+
+    if (parsed.command === 'uninstall') {
+      const result = await uninstallWindowsRelease({
+        platform: dependencies.platform,
+        env: dependencies.env,
+        dshHome: option(parsed.values, 'dsh-home'),
+        runtimeDir: option(parsed.values, 'runtime-dir'),
+        programRoot: option(parsed.values, 'program-root'),
+        mutableRoot: option(parsed.values, 'mutable-root'),
+        purge: parsed.flags.has('purge')
+      });
+      io.stdout.write(`Removed program files and cache under ${result.programRoot}.\n`);
+      io.stdout.write(result.purged ? `Purged mutable DSH state under ${result.mutableRoot}.\n` : `Preserved DSH state, credentials, logs, and recent projects under ${result.mutableRoot}.\n`);
+      return 0;
+    }
+
+    if (parsed.command === 'release-zip') {
+      const zipPath = requiredOption(parsed, 'zip');
+      const sourceRoot = option(parsed.values, 'source-root') ?? process.cwd();
+      const archive = await buildReleaseZip({ sourceRoot, outputZip: zipPath, platform: dependencies.platform, env: dependencies.env, commandRunner: dependencies.commandRunner });
+      const inspection = await inspectReleaseZip({ zipPath: archive, platform: dependencies.platform, env: dependencies.env, commandRunner: dependencies.commandRunner });
+      if (!inspection.valid) throw new Error(`Release ZIP is missing required entries: ${inspection.missing.join(', ')}`);
+      io.stdout.write(`Release ZIP: ${archive}\n${inspection.entries.length} entries inspected.\n`);
+      return 0;
+    }
+
     if (parsed.command === 'build-release') {
       const result = await buildRelease({
         platform: dependencies.platform,
@@ -319,7 +394,11 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
       const report = await runDoctor({
         ...baseOptions(parsed, dependencies),
         bunExecutable: option(parsed.values, 'bun-executable'),
-        pwshExecutable: option(parsed.values, 'pwsh-executable')
+        pwshExecutable: option(parsed.values, 'pwsh-executable'),
+        nodeExecutable: option(parsed.values, 'node-executable'),
+        npmExecutable: option(parsed.values, 'npm-executable'),
+        gitExecutable: option(parsed.values, 'git-executable'),
+        coreutilsExecutable: option(parsed.values, 'coreutils-executable')
       });
       io.stdout.write(parsed.flags.has('json') ? `${JSON.stringify(report, null, 2)}\n` : `${renderDoctorReport(report)}\n`);
       return report.ok ? 0 : 1;
@@ -335,12 +414,18 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         dshArgs: [],
         agentPreset: option(parsed.values, 'preset'),
         spawnInteractive: dependencies.spawnInteractive,
+        portProbe: dependencies.portProbe,
+        onPortConflict: dependencies.onPortConflict,
+        openExistingSession: dependencies.openExistingSession,
+        chooseRecentProject: dependencies.chooseRecentProject,
+        pickProject: dependencies.pickProject,
         notify: (message: string) => io.stdout.write(`${message}\n`)
       };
       const result = dependencies.rpgmaker === false
         ? await launchProject(launchOptions)
         : await launchRpgmakerProject(launchOptions);
       io.stdout.write(`Launching official DSH in ${result.projectPath}\n`);
+      if (result.webUrl) io.stdout.write(`DSH web session: ${result.webUrl}\n`);
       return await childExitCode(result.child);
     }
 

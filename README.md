@@ -1,22 +1,26 @@
 # dsh-rpgmaker-mv
 DeepSeek for RPG Maker MV
 
-## Phase 1: Windows bootstrap, doctor, and launcher
+## Windows Release ZIP (Phase 7)
 
-The harness keeps the official DeepSeek Harness runtime in an app-owned tree and never forks or edits DSH. Windows is the primary, release-blocking platform; macOS support is best effort.
+For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer asks for consent before using WinGet to install or repair Node.js LTS/npm, Bun, PowerShell 7.4+, Git for Windows, and Microsoft Coreutils. It verifies the real executable paths and versions, installs the pinned DSH runtime, and creates the per-user Start Menu shortcut **DSH for RPG Maker MV**.
 
-### Install and repair
+The full first-run, repair, port-conflict, project-switching, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Default uninstall preserves state, credentials, logs, recent projects, and projects; `uninstall.ps1 -Purge` is explicit.
 
-Install Bun, PowerShell 7.4+, Git for Windows, and Microsoft Coreutils for Windows. From PowerShell in this repository:
+Contributors can still run the underlying bootstrap and doctor scripts from PowerShell:
 
 ```powershell
 ./bootstrap.ps1
 ./doctor.ps1
 ```
 
+The harness keeps the official DeepSeek Harness runtime in an app-owned tree and never forks or edits DSH. Windows is the primary, release-blocking platform; macOS support is best effort.
+
+### Install and repair
+
 `bootstrap.ps1` builds a fresh staging tree with the pinned `@deepseek-ai/dsh@0.1.0-rc.7` (npm integrity `sha512-ZceDCJ8FAywih+USW/OMk9jEhunlvJBGEz4kqrhau23hPzbciOazZrywH0nBRsaalSeAJ1JGBmjtw4OSjToStw==`), runs `bun pm trust --all`, verifies the exact package/lock facts and `koffi`, then swaps it into place. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched; older DSH releases are not accepted. If process termination or rollback cannot be confirmed, the lock reports a degraded state and preserves recoverable staging/rollback paths for manual recovery. Re-running against a valid runtime is a no-op; bootstrap, doctor, and launch serialize short runtime operations through the operation lock. A live DSH child also holds a session lease that prevents bootstrap or a second launch from swapping the runtime, while doctor remains available.
 
-The app-owned runtime defaults under the configured DSH home. Set `DSH_HOME` or `DSH_RPGMAKER_RUNTIME` to use a test-owned or alternate location. The doctor checks the actual executable paths and versions visible to the launcher, rather than trusting package-manager metadata.
+On Windows, program-owned DSH/MCP/tool runtimes default under `%LOCALAPPDATA%\\Programs\\BaiheStudio\\DSH-RPGMaker-MV`; mutable DSH state defaults under `%LOCALAPPDATA%\\BaiheStudio\\DSH-RPGMaker-MV\\state`. Set `DSH_HOME`, `DSH_RPGMAKER_PROGRAM_ROOT`, `DSH_RPGMAKER_DATA_ROOT`, or `DSH_RPGMAKER_RUNTIME` for a test-owned or alternate location. The doctor checks the actual executable paths and versions visible to the launcher, rather than trusting package-manager metadata.
 
 ### Launch a project
 
@@ -47,7 +51,7 @@ bun run phase4:real
 bun run phase2:real
 ```
 
-Tests use disposable runtime, DSH home, credential, and MV project directories. They do not touch a user's installed DSH state, RPG Maker projects, applications, or credentials. The current macOS substitute suite uses fake prerequisite/runtime executables; `bun run phase2:real` additionally installs pinned DSH/Xerolo packages into a disposable temp runtime and verifies 41 tools, mutation reread, validation, backup/restore, and shutdown. Real PowerShell/Coreutils identity, Windows `.cmd` launch, spaces/CJK path, and installed DSH checks remain a release gate on a Windows runner in foundation ticket 06.
+Tests use disposable runtime, DSH home, credential, and MV project directories. They do not touch a user's installed DSH state, RPG Maker projects, applications, or credentials. The current macOS substitute suite uses fake prerequisite/runtime executables; `bun run phase2:real` additionally installs pinned DSH/Xerolo packages into a disposable temp runtime and verifies 41 tools, mutation reread, validation, backup/restore, and shutdown. Real PowerShell/Coreutils identity, Windows `.cmd` launch, spaces/CJK path, and installed DSH checks remain a release gate on a Windows runner in foundation ticket 07.
 
 ## Phase 2: RPG Maker Agent and MCP editing loop
 
@@ -156,3 +160,23 @@ all state afterward):
 ```powershell
 bun run phase6:real
 ```
+
+## Phase 7: Windows release gate
+
+Build and inspect a real Release ZIP without overwriting an existing archive:
+
+```powershell
+bun run release:zip -- C:\temp\DSH-RPGMaker-MV-Windows.zip
+```
+
+The release gate uses test-owned fake user/install roots in automated tests. The complete foundation acceptance is:
+
+```powershell
+bun test
+bun run check
+bun run phase2:real
+bun run phase4:real
+bun run phase6:real
+```
+
+The non-Windows real acceptances truthfully mark Windows NW.js and Windows artifact launch as unsupported hardware evidence; they do not substitute macOS or a fake process for the Windows gate. The foundation stops before automated gameplay/CDP supervision, which remains on its separate draft/hold marker.

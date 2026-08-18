@@ -955,5 +955,6 @@ export function createImageWorkshop(toolchain: ImageToolchain, dependencies: Ima
 }
 
 export function defaultImageToolchainRoot(dshHome?: string): string {
-  return resolve(dshHome ?? resolveHarnessPaths().dshHome, join('rpgmaker-mv', 'image-workshop'));
+  const paths = resolveHarnessPaths(dshHome ? { dshHome } : {});
+  return resolve(paths.programRoot, join('tools', 'image-workshop'));
 }

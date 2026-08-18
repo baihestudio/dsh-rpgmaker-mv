@@ -1,12 +1,27 @@
 import { resolve } from 'node:path';
+import { createInterface } from 'node:readline/promises';
+import { stdin as processStdin, stdout as processStdout } from 'node:process';
 
 import { findDshExecutable } from './bootstrap';
-import { resolveHarnessPaths, type PathOptions } from './config';
+import { resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
 import { inspectCredentialMetadata } from './credentials';
 import { childExitCode, runCommand, spawnInteractive, withoutCredentials, type CommandRunner, type InteractiveSpawner } from './process';
 import { assertValidMvProject, pathExists, type ProjectValidation } from './project';
 import { acquireHarnessSessionLeases } from './lock';
+import {
+  ensureFixedPortAvailable,
+  ensureHarnessLayout,
+  openExistingDshSession,
+  recordRecentProject,
+  selectProject,
+  type ExistingSessionOpener,
+  type PortConflictAction,
+  type PortProbe,
+  type RecentProject,
+  type RecentProjectChoice,
+  writeLaunchLog
+} from './windows';
 
 export const SINGLE_WRITER_NOTICE = [
   'Agent single-writer contract',
@@ -36,6 +51,15 @@ export interface LaunchOptions extends PathOptions {
   spawnInteractive?: InteractiveSpawner;
   notify?: (message: string) => void;
   extraEnv?: Record<string, string | undefined>;
+  bindWeb?: boolean;
+  webHost?: string;
+  webPort?: number;
+  portProbe?: PortProbe;
+  portAlreadyChecked?: boolean;
+  onPortConflict?: (url: string) => Promise<PortConflictAction> | PortConflictAction;
+  openExistingSession?: ExistingSessionOpener;
+  chooseRecentProject?: (last: RecentProject, recent: RecentProject[]) => Promise<RecentProjectChoice> | RecentProjectChoice;
+  pickProject?: () => Promise<string>;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
 }
@@ -46,6 +70,7 @@ export interface LaunchResult {
   dshExecutable: string;
   args: string[];
   cwd: string;
+  webUrl?: string;
   onboardingMessage?: string;
   child: unknown;
   releaseSession: () => Promise<void>;
@@ -96,15 +121,63 @@ export function onboardingMessageFor(configured: boolean): string | undefined {
   return configured ? undefined : ONBOARDING_MESSAGE;
 }
 
+async function ask(question: string): Promise<string> {
+  if (!processStdin.isTTY || !processStdout.isTTY) return '';
+  const readline = createInterface({ input: processStdin, output: processStdout });
+  try {
+    return (await readline.question(question)).trim();
+  } finally {
+    readline.close();
+  }
+}
+
+async function defaultRecentProjectChoice(last: RecentProject): Promise<RecentProjectChoice> {
+  const answer = await ask(`Continue last project (${last.path})? [Y]es / [N]o, choose another: `);
+  return /^(?:y|yes)$/i.test(answer) ? 'continue-last' : 'choose-other';
+}
+
+async function defaultPortConflict(url: string): Promise<PortConflictAction> {
+  const answer = await ask(`DSH is already using ${url}. [O]pen existing session, [R]etry after closing it, or [C]ancel: `);
+  if (/^(?:o|open)$/i.test(answer)) return 'open-existing';
+  if (/^(?:r|retry)$/i.test(answer)) return 'retry';
+  return 'cancel';
+}
+
+export async function resolveLaunchProjectPath(options: LaunchOptions = {}): Promise<string> {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  return selectProject({
+    ...options,
+    platform,
+    env,
+    projectPath: options.projectPath,
+    pickProject: options.pickProject ?? (() => pickProjectDirectory({ platform, env, commandRunner: options.commandRunner })),
+    chooseRecentProject: options.chooseRecentProject ?? defaultRecentProjectChoice,
+    notify: options.notify
+  });
+}
+
+export async function ensureLaunchPort(options: LaunchOptions): Promise<void> {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  if (!options.bindWeb || options.portAlreadyChecked) return;
+  await ensureFixedPortAvailable({
+    platform,
+    host: options.webHost ?? WINDOWS_DSH_HOST,
+    port: options.webPort ?? WINDOWS_DSH_PORT,
+    portProbe: options.portProbe,
+    onConflict: options.onPortConflict ?? defaultPortConflict,
+    openExisting: options.openExistingSession ?? ((url) => openExistingDshSession(url, { platform, env, commandRunner: options.commandRunner })),
+    notify: options.notify
+  });
+}
+
 export async function launchProject(options: LaunchOptions = {}): Promise<LaunchResult> {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const paths = resolveHarnessPaths({ ...options, platform, env });
-  const projectPath = options.projectPath ? resolve(options.projectPath) : await pickProjectDirectory({
-    platform,
-    env,
-    commandRunner: options.commandRunner
-  });
+  const projectPath = await resolveLaunchProjectPath(options);
+  await ensureLaunchPort(options);
   const leases = await acquireHarnessSessionLeases(paths.lockDir, paths.sessionLeaseDir, {
     timeoutMs: options.lockTimeoutMs,
     retryMs: options.lockRetryMs
@@ -140,6 +213,11 @@ function attachSessionLease(child: unknown, release: () => Promise<void>): () =>
   return releaseOnce;
 }
 
+function addWebBinding(args: string[], host: string, port: number): string[] {
+  if (args.includes('--host') || args.includes('--port')) return args;
+  return [...args, '--host', host, '--port', String(port)];
+}
+
 async function launchProjectUnlocked(
   options: LaunchOptions,
   platform: string,
@@ -162,6 +240,9 @@ async function launchProjectUnlocked(
     throw new LauncherError(`DSH executable does not exist: ${executable}. Run bootstrap, then doctor, before launching.`);
   }
 
+  await ensureHarnessLayout({ ...options, platform, env, dshHome: paths.dshHome, mutableRoot: paths.mutableRoot, programRoot: paths.programRoot });
+  await recordRecentProject(validation.projectPath, { ...options, platform, env, dshHome: paths.dshHome, mutableRoot: paths.mutableRoot, programRoot: paths.programRoot });
+
   const configured = (await inspectCredentialMetadata(paths.dshHome, env)).configured;
   const onboardingMessage = onboardingMessageFor(configured);
   if (onboardingMessage && options.notify) options.notify(`${onboardingMessage}\n`);
@@ -169,9 +250,18 @@ async function launchProjectUnlocked(
   const childEnv: Record<string, string | undefined> = {
     ...env,
     DSH_HOME: paths.dshHome,
+    DSH_RPGMAKER_PROGRAM_ROOT: paths.programRoot,
+    DSH_RPGMAKER_DATA_ROOT: paths.mutableRoot,
+    DSH_RPGMAKER_RUNTIME: paths.runtimeDir,
+    DSH_RPGMAKER_LOG_DIR: paths.logsDir,
+    DSH_RPGMAKER_CACHE_DIR: paths.cacheDir,
     ...(options.extraEnv ?? {})
   };
-  const args = [...(options.dshArgs ?? [])];
+  const rawArgs = [...(options.dshArgs ?? [])];
+  const args = options.bindWeb
+    ? addWebBinding(rawArgs, options.webHost ?? WINDOWS_DSH_HOST, options.webPort ?? WINDOWS_DSH_PORT)
+    : rawArgs;
+  await writeLaunchLog({ ...options, dshHome: paths.dshHome, mutableRoot: paths.mutableRoot, programRoot: paths.programRoot, event: 'launch', projectPath: validation.projectPath, host: options.bindWeb ? options.webHost ?? WINDOWS_DSH_HOST : undefined, port: options.bindWeb ? options.webPort ?? WINDOWS_DSH_PORT : undefined });
   const child = (options.spawnInteractive ?? spawnInteractive)(executable, args, {
     cwd: validation.projectPath,
     env: childEnv,
@@ -184,6 +274,7 @@ async function launchProjectUnlocked(
     dshExecutable: executable,
     args,
     cwd: validation.projectPath,
+    ...(options.bindWeb ? { webUrl: `http://${options.webHost ?? WINDOWS_DSH_HOST}:${options.webPort ?? WINDOWS_DSH_PORT}/` } : {}),
     onboardingMessage,
     child
   };
