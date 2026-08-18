@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -36,6 +36,24 @@ async function writeInstalledProfile(dshHome: string, dependency?: string, bundl
   const manifest: Record<string, unknown> = { name: 'dsh-profile-web', private: true, version: '0.1.0' };
   if (dependency) manifest.dependencies = { [IMAGE_WORKSHOP_PLUGIN_PACKAGE]: dependency };
   if (bundles) manifest.dsh = { profile: { bundles } };
+  await writeFile(join(profile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFile(join(profile, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\nimporters:\n  .:\n    dependencies:\n      __placeholder__:\n        specifier: "0.0.0"\n        version: 0.0.0\n');
+  return profile;
+}
+
+/** Write a profile whose installed node_modules entry links to the app-owned bundle, mirroring `plugin add file:`. */
+async function writeInstalledImagePlugin(dshHome: string, bundleTarget: string): Promise<string> {
+  const profile = join(dshHome, 'profiles', 'web');
+  const installedDir = join(profile, 'node_modules', IMAGE_WORKSHOP_PLUGIN_PACKAGE);
+  await mkdir(dirname(installedDir), { recursive: true });
+  await rm(installedDir, { recursive: true, force: true });
+  await symlink(bundleTarget, installedDir, 'dir');
+  const manifest: Record<string, unknown> = {
+    name: 'dsh-profile-web',
+    private: true,
+    version: '0.1.0',
+    dependencies: { [IMAGE_WORKSHOP_PLUGIN_PACKAGE]: `file:${bundleTarget}` }
+  };
   await writeFile(join(profile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   await writeFile(join(profile, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\nimporters:\n  .:\n    dependencies:\n      __placeholder__:\n        specifier: "0.0.0"\n        version: 0.0.0\n');
   return profile;
@@ -97,10 +115,11 @@ describe('image tool adapter seam', () => {
         const result = await tool.execute({ input: 'hero.png' }, agentExec(workspace));
         expect(result.width).toBe(32);
         expect(result.sha256).toBe('abc123');
+        expect(result.path).toBe('hero.png');
         expect(calls).toHaveLength(1);
         expect(calls[0].args[0]).toBe('inspect');
         expect(calls[0].args.slice(-2)).toEqual(['--input', join(workspace, 'hero.png')]);
-        expect(tool.output.render(result)[0].text).toContain('32x32');
+        expect(tool.output.render({ input: 'hero.png' }, result)[0].text).toContain('hero.png: 32x32');
         await expect(tool.execute({ input: 'missing.png' }, agentExec(workspace))).rejects.toThrow(/does not exist/);
         await expect(tool.execute({ input: '../outside.png' }, agentExec(workspace))).rejects.toThrow(/traversal/);
       } finally {
@@ -127,11 +146,12 @@ describe('image tool adapter seam', () => {
         const tool = createImageResizePixelTool();
         const result = await tool.execute({ input: 'hero.png', output: 'big.png', scale: 3 }, agentExec(workspace));
         expect(result.operation).toBe('resize-pixel');
-        expect(result.outputPaths).toEqual([join(workspace, 'big.png')]);
-        expect(result.manifestPath).toBe(`${join(workspace, 'big.png')}.manifest.json`);
+        expect(result.outputPaths).toEqual(['big.png']);
+        expect(result.manifestPath).toBe('big.png.manifest.json');
         expect(calls[0].args[0]).toBe('resize-pixel');
         expect(calls[0].args).toEqual(['resize-pixel', '--input', join(workspace, 'hero.png'), '--output', join(workspace, 'big.png'), '--scale', '3']);
-        expect(tool.output.render(result)[0].text).toContain('resize-pixel succeeded');
+        expect(tool.output.render({ input: 'hero.png', output: 'big.png', scale: 3 }, result)[0].text).toContain('resize-pixel succeeded');
+        expect(tool.output.render({ input: 'hero.png', output: 'big.png', scale: 3 }, result)[0].text).toContain('big.png');
 
         await writeFile(join(workspace, 'exists.png'), 'x');
         await expect(tool.execute({ input: 'hero.png', output: 'exists.png', scale: 2 }, agentExec(workspace))).rejects.toThrow(/already exists/);
@@ -158,6 +178,8 @@ describe('app-owned image tool plugin installation', () => {
       const dshHome = join(root, 'dsh-home');
       const runtimeDir = join(programRoot, 'runtime', 'dsh');
       const pnpm = join(root, 'pnpm.exe');
+      await mkdir(join(programRoot, 'bundle'), { recursive: true });
+      await copyBundle(join(programRoot, 'bundle', 'dsh-image-workshop'));
       await mkdir(runtimeDir, { recursive: true });
       await writeFile(pnpm, 'fixture');
       const dsh = join(runtimeDir, 'dsh.exe');
@@ -169,7 +191,7 @@ describe('app-owned image tool plugin installation', () => {
           pluginCalls += 1;
           const local = args.find((value) => value.startsWith('file:'));
           expect(local).toBeDefined();
-          await writeInstalledProfile(dshHome, local);
+          await writeInstalledImagePlugin(dshHome, local!.slice('file:'.length));
           return { exitCode: 0, stdout: '', stderr: '' };
         }
         throw new Error(`unexpected runner call: ${args.join(' ')}`);
@@ -179,11 +201,66 @@ describe('app-owned image tool plugin installation', () => {
       expect(first.valid).toBe(true);
       expect(first.packageVersion).toBe(IMAGE_WORKSHOP_PLUGIN_VERSION);
       expect(first.bundleOccurrences).toBe(0);
-      expect(first.packageDir).toBe(join(programRoot, IMAGE_WORKSHOP_BUNDLE_RELATIVE));
+      expect(first.packageDir).toBe(await realpath(join(programRoot, IMAGE_WORKSHOP_BUNDLE_RELATIVE)));
       expect(pluginCalls).toBe(1);
 
       const second = await prepareImageWorkshopPlugin(options);
       expect(second.valid).toBe(true);
+      expect(pluginCalls).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('repairs a broken or misdirected installed link instead of accepting it', async () => {
+    const root = await temp('plugin-repair');
+    try {
+      const programRoot = join(root, 'program');
+      const dshHome = join(root, 'dsh-home');
+      const runtimeDir = join(programRoot, 'runtime', 'dsh');
+      const pnpm = join(root, 'pnpm.exe');
+      await mkdir(join(programRoot, 'bundle'), { recursive: true });
+      await copyBundle(join(programRoot, 'bundle', 'dsh-image-workshop'));
+      await mkdir(runtimeDir, { recursive: true });
+      await writeFile(pnpm, 'fixture');
+      const dsh = join(runtimeDir, 'dsh.exe');
+      await writeFile(dsh, 'fixture');
+      const options = { platform: 'win32', dshHome, programRoot, runtimeDir, dshExecutable: dsh, pnpmExecutable: pnpm } as const;
+      const target = join(programRoot, IMAGE_WORKSHOP_BUNDLE_RELATIVE);
+
+      // A manifest entry with no installed node_modules copy must fail verification.
+      await writeInstalledProfile(dshHome, `file:${target}`);
+      const missing = await verifyImageWorkshopPlugin({ ...options, bundleDir: target });
+      expect(missing.valid).toBe(false);
+      expect(missing.errors.join(' ')).toMatch(/installed profile package .* was not found/);
+
+      // A link pointing outside the app-owned program root must fail verification.
+      const external = join(root, 'external');
+      await copyBundle(external);
+      const profile = join(dshHome, 'profiles', 'web');
+      const installedDir = join(profile, 'node_modules', IMAGE_WORKSHOP_PLUGIN_PACKAGE);
+      await mkdir(dirname(installedDir), { recursive: true });
+      await symlink(external, installedDir, 'dir');
+      const misdirected = await verifyImageWorkshopPlugin({ ...options, bundleDir: target });
+      expect(misdirected.valid).toBe(false);
+      expect(misdirected.errors.join(' ')).toMatch(/does not resolve to the app-owned program root/);
+
+      // Repair re-links: a fresh runner that performs a real `file:` link makes it valid.
+      let pluginCalls = 0;
+      const runner = async (command: string, args: string[]) => {
+        expect(command).toBe(dsh);
+        if (args[0] === 'plugin') {
+          pluginCalls += 1;
+          const local = args.find((value) => value.startsWith('file:'));
+          expect(local).toBeDefined();
+          await writeInstalledImagePlugin(dshHome, local!.slice('file:'.length));
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        throw new Error(`unexpected runner call: ${args.join(' ')}`);
+      };
+      const repaired = await prepareImageWorkshopPlugin({ ...options, commandRunner: runner });
+      expect(repaired.valid).toBe(true);
+      expect(repaired.packageDir).toBe(await realpath(target));
       expect(pluginCalls).toBe(1);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -218,7 +295,7 @@ describe('app-owned image tool plugin installation', () => {
     }
   });
 
-  test('restores the profile when the local link fails', async () => {
+  test('restores the profile when the local link fails, including the plugin node_modules entry', async () => {
     const root = await temp('plugin-rollback');
     try {
       const programRoot = join(root, 'program');
@@ -231,13 +308,25 @@ describe('app-owned image tool plugin installation', () => {
       const dsh = join(runtimeDir, 'dsh.exe');
       await writeFile(dsh, 'fixture');
       const before = await readFile(join(profile, 'package.json'), 'utf8');
-      const runner = async () => ({ exitCode: 1, stdout: '', stderr: 'synthetic plugin add failure' });
+      const installedDir = join(profile, 'node_modules', IMAGE_WORKSHOP_PLUGIN_PACKAGE);
+      // Simulate a partial `plugin add` that mutated the profile and created the
+      // plugin's own node_modules entry before the manager command failed.
+      const runner = async () => {
+        await writeFile(join(profile, 'package.json'), `${JSON.stringify({
+          name: 'dsh-profile-web', private: true, version: '0.1.0',
+          dependencies: { [IMAGE_WORKSHOP_PLUGIN_PACKAGE]: `file:${join(programRoot, IMAGE_WORKSHOP_BUNDLE_RELATIVE)}` }
+        }, null, 2)}\n`);
+        await mkdir(installedDir, { recursive: true });
+        await writeFile(join(installedDir, 'package.json'), '{"name":"partial"}\n');
+        return { exitCode: 1, stdout: '', stderr: 'synthetic plugin add failure' };
+      };
       await expect(prepareImageWorkshopPlugin({
         platform: 'win32', dshHome, programRoot, runtimeDir, dshExecutable: dsh, pnpmExecutable: pnpm, commandRunner: runner
       })).rejects.toThrow(/plugin manager|failed/);
       const after = await readFile(join(profile, 'package.json'), 'utf8');
       expect(after).toBe(before);
       expect(after).not.toContain(IMAGE_WORKSHOP_PLUGIN_PACKAGE);
+      await expect(stat(installedDir)).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

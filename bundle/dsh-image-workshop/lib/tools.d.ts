@@ -1,8 +1,13 @@
+export interface ImageWorkshopContentBlock {
+  type: string;
+  text: string;
+}
+
 export interface ImageWorkshopToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  output: { schema: Record<string, unknown>; render: (value: unknown) => Array<{ type: string; text: string }> };
+  output: { schema: Record<string, unknown>; render: (args: Record<string, unknown>, value: Record<string, unknown>) => ImageWorkshopContentBlock[] };
   execute: (args: Record<string, unknown>, exec: { agent?: { session?: { header?: { cwd?: string } } } }) => Promise<Record<string, unknown>>;
   presentCall: (args: Record<string, unknown>) => Record<string, unknown>;
 }

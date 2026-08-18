@@ -8,6 +8,7 @@
  * canonical JSON plus a concise text render.
  */
 import { stat } from 'node:fs/promises'
+import { relative } from 'node:path'
 import { resolveWorkspacePath } from './workspace.js'
 import { invokeImageOperation } from './workshop-client.js'
 
@@ -24,7 +25,13 @@ function renderJson(value) {
   return [{ type: 'text', text: JSON.stringify(value, null, 2) }]
 }
 
-function renderSummary(result) {
+/**
+ * DSH rc.7 invokes `output.render(args, value)`: a pure projection of the
+ * validated canonical `value` (never the arguments) into model-facing content.
+ * The model-facing summary must use project-relative paths only.
+ */
+function renderSummary(args, value) {
+  const result = value
   if (result === null || typeof result !== 'object') return renderJson(result)
   if (result.operation !== undefined) {
     const outputs = Array.isArray(result.outputPaths) && result.outputPaths.length > 0
@@ -40,6 +47,14 @@ function renderSummary(result) {
     }]
   }
   return renderJson(result)
+}
+
+function toWorkspaceRelative(workspace, abs) {
+  const rel = relative(workspace, abs)
+  if (rel === '' || rel.startsWith('..') || rel.startsWith('\\')) {
+    throw new Error(`image workspace: result path escaped the workspace: ${abs}`)
+  }
+  return rel.split('\\').join('/')
 }
 
 function agentWorkspace(exec) {
@@ -68,7 +83,11 @@ export function createImageInspectTool() {
       const workspace = agentWorkspace(exec)
       const input = await resolveWorkspacePath(workspace, args.input, { label: 'Input', forOutput: false })
       if (!(await pathExists(input))) throw new Error(`image_inspect input does not exist in the workspace: ${args.input}`)
-      return await invokeImageOperation('inspect', ['--input', input])
+      const value = await invokeImageOperation('inspect', ['--input', input])
+      if (value !== null && typeof value === 'object' && typeof value.path === 'string') {
+        return { ...value, path: toWorkspaceRelative(workspace, value.path) }
+      }
+      return value
     },
     presentCall: (args) => ({ card: 'generic', title: `Inspect ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
   }
@@ -112,11 +131,11 @@ export function createImageResizePixelTool() {
       const manifest = await invokeImageOperation('resize-pixel', cliArgs)
       const outputPaths = (Array.isArray(manifest.outputs) ? manifest.outputs : [])
         .filter((artifact) => artifact && typeof artifact === 'object' && artifact.kind !== 'json' && typeof artifact.path === 'string')
-        .map((artifact) => artifact.path)
+        .map((artifact) => toWorkspaceRelative(workspace, artifact.path))
       return {
         operation: manifest.operation,
         outputPaths,
-        manifestPath: `${output}.manifest.json`,
+        manifestPath: toWorkspaceRelative(workspace, `${output}.manifest.json`),
         manifest
       }
     },

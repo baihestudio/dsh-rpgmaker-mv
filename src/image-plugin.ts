@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { cp, mkdir, readdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,9 +10,7 @@ import {
   pluginEnvironment,
   preparePnpmRuntime,
   profileDirFor,
-  resolveDshInvocation,
-  restoreProfileState,
-  snapshotProfileState
+  resolveDshInvocation
 } from './vision-toolkit';
 
 export const IMAGE_WORKSHOP_PLUGIN_PACKAGE = '@baihestudio/dsh-image-workshop';
@@ -21,7 +19,7 @@ export const IMAGE_WORKSHOP_PLUGIN_LICENSE = 'MIT';
 export const IMAGE_WORKSHOP_PLUGIN_PROFILE = 'web';
 export const IMAGE_WORKSHOP_PLUGIN_ENTRYPOINT = 'lib/index.js';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const IMAGE_WORKSHOP_PLUGIN_SHA256 = 'edd700c03856033e08d5886830d6bfee3f7f3e603f94cc10f011849ef0dde05a';
+export const IMAGE_WORKSHOP_PLUGIN_SHA256 = 'ece82b0640711eda0ecb324d44da45b75dd16baf3138fe0ed87f2df2073995b8';
 export const IMAGE_WORKSHOP_BUNDLE_RELATIVE = join('bundle', 'dsh-image-workshop');
 export const IMAGE_WORKSHOP_TOOL_NAMES = ['image_inspect', 'image_resize_pixel'] as const;
 export const IMAGE_WORKSHOP_PLUGIN_ROW_ID = 'image-workshop-plugin';
@@ -106,6 +104,56 @@ function profilePackageDir(profileDir: string): string {
   return join(profileDir, 'node_modules', IMAGE_WORKSHOP_PLUGIN_PACKAGE);
 }
 
+interface ImageWorkshopProfileSnapshotEntry {
+  source: string;
+  backup: string;
+  existed: boolean;
+}
+
+interface ImageWorkshopProfileSnapshot {
+  root: string;
+  entries: ImageWorkshopProfileSnapshotEntry[];
+}
+
+/**
+ * Image-plugin-owned profile snapshot. Covers the manifest, lockfile, patch,
+ * and this plugin's OWN node_modules entry so a failed or partial `plugin add`
+ * can never leave an orphaned image-tool package row. Deliberately does not
+ * reuse Vision Toolkit's package-specific rollback internals.
+ */
+async function snapshotImageWorkshopProfile(paths: HarnessPaths, profileDir: string): Promise<ImageWorkshopProfileSnapshot> {
+  const root = await mkdtemp(join(paths.dshHome, '.image-workshop-profile-rollback-'));
+  const sources = [
+    join(profileDir, 'package.json'),
+    join(profileDir, 'pnpm-lock.yaml'),
+    join(profileDir, 'cordis.patch.yml'),
+    profilePackageDir(profileDir)
+  ];
+  const entries: ImageWorkshopProfileSnapshotEntry[] = [];
+  try {
+    for (const [index, source] of sources.entries()) {
+      const existed = await exists(source);
+      const backup = join(root, String(index));
+      if (existed) await cp(source, backup, { recursive: true, force: false, errorOnExist: true });
+      entries.push({ source, backup, existed });
+    }
+    return { root, entries };
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function restoreImageWorkshopProfile(snapshot: ImageWorkshopProfileSnapshot): Promise<void> {
+  for (const entry of snapshot.entries) {
+    await rm(entry.source, { recursive: true, force: true });
+    if (entry.existed) {
+      await mkdir(dirname(entry.source), { recursive: true });
+      await cp(entry.backup, entry.source, { recursive: true, force: false, errorOnExist: true });
+    }
+  }
+}
+
 export async function verifyImageWorkshopPlugin(options: ImageWorkshopPluginOptions = {}): Promise<ImageWorkshopPluginVerification> {
   const paths = resolveHarnessPaths(options);
   const bundleDir = resolve(options.bundleDir ?? imageWorkshopBundleDirFor(paths));
@@ -135,16 +183,49 @@ export async function verifyImageWorkshopPlugin(options: ImageWorkshopPluginOpti
   const profileConfig = asObject(asObject(profileManifest?.dsh)?.profile);
   const layers = Array.isArray(profileConfig?.bundles) ? profileConfig.bundles : [];
   const bundleOccurrences = layers.filter((value) => value === IMAGE_WORKSHOP_PLUGIN_PACKAGE).length;
-  if (!profileDependency) errors.push(`profile dependency ${IMAGE_WORKSHOP_PLUGIN_PACKAGE} is not installed in the ${profile} profile`);
-  else if (!/^(file:|link:)/i.test(profileDependency) && profileDependency !== IMAGE_WORKSHOP_PLUGIN_VERSION) {
-    errors.push(`profile dependency ${IMAGE_WORKSHOP_PLUGIN_PACKAGE} is not pinned to the app-owned local bundle`);
+  if (!profileDependency) {
+    errors.push(`profile dependency ${IMAGE_WORKSHOP_PLUGIN_PACKAGE} is not installed in the ${profile} profile`);
+  } else if (!/^(file:|link:)/i.test(profileDependency)) {
+    errors.push(`profile dependency ${IMAGE_WORKSHOP_PLUGIN_PACKAGE} is not pinned to the app-owned local bundle (file:/link:); a bare or npm specifier could resolve from the public registry`);
   }
   if (bundleOccurrences !== 0) errors.push(`profile contains ${bundleOccurrences} global ${IMAGE_WORKSHOP_PLUGIN_PACKAGE} bundle layers; the image tools must be Agent-scoped through the asset-workshop composition, never mounted globally`);
+
+  // A package.json dependency entry alone proves nothing about the linked copy.
+  // Verify the installed profile node_modules entry exists, resolves to the
+  // app-owned program root, and matches the pinned prebuilt identity, entrypoint,
+  // and release hash. A broken or misdirected link therefore fails verification
+  // and is repaired instead of being accepted as valid.
+  const installedDir = profilePackageDir(profileDir);
+  let installedResolved: string | undefined;
+  if (!(await exists(installedDir))) {
+    errors.push(`installed profile package ${IMAGE_WORKSHOP_PLUGIN_PACKAGE} was not found under the ${profile} profile`);
+  } else {
+    const installedReal = await realpath(installedDir).catch(() => undefined);
+    const ownedReal = await realpath(paths.programRoot).catch(() => paths.programRoot);
+    installedResolved = installedReal;
+    if (!installedReal || !(installedReal === ownedReal || installedReal.startsWith(`${ownedReal}${sep}`))) {
+      errors.push(`installed profile package does not resolve to the app-owned program root (got ${installedReal ?? 'unresolvable'})`);
+    }
+    const installedManifest = await readJson(join(installedReal ?? installedDir, 'package.json'));
+    const installedName = typeof installedManifest?.name === 'string' ? installedManifest.name : undefined;
+    const installedVersion = typeof installedManifest?.version === 'string' ? installedManifest.version : undefined;
+    const installedEntry = typeof installedManifest?.main === 'string' ? installedManifest.main : undefined;
+    if (installedName !== IMAGE_WORKSHOP_PLUGIN_PACKAGE || installedVersion !== IMAGE_WORKSHOP_PLUGIN_VERSION) {
+      errors.push(`installed profile package identity is ${installedName ?? 'missing'}@${installedVersion ?? 'missing'}, expected ${IMAGE_WORKSHOP_PLUGIN_PACKAGE}@${IMAGE_WORKSHOP_PLUGIN_VERSION}`);
+    }
+    if (!installedEntry || !(await exists(join(installedReal ?? installedDir, installedEntry)))) {
+      errors.push(`installed profile package entrypoint ${installedEntry ?? IMAGE_WORKSHOP_PLUGIN_ENTRYPOINT} was not found`);
+    }
+    const installedSha = await imageWorkshopBundleDigest(installedReal ?? installedDir).catch(() => undefined);
+    if (installedSha !== IMAGE_WORKSHOP_PLUGIN_SHA256) {
+      errors.push(`installed profile package release hash mismatch (got ${installedSha?.slice(0, 12) ?? 'none'}); the installed copy is not the pinned prebuilt bundle`);
+    }
+  }
 
   return {
     valid: errors.length === 0,
     errors,
-    packageDir: packageVersion === IMAGE_WORKSHOP_PLUGIN_VERSION ? bundleDir : undefined,
+    packageDir: installedResolved,
     packageVersion,
     profileDependency,
     bundleOccurrences,
@@ -197,7 +278,7 @@ export async function prepareImageWorkshopPlugin(options: ImageWorkshopPluginOpt
   }
   const profile = options.profile ?? IMAGE_WORKSHOP_PLUGIN_PROFILE;
   const profileDir = profileDirFor(paths, profile);
-  const snapshot = await snapshotProfileState(paths, profileDir);
+  const snapshot = await snapshotImageWorkshopProfile(paths, profileDir);
   try {
     await linkImageWorkshopPlugin(options, paths, target, platform, env);
     const installed = await verifyImageWorkshopPlugin({ ...options, bundleDir: target });
@@ -206,7 +287,7 @@ export async function prepareImageWorkshopPlugin(options: ImageWorkshopPluginOpt
   } catch (error) {
     const original = error instanceof Error ? error : new Error(String(error));
     try {
-      await restoreProfileState(snapshot);
+      await restoreImageWorkshopProfile(snapshot);
     } catch (restoreError) {
       throw new Error(`${original.message}; image tool plugin profile rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
     }

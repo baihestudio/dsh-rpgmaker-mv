@@ -606,7 +606,7 @@ export function visionToolkitCachePath(paths: HarnessPaths): string {
 }
 
 // Shared app-owned profile helpers, reused by the image-tool plugin installer.
-export { pluginEnvironment, prependPath, profileDirFor, resolveDshInvocation, snapshotProfileState, restoreProfileState, preparePnpmRuntime };
-export type { PnpmRuntime, ProfileSnapshot };
+export { pluginEnvironment, profileDirFor, resolveDshInvocation, preparePnpmRuntime };
+export type { PnpmRuntime };
 
 export { PNPM_VERSION, PNPM_RUNTIME_RELATIVE };

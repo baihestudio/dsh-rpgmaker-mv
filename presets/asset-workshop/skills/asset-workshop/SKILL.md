@@ -33,33 +33,15 @@ absolute paths, `..` traversal, symlink/junction escapes, missing inputs, and
 pre-existing outputs are rejected. External sources must first be copied into
 the workspace.
 
-The remaining operations (trim-pad, sheet-slice, sheet-assemble, atlas-pack,
-optimize-png) are available through the typed tool set as it ships in this
-release; their CLI form remains an internal diagnostic seam.
+Only these two typed tools are available in this release. The trim-pad,
+sheet-slice, sheet-assemble, atlas-pack, and optimize-png operations are not
+yet exposed as typed tools; do not claim, guess, or invoke them. The launcher's
+internal CLI is a maintainer/debug seam only and must never be explained to
+the user or invoked directly.
 
-The supported outcome operations are:
-
-- `resize-pixel`: integer nearest-neighbour scaling only; reject non-integer
-  scales rather than introducing a smoothing filter.
-- `trim-pad`: trim transparent borders and/or pad to an explicit canvas with a
-  transparent background.
-- `sheet-slice`: fixed cell width/height, row-major frame order, PNG frame files
-  and a JSON frame manifest.
-- `sheet-assemble`: row-major PNG assembly from equal-sized cells.
-- `atlas-pack`: pinned `free-tex-packer-core@0.3.9`, nearest-neighbour,
-  no-rotation defaults, optional padding/extrusion, and JSON frame metadata.
-  The output is a new directory; the PNG, JSON, and `manifest.json` are
-  committed together by one atomic directory rename.
-- `optimize-png`: an explicit release-only post-pass through pinned
-  `oxipng@10.2.0`; never call it as an implicit part of editing.
-
-Every mutating operation must report its JSON manifest and inspect the output
-before claiming success. The manifest records resolved tool paths and versions,
-input/output dimensions, format, channels, alpha mode, hashes, options, and
-fidelity evidence. Atlas output is a new directory containing its PNG, JSON,
-and `manifest.json`; a pre-existing output directory is a collision. Other
-operations preserve the manifest beside the output. Never replace a source
-file, even during an explicit optimization; use a distinct release output.
+Within these two tools, the supported operation is `resize-pixel`: integer
+nearest-neighbour scaling only; reject non-integer scales rather than
+introducing a smoothing filter.
 
 The workflow has bounded ImageMagick resource and time limits. Treat malformed
 inputs, non-zero exits, missing output files, failed dimension/alpha checks,
