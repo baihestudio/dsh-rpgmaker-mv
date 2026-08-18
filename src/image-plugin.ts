@@ -19,7 +19,7 @@ export const IMAGE_WORKSHOP_PLUGIN_LICENSE = 'MIT';
 export const IMAGE_WORKSHOP_PLUGIN_PROFILE = 'web';
 export const IMAGE_WORKSHOP_PLUGIN_ENTRYPOINT = 'lib/index.js';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const IMAGE_WORKSHOP_PLUGIN_SHA256 = 'ece82b0640711eda0ecb324d44da45b75dd16baf3138fe0ed87f2df2073995b8';
+export const IMAGE_WORKSHOP_PLUGIN_SHA256 = '7272de0740250ed5740281be6119f49d282d3ab50e2b7d04ab80114bfc66cfb2';
 export const IMAGE_WORKSHOP_BUNDLE_RELATIVE = join('bundle', 'dsh-image-workshop');
 export const IMAGE_WORKSHOP_TOOL_NAMES = ['image_inspect', 'image_resize_pixel'] as const;
 export const IMAGE_WORKSHOP_PLUGIN_ROW_ID = 'image-workshop-plugin';

@@ -9,7 +9,10 @@
 import { createImageInspectTool, createImageResizePixelTool } from './tools.js'
 
 export const name = '@baihestudio/dsh-image-workshop'
-export const inject = ['tools', 'logger']
+// Only `tools` is a required scoped service. `logger` is used opportunistically
+// (and is absent from the injected `ctx` in some DSH hosts); it must not be
+// declared as an injection requirement or preset recompose fails to resolve it.
+export const inject = ['tools']
 
 /** Plugin entry: register the Agent-scoped tools synchronously. */
 export async function apply(ctx) {

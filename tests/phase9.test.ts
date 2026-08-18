@@ -18,6 +18,7 @@ import { installPreset } from '../src/rpgmaker';
 import { buildReleaseZip, inspectReleaseZip } from '../src/release-gate';
 import { validateRelativePath, resolveWorkspacePath } from '../bundle/dsh-image-workshop/lib/workspace.js';
 import { createImageInspectTool, createImageResizePixelTool } from '../bundle/dsh-image-workshop/lib/tools.js';
+import * as imageWorkshopPlugin from '../bundle/dsh-image-workshop/lib/index.js';
 import { clearWorkshopRunner, setWorkshopRunner } from '../bundle/dsh-image-workshop/lib/workshop-client.js';
 
 async function temp(prefix: string): Promise<string> {
@@ -464,5 +465,27 @@ describe('release bundle', () => {
 
   test('exposes exactly the two Ticket 02 tools', () => {
     expect(IMAGE_WORKSHOP_TOOL_NAMES).toEqual(['image_inspect', 'image_resize_pixel']);
+  });
+
+  test('mounts under the shipped entry with only the required tools service', async () => {
+    expect(imageWorkshopPlugin.name).toBe(IMAGE_WORKSHOP_PLUGIN_PACKAGE);
+    // `logger` is optional (used via `?.`); declaring it as an injected service
+    // would fail DSH rc.7 preset recompose when no `logger` service is resolved.
+    expect(imageWorkshopPlugin.inject).toEqual(['tools']);
+    const registered: string[] = [];
+    let disposed = 0;
+    const ctx = {
+      tools: {
+        register: (definition: unknown) => {
+          registered.push((definition as { name: string }).name);
+          return () => { disposed += 1; };
+        }
+      }
+    };
+    const dispose = await imageWorkshopPlugin.apply(ctx);
+    expect(registered.sort()).toEqual(['image_inspect', 'image_resize_pixel']);
+    expect(typeof dispose).toBe('function');
+    dispose();
+    expect(disposed).toBe(2);
   });
 });
