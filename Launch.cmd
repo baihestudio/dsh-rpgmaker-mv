@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 set "ROOT=%~dp0"
 set "DSH_RPGMAKER_PROGRAM_ROOT=%ROOT:~0,-1%"
 set "DSH_RPGMAKER_DATA_ROOT=%LOCALAPPDATA%\BaiheStudio\DSH-RPGMaker-MV"

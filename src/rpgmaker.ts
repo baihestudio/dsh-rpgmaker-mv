@@ -4,12 +4,12 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
 import { findDshExecutable } from './bootstrap';
-import { resolveHarnessPaths, type PathOptions } from './config';
+import { resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
 import { commandFailure, prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, withoutCredentials, type CommandRunner } from './process';
 import { assertValidMvProject, backupIgnoreGuidance, type BackupIgnoreGuidance, pathExists } from './project';
 import { withHarnessOperationLock } from './lock';
-import { ensureLaunchPort, launchProject, resolveLaunchProjectPath, type LaunchOptions, type LaunchResult } from './launcher';
+import { addFixedWebBinding, ensureLaunchPort, launchProject, resolveLaunchProjectPath, type LaunchOptions, type LaunchResult } from './launcher';
 import {
   ASSET_WORKSHOP_PRESET_ID,
   prepareImageToolchain,
@@ -609,6 +609,9 @@ export interface RpgMakerLaunchResult extends LaunchResult {
 }
 
 export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Promise<RpgMakerLaunchResult> {
+  if (options.webHost !== undefined && options.webHost !== WINDOWS_DSH_HOST) throw new RpgMakerStartupError(`The DSH web binding is fixed at ${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}.`);
+  if (options.webPort !== undefined && options.webPort !== WINDOWS_DSH_PORT) throw new RpgMakerStartupError(`The DSH web binding is fixed at ${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}.`);
+  if (options.dshArgs) addFixedWebBinding(options.dshArgs);
   const projectPath = await resolveLaunchProjectPath(options);
   await ensureLaunchPort({ ...options, projectPath, bindWeb: true, webHost: '127.0.0.1', webPort: 3081 });
   const deployment = await prepareRpgMakerDeployment({

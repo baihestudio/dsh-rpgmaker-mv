@@ -46,10 +46,9 @@ async function makeDisposableInstallation(): Promise<string> {
 
 try {
   const project = await makeProject();
-  const installation = process.platform === 'win32'
-    ? process.env.RPGMAKER_MV_INSTALLATION ?? process.env.RPGMAKER_MV_HOME
-    : await makeDisposableInstallation();
-  if (!installation) throw new Error('Windows acceptance requires RPGMAKER_MV_INSTALLATION or RPGMAKER_MV_HOME on Windows.');
+  // Automated acceptance is fixture-owned on every host. It must never
+  // discover or read an installed RPG Maker path from the user environment.
+  const installation = await makeDisposableInstallation();
 
   const runtimeDir = join(root, 'dsh-runtime');
   const mcpRuntimeDir = join(root, 'mcp-runtime');

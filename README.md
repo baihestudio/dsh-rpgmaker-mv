@@ -3,9 +3,9 @@ DeepSeek for RPG Maker MV
 
 ## Windows Release ZIP (Phase 7)
 
-For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer asks for consent before using WinGet to install or repair Node.js LTS/npm, Bun, PowerShell 7.4+, Git for Windows, and Microsoft Coreutils. It verifies the real executable paths and versions, installs the pinned DSH runtime, and creates the per-user Start Menu shortcut **DSH for RPG Maker MV**.
+For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs the pinned DSH runtime, and creates the per-user Start Menu shortcut **DSH for RPG Maker MV**.
 
-The full first-run, repair, port-conflict, project-switching, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Default uninstall preserves state, credentials, logs, recent projects, and projects; `uninstall.ps1 -Purge` is explicit.
+The full first-run, repair, port-conflict, project-switching, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata and preserves rollback/recovery state, mutable state, credentials, logs, recent projects, and projects; `uninstall.ps1 -Purge` is explicit.
 
 Contributors can still run the underlying bootstrap and doctor scripts from PowerShell:
 
@@ -159,6 +159,8 @@ all state afterward):
 
 ```powershell
 bun run phase6:real
+# Explicit Windows hardware gate only; never part of normal acceptance:
+bun run phase6:windows-manual -- --rpgmaker-installation 'C:\Program Files\RPG Maker MV'
 ```
 
 ## Phase 7: Windows release gate
@@ -179,4 +181,4 @@ bun run phase4:real
 bun run phase6:real
 ```
 
-The non-Windows real acceptances truthfully mark Windows NW.js and Windows artifact launch as unsupported hardware evidence; they do not substitute macOS or a fake process for the Windows gate. The foundation stops before automated gameplay/CDP supervision, which remains on its separate draft/hold marker.
+The automated `phase6:real` acceptance always uses a disposable fixture-owned RPG Maker installation, including on Windows; it never reads a user-installed path. The explicit `phase6:windows-manual` gate is the only path that accepts an installed RPG Maker MV path and requires that opt-in argument. Non-Windows real acceptances truthfully mark Windows NW.js and Windows artifact launch as unsupported hardware evidence; they do not substitute macOS or a fake process for the Windows gate. The foundation stops before automated gameplay/CDP supervision, which remains on its separate draft/hold marker.

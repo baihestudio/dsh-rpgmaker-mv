@@ -4,7 +4,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { bootstrapRuntime, type BootstrapResult } from './bootstrap';
-import { resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
 import { withoutCredentials, runCommand, type CommandRunner } from './process';
 import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
@@ -37,6 +37,7 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   consent?: PrerequisiteConsent;
   commandRunner?: CommandRunner;
   createShortcut?: (options: ShortcutCreationOptions) => Promise<string>;
+  writeInstallMetadata?: (path: string, content: string) => Promise<void>;
   now?: () => Date;
 }
 
@@ -108,6 +109,48 @@ function generatedEnvironment(env: Record<string, string | undefined>, paths: Ha
   };
 }
 
+function ownershipMarker(): string {
+  return `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1 })}\n`;
+}
+
+function installMetadata(paths: HarnessPaths, prerequisites: WindowsPrerequisiteReport, now: () => Date): string {
+  return `${JSON.stringify({
+    owner: PROGRAM_OWNER,
+    product: PRODUCT_NAME,
+    format: 1,
+    installedAt: now().toISOString(),
+    programRoot: paths.programRoot,
+    mutableRoot: paths.mutableRoot,
+    dshHome: paths.dshHome,
+    runtimeDir: paths.runtimeDir,
+    prerequisites: prerequisites.checks.map((check) => ({ id: check.id, label: check.label, version: check.version, versions: check.versions, executable: check.executable }))
+  }, null, 2)}\n`;
+}
+
+async function restoreInstallTransaction(
+  paths: HarnessPaths,
+  rollbackRoot: string,
+  oldMoved: boolean,
+  shortcutPath: string,
+  shortcutBackup: string | undefined,
+  hadShortcut: boolean,
+  now: () => Date
+): Promise<string | undefined> {
+  let failedRoot: string | undefined;
+  if (await exists(paths.programRoot)) {
+    failedRoot = `${paths.programRoot}.failed-${now().toISOString().replace(/[-:.TZ]/g, '')}-${randomUUID()}`;
+    await rename(paths.programRoot, failedRoot);
+  }
+  if (oldMoved) await rename(rollbackRoot, paths.programRoot);
+  if (hadShortcut && shortcutBackup) {
+    await mkdir(dirname(shortcutPath), { recursive: true });
+    await cp(shortcutBackup, shortcutPath, { force: true });
+  } else {
+    await rm(shortcutPath, { force: true });
+  }
+  return failedRoot;
+}
+
 export async function installWindowsRelease(options: InstallReleaseOptions): Promise<InstallReleaseResult> {
   const platform = options.platform ?? process.platform;
   if (platform !== 'win32') throw new ReleaseGateError('The Release ZIP installer is Windows-only.');
@@ -137,64 +180,80 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
   await mkdir(parent, { recursive: true });
   const staging = join(parent, `.${basename(paths.programRoot)}.install-${randomUUID()}`);
   const rollbackRoot = `${paths.programRoot}.rollback-${Date.now()}-${randomUUID()}`;
+  const shortcutBackup = `${paths.startMenuShortcutPath}.backup-${randomUUID()}`;
+  const hadShortcut = await exists(paths.startMenuShortcutPath);
   let oldMoved = false;
+  let stagingActive = true;
   try {
     await copyReleaseTree(releaseRoot, staging);
+    await writeFile(join(staging, PROGRAM_OWNERSHIP_FILE), ownershipMarker(), 'utf8');
+    if (hadShortcut) await cp(paths.startMenuShortcutPath, shortcutBackup, { force: false, errorOnExist: true });
     if (await exists(paths.programRoot)) {
       await rename(paths.programRoot, rollbackRoot);
       oldMoved = true;
     }
     await rename(staging, paths.programRoot);
+    stagingActive = false;
+
+    const installedEnv = generatedEnvironment(env, paths);
+    let bootstrap: BootstrapResult;
+    let shortcutPath: string;
+    try {
+      bootstrap = await bootstrapRuntime({
+        ...options,
+        platform,
+        env: installedEnv,
+        dshHome: paths.dshHome,
+        runtimeDir: paths.runtimeDir,
+        programRoot: paths.programRoot,
+        mutableRoot: paths.mutableRoot,
+        bunExecutable: options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE,
+        commandRunner: options.commandRunner
+      });
+      const metadataPath = join(paths.programRoot, 'install.json');
+      const metadataWriter = options.writeInstallMetadata ?? ((path: string, content: string) => writeFile(path, content, 'utf8'));
+      await metadataWriter(metadataPath, installMetadata(paths, prerequisites, options.now ?? (() => new Date())));
+      if (!(await exists(metadataPath))) throw new Error('Install metadata was not written.');
+      const createShortcut = options.createShortcut ?? createStartMenuShortcut;
+      shortcutPath = await createShortcut({
+        platform,
+        env: installedEnv,
+        programRoot: paths.programRoot,
+        mutableRoot: paths.mutableRoot,
+        dshHome: paths.dshHome,
+        targetPath: join(paths.programRoot, 'Launch.cmd'),
+        workingDirectory: paths.programRoot,
+        helperScript: join(paths.programRoot, 'scripts', 'create-shortcut.ps1'),
+        pwshExecutable: options.pwshExecutable ?? prerequisites.checks.find((check) => check.id === 'powershell')?.executable,
+        commandRunner: options.commandRunner
+      });
+    } catch (error) {
+      let failedRoot: string | undefined;
+      let recoveryError: string | undefined;
+      try {
+        failedRoot = await restoreInstallTransaction(paths, rollbackRoot, oldMoved, paths.startMenuShortcutPath, hadShortcut ? shortcutBackup : undefined, hadShortcut, options.now ?? (() => new Date()));
+      } catch (restoreError) {
+        recoveryError = restoreError instanceof Error ? restoreError.message : String(restoreError);
+      }
+      if (!recoveryError) await rm(shortcutBackup, { force: true });
+      const detail = error instanceof Error ? error.message : String(error);
+      if (recoveryError) {
+        throw new ReleaseGateError(`Release install failed after the program swap and recovery is degraded: ${detail}. Failed new tree: ${failedRoot ?? paths.programRoot}; prior tree: ${oldMoved ? rollbackRoot : 'none'}; recovery error: ${recoveryError}. Do not delete these paths until recovery is resolved.`);
+      }
+      throw new ReleaseGateError(`Release install failed after the program swap; the prior program tree was restored at ${paths.programRoot}. Failed new tree preserved at ${failedRoot ?? 'none'} for diagnostic or explicit recovery: ${detail}`);
+    }
+    await rm(shortcutBackup, { force: true });
+    return { releaseRoot, paths, prerequisites, bootstrap, shortcutPath, ...(oldMoved ? { rollbackRoot } : {}) };
   } catch (error) {
-    await rm(staging, { recursive: true, force: true });
+    if (stagingActive) await rm(staging, { recursive: true, force: true });
+    if (error instanceof ReleaseGateError) throw error;
     if (oldMoved && !(await exists(paths.programRoot)) && await exists(rollbackRoot)) {
       await rename(rollbackRoot, paths.programRoot).catch(() => undefined);
     }
     throw new ReleaseGateError(`Release files could not be installed atomically: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    if (stagingActive) await rm(staging, { recursive: true, force: true });
   }
-
-  const installedEnv = generatedEnvironment(env, paths);
-  let bootstrap: BootstrapResult;
-  try {
-    bootstrap = await bootstrapRuntime({
-      ...options,
-      platform,
-      env: installedEnv,
-      dshHome: paths.dshHome,
-      runtimeDir: paths.runtimeDir,
-      programRoot: paths.programRoot,
-      mutableRoot: paths.mutableRoot,
-      bunExecutable: options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE,
-      commandRunner: options.commandRunner
-    });
-  } catch (error) {
-    throw new ReleaseGateError(`Release files are installed at ${paths.programRoot}, but the pinned DSH runtime could not be bootstrapped: ${error instanceof Error ? error.message : String(error)}`);
-  }
-
-  const createShortcut = options.createShortcut ?? createStartMenuShortcut;
-  const shortcutPath = await createShortcut({
-    platform,
-    env: installedEnv,
-    programRoot: paths.programRoot,
-    mutableRoot: paths.mutableRoot,
-    dshHome: paths.dshHome,
-    targetPath: join(paths.programRoot, 'Launch.cmd'),
-    workingDirectory: paths.programRoot,
-    helperScript: join(paths.programRoot, 'scripts', 'create-shortcut.ps1'),
-    pwshExecutable: options.pwshExecutable ?? prerequisites.checks.find((check) => check.id === 'powershell')?.executable,
-    commandRunner: options.commandRunner
-  });
-  await writeFile(join(paths.programRoot, 'install.json'), `${JSON.stringify({
-    product: 'DSH-RPGMaker-MV',
-    format: 1,
-    installedAt: (options.now ?? (() => new Date()))().toISOString(),
-    programRoot: paths.programRoot,
-    mutableRoot: paths.mutableRoot,
-    dshHome: paths.dshHome,
-    runtimeDir: paths.runtimeDir,
-    prerequisites: prerequisites.checks.map((check) => ({ id: check.id, label: check.label, version: check.version, versions: check.versions, executable: check.executable }))
-  }, null, 2)}\n`, 'utf8');
-  return { releaseRoot, paths, prerequisites, bootstrap, shortcutPath, ...(oldMoved ? { rollbackRoot } : {}) };
 }
 
 async function archiveWithZip(options: ReleaseZipOptions, staging: string, outputZip: string): Promise<void> {

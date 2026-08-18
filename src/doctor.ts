@@ -139,7 +139,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   checks.push(check(
     'powershell',
     'PowerShell 7.4+',
-    pwshVersion.ok && atLeast(pwshParsed, [7, 4, 0]),
+    pwshVersion.ok && /PowerShell\s+\d+\.\d+/i.test(pwshVersion.output) && atLeast(pwshParsed, [7, 4, 0]),
     pwsh ? (pwshVersion.ok && pwshParsed ? `PowerShell ${pwshParsed.join('.')} at ${pwsh}` : `PowerShell at ${pwsh} is missing or older than 7.4`) : 'PowerShell 7.4+ was not found; install Microsoft.PowerShell',
     pwsh
   ));
@@ -168,7 +168,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   checks.push(check(
     'git',
     'Git',
-    gitVersion.ok,
+    gitVersion.ok && /(?:^|\r?\n)\s*git version\s+\d+\.\d+\.\d+/i.test(gitVersion.output),
     gitVersion.ok ? `Git is available at ${git}` : 'Git was not found; install Git for Windows',
     git
   ));
@@ -177,7 +177,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   checks.push(check(
     'bun',
     'Bun',
-    bunVersion.ok && Boolean(versionNumbers(bunVersion.output)),
+    bunVersion.ok && /(?:^|\r?\n)\s*\d+\.\d+\.\d+/i.test(bunVersion.output) && Boolean(versionNumbers(bunVersion.output)),
     bunVersion.ok ? `Bun is available at ${bun}` : 'Bun was not found; install Bun and reopen the launcher',
     bun
   ));
@@ -191,7 +191,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     checks.push(check(
       'node',
       'Node.js LTS 18+ and npm',
-      nodeVersion.ok && Boolean(nodeParsed) && atLeast(nodeParsed, [18, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && Boolean(versionNumbers(npmVersion.output)),
+      nodeVersion.ok && /(?:^|\r?\n)\s*v\d+\.\d+\.\d+/i.test(nodeVersion.output) && Boolean(nodeParsed) && atLeast(nodeParsed, [18, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && /(?:^|\r?\n)\s*v?\d+\.\d+\.\d+/i.test(npmVersion.output) && Boolean(versionNumbers(npmVersion.output)),
       nodeVersion.ok && npmVersion.ok ? `Node.js LTS ${nodeParsed?.join('.')} (${nodeLtsName}) and npm ${versionNumbers(npmVersion.output)?.join('.')}` : 'Node.js LTS and npm were not both verified; install OpenJS.NodeJS.LTS',
       node
     ));

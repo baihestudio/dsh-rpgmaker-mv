@@ -160,11 +160,12 @@ export async function resolveLaunchProjectPath(options: LaunchOptions = {}): Pro
 export async function ensureLaunchPort(options: LaunchOptions): Promise<void> {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
+  validateRequestedBinding(options);
   if (!options.bindWeb || options.portAlreadyChecked) return;
   await ensureFixedPortAvailable({
     platform,
-    host: options.webHost ?? WINDOWS_DSH_HOST,
-    port: options.webPort ?? WINDOWS_DSH_PORT,
+    host: WINDOWS_DSH_HOST,
+    port: WINDOWS_DSH_PORT,
     portProbe: options.portProbe,
     onConflict: options.onPortConflict ?? defaultPortConflict,
     openExisting: options.openExistingSession ?? ((url) => openExistingDshSession(url, { platform, env, commandRunner: options.commandRunner })),
@@ -175,6 +176,9 @@ export async function ensureLaunchPort(options: LaunchOptions): Promise<void> {
 export async function launchProject(options: LaunchOptions = {}): Promise<LaunchResult> {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
+  validateRequestedBinding(options);
+  if (options.bindWeb) addFixedWebBinding(options.dshArgs ?? []);
+  else rejectCallerBinding(options.dshArgs ?? []);
   const paths = resolveHarnessPaths({ ...options, platform, env });
   const projectPath = await resolveLaunchProjectPath(options);
   await ensureLaunchPort(options);
@@ -213,9 +217,60 @@ function attachSessionLease(child: unknown, release: () => Promise<void>): () =>
   return releaseOnce;
 }
 
-function addWebBinding(args: string[], host: string, port: number): string[] {
-  if (args.includes('--host') || args.includes('--port')) return args;
-  return [...args, '--host', host, '--port', String(port)];
+function fixedBindingError(option: string, value: string): LauncherError {
+  return new LauncherError(`The DSH web binding is fixed at ${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}; caller-supplied ${option}=${value} is not allowed.`);
+}
+
+function validateFixedBindingValue(option: string, value: string | undefined, expected: string): void {
+  if (value === undefined || value === expected) return;
+  throw fixedBindingError(option, value);
+}
+
+/**
+ * Removes caller-supplied fixed-binding options after validating them, then
+ * appends one canonical binding. This is deliberately argv-based: shell text
+ * is never parsed or interpolated here.
+ */
+export function addFixedWebBinding(args: string[]): string[] {
+  const filtered: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    const inline = argument.match(/^--(host|port)=(.*)$/s);
+    if (inline) {
+      const option = `--${inline[1]}`;
+      const value = inline[2];
+      validateFixedBindingValue(option, value, inline[1] === 'host' ? WINDOWS_DSH_HOST : String(WINDOWS_DSH_PORT));
+      continue;
+    }
+    if (argument !== '--host' && argument !== '--port') {
+      filtered.push(argument);
+      continue;
+    }
+    const value = args[index + 1];
+    if (value === undefined || value.startsWith('--')) throw new LauncherError(`The DSH web binding option ${argument} requires a value.`);
+    index += 1;
+    validateFixedBindingValue(argument, value, argument === '--host' ? WINDOWS_DSH_HOST : String(WINDOWS_DSH_PORT));
+  }
+  return [...filtered, '--host', WINDOWS_DSH_HOST, '--port', String(WINDOWS_DSH_PORT)];
+}
+
+function rejectCallerBinding(args: string[]): void {
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    const inline = argument.match(/^--(host|port)=(.*)$/s);
+    if (inline) throw fixedBindingError(`--${inline[1]}`, inline[2]);
+    if (argument !== '--host' && argument !== '--port') continue;
+    const value = args[index + 1];
+    throw fixedBindingError(argument, value ?? '(missing)');
+  }
+}
+
+function validateRequestedBinding(options: LaunchOptions): void {
+  if (!options.bindWeb) return;
+  validateFixedBindingValue('--host', options.webHost, WINDOWS_DSH_HOST);
+  if (options.webPort !== undefined && options.webPort !== WINDOWS_DSH_PORT) {
+    throw fixedBindingError('--port', String(options.webPort));
+  }
 }
 
 async function launchProjectUnlocked(
@@ -258,9 +313,7 @@ async function launchProjectUnlocked(
     ...(options.extraEnv ?? {})
   };
   const rawArgs = [...(options.dshArgs ?? [])];
-  const args = options.bindWeb
-    ? addWebBinding(rawArgs, options.webHost ?? WINDOWS_DSH_HOST, options.webPort ?? WINDOWS_DSH_PORT)
-    : rawArgs;
+  const args = options.bindWeb ? addFixedWebBinding(rawArgs) : rawArgs;
   await writeLaunchLog({ ...options, dshHome: paths.dshHome, mutableRoot: paths.mutableRoot, programRoot: paths.programRoot, event: 'launch', projectPath: validation.projectPath, host: options.bindWeb ? options.webHost ?? WINDOWS_DSH_HOST : undefined, port: options.bindWeb ? options.webPort ?? WINDOWS_DSH_PORT : undefined });
   const child = (options.spawnInteractive ?? spawnInteractive)(executable, args, {
     cwd: validation.projectPath,
@@ -274,7 +327,7 @@ async function launchProjectUnlocked(
     dshExecutable: executable,
     args,
     cwd: validation.projectPath,
-    ...(options.bindWeb ? { webUrl: `http://${options.webHost ?? WINDOWS_DSH_HOST}:${options.webPort ?? WINDOWS_DSH_PORT}/` } : {}),
+    ...(options.bindWeb ? { webUrl: `http://${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}/` } : {}),
     onboardingMessage,
     child
   };

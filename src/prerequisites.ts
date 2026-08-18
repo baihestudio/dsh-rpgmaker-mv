@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 import { resolveExecutable } from './executable';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 
@@ -161,8 +163,13 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const nodeParsed = versionNumbers(nodeVersion.output);
   const nodeLtsName = nodeLts.output.trim().split(/\r?\n/).find(Boolean);
   const pwshParsed = versionNumbers(pwshVersion.output);
-  const nodeOk = nodeVersion.ok && atLeast(nodeParsed, [18, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && Boolean(versionNumbers(npmVersion.output));
-  const powershellOk = pwshVersion.ok && atLeast(pwshParsed, [7, 4, 0]);
+  const nodeIdentity = /(?:^|\r?\n)\s*v\d+\.\d+\.\d+/i.test(nodeVersion.output);
+  const npmIdentity = /(?:^|\r?\n)\s*v?\d+\.\d+\.\d+/i.test(npmVersion.output);
+  const bunIdentity = /(?:^|\r?\n)\s*\d+\.\d+\.\d+/i.test(bunVersion.output);
+  const powershellIdentity = /PowerShell\s+\d+\.\d+/i.test(pwshVersion.output);
+  const gitIdentity = /(?:^|\r?\n)\s*git version\s+\d+\.\d+\.\d+/i.test(gitVersion.output);
+  const nodeOk = nodeVersion.ok && nodeIdentity && atLeast(nodeParsed, [18, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && npmIdentity && Boolean(versionNumbers(npmVersion.output));
+  const powershellOk = pwshVersion.ok && powershellIdentity && atLeast(pwshParsed, [7, 4, 0]);
   const coreutilsOk = managerHelp.ok && managerStatus.ok
     && managerContract(managerHelp.output, managerStatus.output)
     && findVersion.ok && grepVersion.ok
@@ -185,8 +192,8 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
       'bun',
       'Bun',
       'Oven-sh.Bun',
-      bunVersion.ok && Boolean(versionNumbers(bunVersion.output)),
-      bunVersion.ok ? `Bun is available at ${bun}` : 'Bun was not verified; install Oven-sh.Bun with WinGet',
+      bunVersion.ok && bunIdentity && Boolean(versionNumbers(bunVersion.output)),
+      bunVersion.ok && bunIdentity ? `Bun is available at ${bun}` : 'Bun was not verified; install Oven-sh.Bun with WinGet',
       bun,
       versionNumbers(bunVersion.output)?.join('.')
     ),
@@ -203,8 +210,8 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
       'git',
       'Git for Windows',
       'Git.Git',
-      gitVersion.ok,
-      gitVersion.ok ? `Git is available at ${git}` : 'Git for Windows was not verified; install Git.Git with WinGet',
+      gitVersion.ok && gitIdentity,
+      gitVersion.ok && gitIdentity ? `Git is available at ${git}` : 'Git for Windows was not verified; install Git.Git with WinGet',
       git,
       versionNumbers(gitVersion.output)?.join('.')
     ),
@@ -221,6 +228,27 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   ];
   const missing = checks.filter((item) => !item.ok).map((item) => item.id);
   return { ok: missing.length === 0, checks, missing };
+}
+
+async function refreshWindowsEnvironment(runner: CommandRunner, env: Record<string, string | undefined>): Promise<Record<string, string | undefined>> {
+  const paths = [env.PATH ?? ''];
+  const registry = [
+    ['HKCU', 'Environment'],
+    ['HKLM', 'SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment']
+  ] as const;
+  const reg = env.SystemRoot ? join(env.SystemRoot, 'System32', 'reg.exe') : 'reg.exe';
+  for (const [hive, key] of registry) {
+    try {
+      const result = await runner(reg, ['query', `${hive}\\${key}`, '/v', 'Path'], { env: withoutCredentials(env), platform: 'win32', timeoutMs: 30_000 });
+      if (result.exitCode !== 0) continue;
+      const value = result.stdout.match(/^\s*Path\s+REG_[A-Z_]+\s+(.*)$/im)?.[1]?.trim();
+      if (!value) continue;
+      paths.push(value.replace(/%([^%]+)%/g, (_match, name: string) => env[name] ?? process.env[name] ?? `%${name}%`));
+    } catch {
+      // Verification still uses the original environment if registry refresh is unavailable.
+    }
+  }
+  return { ...env, PATH: [...new Set(paths.filter(Boolean).flatMap((value) => value.split(';')))].join(';') };
 }
 
 async function installOne(
@@ -253,7 +281,8 @@ export async function installWindowsPrerequisites(options: InstallWindowsPrerequ
   const winget = options.wingetExecutable ?? env.WINGET_EXECUTABLE ?? await resolveExecutable('winget', { platform: 'win32', env });
   if (!winget) throw new Error('WinGet was not found. Install App Installer from Microsoft, then run Install.cmd again.');
   for (const prerequisite of missing) await installOne(runner, winget, prerequisite, env);
-  report = await verifyWindowsPrerequisites(options);
+  const refreshedEnv = await refreshWindowsEnvironment(runner, env);
+  report = await verifyWindowsPrerequisites({ ...options, env: refreshedEnv });
   if (!report.ok) throw new Error(`Prerequisite installation completed but verification still fails: ${report.missing.join(', ')}.`);
   return report;
 }

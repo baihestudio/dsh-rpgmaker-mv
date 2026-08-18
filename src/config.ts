@@ -8,6 +8,8 @@ export const DSH_RUNTIME_NAME = 'dsh-rpgmaker-runtime';
 export const PRODUCT_VENDOR = 'BaiheStudio';
 export const PRODUCT_NAME = 'DSH-RPGMaker-MV';
 export const START_MENU_NAME = 'DSH for RPG Maker MV';
+export const PROGRAM_OWNERSHIP_FILE = '.dsh-rpgmaker-owned.json';
+export const PROGRAM_OWNER = 'dsh-rpgmaker-mv';
 export const WINDOWS_DSH_HOST = '127.0.0.1';
 export const WINDOWS_DSH_PORT = 3081;
 

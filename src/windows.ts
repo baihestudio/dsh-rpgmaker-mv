@@ -1,9 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, resolve } from 'node:path';
+import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type HarnessPaths, type PathOptions } from './config';
+import { PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type HarnessPaths, type PathOptions } from './config';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 import { assertValidMvProject, type ProjectValidation } from './project';
 
@@ -202,6 +203,94 @@ export async function createStartMenuShortcut(options: ShortcutCreationOptions):
   return paths.startMenuShortcutPath;
 }
 
+export class UninstallSafetyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UninstallSafetyError';
+  }
+}
+
+async function readObject(path: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const value: unknown = JSON.parse(await readFile(path, 'utf8'));
+    return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function sameWindowsPath(left: unknown, right: string, platform: string): boolean {
+  if (typeof left !== 'string') return false;
+  const normalize = (value: string): string => value.replace(/[\\/]+/g, '/').replace(/\/$/, '');
+  const a = normalize(left);
+  const b = normalize(right);
+  return platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+export async function validateHarnessOwnership(options: PathOptions = {}): Promise<void> {
+  const platform = options.platform ?? process.platform;
+  const paths = resolveHarnessPaths(options);
+  if (!(await fileIsDirectory(paths.programRoot))) throw new UninstallSafetyError(`Harness program root does not exist: ${paths.programRoot}`);
+  const markerPath = join(paths.programRoot, PROGRAM_OWNERSHIP_FILE);
+  const marker = await readObject(markerPath);
+  if (marker?.owner !== PROGRAM_OWNER || marker.product !== PRODUCT_NAME || marker.format !== 1) {
+    throw new UninstallSafetyError(`Refusing to remove ${paths.programRoot}: the harness ownership marker is missing or invalid.`);
+  }
+  const metadataPath = join(paths.programRoot, 'install.json');
+  const metadata = await readObject(metadataPath);
+  if (metadata?.owner !== PROGRAM_OWNER
+    || metadata.product !== PRODUCT_NAME
+    || metadata.format !== 1
+    || !sameWindowsPath(metadata.programRoot, paths.programRoot, platform)
+    || !sameWindowsPath(metadata.mutableRoot, paths.mutableRoot, platform)
+    || !sameWindowsPath(metadata.dshHome, paths.dshHome, platform)
+    || !sameWindowsPath(metadata.runtimeDir, paths.runtimeDir, platform)) {
+    throw new UninstallSafetyError(`Refusing to remove ${paths.programRoot}: install.json is missing, invalid, or does not belong to this harness layout.`);
+  }
+}
+
+const RECOVERY_NAME = /(?:\.rollback-|\.failed-|\.recovery-|\.staging-|\.install-)/i;
+
+async function recoveryEntries(parent: string, programName: string): Promise<string[]> {
+  const names = await readdir(parent, { withFileTypes: true }).catch(() => []);
+  return names
+    .filter((entry) => entry.isDirectory() && (entry.name.startsWith(`${programName}.rollback-`)
+      || entry.name.startsWith(`${programName}.failed-`)
+      || entry.name.startsWith(`${programName}.recovery-`)
+      || entry.name.startsWith(`.${programName}.install-`)))
+    .map((entry) => resolve(parent, entry.name));
+}
+
+async function nestedRecoveryEntries(root: string): Promise<string[]> {
+  const found: string[] = [];
+  async function walk(current: string): Promise<void> {
+    const entries = await readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const child = join(current, entry.name);
+      if (RECOVERY_NAME.test(entry.name)) {
+        found.push(child);
+        continue;
+      }
+      await walk(child);
+    }
+  }
+  await walk(root);
+  return found;
+}
+
+async function preserveNestedRecovery(programRoot: string): Promise<string[]> {
+  const entries = await nestedRecoveryEntries(programRoot);
+  if (entries.length === 0) return [];
+  const destination = join(dirname(programRoot), `${basename(programRoot)}.recovery-${Date.now()}-${randomUUID()}`);
+  for (const entry of entries) {
+    const target = join(destination, relative(programRoot, entry));
+    await mkdir(dirname(target), { recursive: true });
+    await rename(entry, target);
+  }
+  return [destination];
+}
+
 export interface UninstallOptions extends PathOptions {
   platform?: string;
   env?: Record<string, string | undefined>;
@@ -223,32 +312,36 @@ export async function uninstallHarness(options: UninstallOptions = {}): Promise<
   if (platform !== 'win32') throw new Error('The Windows harness uninstaller can only run on Windows.');
   const paths = resolveHarnessPaths(options);
   const removed: string[] = [];
-  const removeShortcut = options.removeShortcut ?? (async (path: string) => { await rm(path, { force: true }); });
-  await removeShortcut(paths.startMenuShortcutPath);
-  removed.push(paths.startMenuShortcutPath);
-  await rm(paths.programRoot, { recursive: true, force: true });
-  removed.push(paths.programRoot);
-  const programParent = dirname(paths.programRoot);
-  const rollbackPrefix = `${basename(paths.programRoot)}.rollback-`;
-  for (const entry of await readdir(programParent).catch(() => [])) {
-    if (!entry.startsWith(rollbackPrefix)) continue;
-    const rollbackPath = resolve(programParent, entry);
-    await rm(rollbackPath, { recursive: true, force: true });
-    removed.push(rollbackPath);
+  const preserved = await recoveryEntries(dirname(paths.programRoot), basename(paths.programRoot));
+  const programStat = await lstat(paths.programRoot).catch(() => undefined);
+  if (programStat?.isSymbolicLink()) throw new UninstallSafetyError(`Refusing to remove ${paths.programRoot}: the harness program root is a symbolic link.`);
+  if (programStat && !programStat.isDirectory()) throw new UninstallSafetyError(`Refusing to remove ${paths.programRoot}: the harness program root is not a directory.`);
+  const programExists = programStat?.isDirectory() ?? false;
+  if (programExists) await validateHarnessOwnership(options);
+
+  // A missing active tree is already uninstalled. Never remove a shortcut or
+  // recovery tree in that case: neither can be proven to be ours here.
+  if (programExists) {
+    preserved.push(...await preserveNestedRecovery(paths.programRoot));
+    const removeShortcut = options.removeShortcut ?? (async (path: string) => { await rm(path, { force: true }); });
+    await removeShortcut(paths.startMenuShortcutPath);
+    removed.push(paths.startMenuShortcutPath);
+    await rm(paths.programRoot, { recursive: true, force: true });
+    removed.push(paths.programRoot);
   }
   await rm(paths.cacheDir, { recursive: true, force: true });
   removed.push(paths.cacheDir);
   if (options.purge) {
     await rm(paths.mutableRoot, { recursive: true, force: true });
     removed.push(paths.mutableRoot);
-    return { programRoot: paths.programRoot, mutableRoot: paths.mutableRoot, shortcutPath: paths.startMenuShortcutPath, removed, preserved: [], purged: true };
+    return { programRoot: paths.programRoot, mutableRoot: paths.mutableRoot, shortcutPath: paths.startMenuShortcutPath, removed, preserved, purged: true };
   }
   return {
     programRoot: paths.programRoot,
     mutableRoot: paths.mutableRoot,
     shortcutPath: paths.startMenuShortcutPath,
     removed,
-    preserved: [paths.dshHome, paths.logsDir, paths.recentProjectsPath],
+    preserved: [...preserved, paths.dshHome, paths.logsDir, paths.recentProjectsPath],
     purged: false
   };
 }

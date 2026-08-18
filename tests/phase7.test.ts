@@ -1,15 +1,18 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, join, resolve } from 'node:path';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
 
-import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, resolveHarnessPaths } from '../src/config';
+import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths } from '../src/config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease } from '../src/release-gate';
-import { PrerequisiteConsentError, verifyWindowsPrerequisites } from '../src/prerequisites';
-import { launchProject } from '../src/launcher';
+import { installWindowsPrerequisites, PrerequisiteConsentError, verifyWindowsPrerequisites } from '../src/prerequisites';
+import { addFixedWebBinding, launchProject } from '../src/launcher';
+import { runCli } from '../src/cli';
 import { runDoctor } from '../src/doctor';
-import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, recordRecentProject, readRecentProjects, uninstallHarness } from '../src/windows';
+import { runCommand } from '../src/process';
+import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, recordRecentProject, readRecentProjects, uninstallHarness, UninstallSafetyError } from '../src/windows';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -43,6 +46,21 @@ function child(): EventEmitter & { exitCode: number | null; signalCode: string |
   value.exitCode = null;
   value.signalCode = null;
   return value;
+}
+
+function runInteractive(command: string, args: string[], env: Record<string, string | undefined>, input: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const process = spawn(command, args, { env: Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)), stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    process.stdout.setEncoding('utf8');
+    process.stderr.setEncoding('utf8');
+    process.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    process.stderr.on('data', (chunk: string) => { stderr += chunk; });
+    process.once('error', reject);
+    process.once('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
+    process.stdin.end(input);
+  });
 }
 
 async function prerequisiteBin(root: string): Promise<{ bin: string; env: Record<string, string> }> {
@@ -98,7 +116,53 @@ describe('Windows release gate foundations', () => {
       expect(report.checks.map((check) => check.id)).toEqual(['node', 'bun', 'powershell', 'git', 'coreutils']);
       const missing = await verifyWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, commandRunner: prerequisiteRunner() });
       expect(missing.ok).toBe(false);
-      await expect((await import('../src/prerequisites')).installWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, consent: false, commandRunner: prerequisiteRunner() })).rejects.toBeInstanceOf(PrerequisiteConsentError);
+      await expect(installWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, consent: false, commandRunner: prerequisiteRunner() })).rejects.toBeInstanceOf(PrerequisiteConsentError);
+      let wingetCalls = 0;
+      const baseRunner = prerequisiteRunner();
+      const wrongVersionRunner = async (command: string, args: string[], options: { cwd?: string }) => {
+        if (args[0] === 'install') {
+          wingetCalls += 1;
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (basename(command).toLowerCase() === 'node.exe' && args[0] === '--version') return { exitCode: 0, stdout: 'v16.20.0', stderr: '' };
+        if (basename(command).toLowerCase() === 'node.exe' && args[0] === '-p') return { exitCode: 0, stdout: 'false', stderr: '' };
+        return baseRunner(command, args, options);
+      };
+      await expect(installWindowsPrerequisites({ platform: 'win32', env, consent: false, wingetExecutable: 'winget.exe', commandRunner: wrongVersionRunner })).rejects.toBeInstanceOf(PrerequisiteConsentError);
+      expect(wingetCalls).toBe(0);
+      await expect(installWindowsPrerequisites({ platform: 'win32', env, consent: true, wingetExecutable: 'winget.exe', commandRunner: wrongVersionRunner })).rejects.toThrow(/verification still fails/i);
+      expect(wingetCalls).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('Windows install wrappers pass explicit consent to the CLI without touching live roots', async () => {
+    if (process.platform !== 'win32') return;
+    const root = await temp('phase7-wrapper-100%!');
+    try {
+      const bin = join(root, 'bin');
+      const release = join(root, 'release 100%!');
+      const local = join(root, 'local appdata');
+      const appdata = join(root, 'roaming appdata');
+      const capture = join(root, 'wrapper-argv.json');
+      await mkdir(join(release, 'src'), { recursive: true });
+      await mkdir(bin, { recursive: true });
+      await cp(process.execPath, join(bin, 'bun.exe'));
+      await writeFile(join(release, 'install.ps1'), await readFile(join(process.cwd(), 'install.ps1')));
+      await writeFile(join(release, 'Install.cmd'), await readFile(join(process.cwd(), 'Install.cmd')));
+      await writeFile(join(release, 'src', 'cli.ts'), 'await Bun.write(process.env.WRAPPER_CAPTURE!, JSON.stringify(process.argv));\n');
+      const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin};${process.env.PATH ?? ''}`, LOCALAPPDATA: local, APPDATA: appdata, WRAPPER_CAPTURE: capture };
+      const powershell = process.env.PWSH_EXECUTABLE ?? 'powershell.exe';
+      const direct = await runInteractive(powershell, ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(release, 'install.ps1'), '-NoPause'], env, 'Y\n');
+      expect(direct.exitCode).toBe(0);
+      const directArgs = JSON.parse(await readFile(capture, 'utf8')) as string[];
+      expect(directArgs).toEqual(expect.arrayContaining(['install', '--release-root', release, '--yes']));
+      const command = env.ComSpec ?? env.COMSPEC ?? 'cmd.exe';
+      const viaCmd = await runCommand(command, ['/d', '/v:off', '/s', '/c', `call "${join(release, 'Install.cmd')}" -Yes -NoPause`], { env, platform: 'win32', timeoutMs: 30_000 });
+      expect(viaCmd.exitCode).toBe(0);
+      const cmdArgs = JSON.parse(await readFile(capture, 'utf8')) as string[];
+      expect(cmdArgs).toEqual(expect.arrayContaining(['install', '--release-root', release, '--yes']));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -151,6 +215,8 @@ describe('Windows release gate foundations', () => {
       });
       expect(result.paths.programRoot).toBe(program);
       expect(await Bun.file(join(program, 'Install.cmd')).exists()).toBe(true);
+      expect(await Bun.file(join(program, PROGRAM_OWNERSHIP_FILE)).exists()).toBe(true);
+      expect(JSON.parse(await readFile(join(program, 'install.json'), 'utf8')).owner).toBe(PROGRAM_OWNER);
       expect(await Bun.file(join(program, 'runtime', 'dsh', 'package.json')).exists()).toBe(true);
       expect((await stat(join(mutable, 'logs'))).isDirectory()).toBe(true);
       expect((await stat(join(mutable, 'cache'))).isDirectory()).toBe(true);
@@ -200,6 +266,72 @@ describe('Windows release gate foundations', () => {
     expect(opened).toEqual(['http://127.0.0.1:3081/']);
   });
 
+  test('rejects every caller binding bypass form and emits one canonical fixed binding', async () => {
+    const rejected = [
+      ['--host', '0.0.0.0'],
+      ['--host=0.0.0.0'],
+      ['--port', '3082'],
+      ['--port=3082']
+    ];
+    for (const args of rejected) expect(() => addFixedWebBinding(args)).toThrow(/fixed at 127\.0\.0\.1:3081/i);
+    expect(addFixedWebBinding(['--host', '127.0.0.1', '--port=3081', '--profile', 'web'])).toEqual(['--profile', 'web', '--host', '127.0.0.1', '--port', '3081']);
+    let stderr = '';
+    for (const argv of [
+      ['launch', '--host', '0.0.0.0'],
+      ['launch', '--host=0.0.0.0'],
+      ['launch', '--port', '3082'],
+      ['launch', '--port=3082'],
+      ['launch', '--host=0.0.0.0', '--host=127.0.0.1']
+    ]) {
+      await expect(runCli(argv, {
+        platform: 'win32',
+        io: { stdout: { write: () => undefined }, stderr: { write: (text) => { stderr += text; } } }
+      })).resolves.toBe(1);
+    }
+    expect(stderr).toMatch(/fixed at 127\.0\.0\.1:3081/i);
+  });
+
+  test('post-swap bootstrap, metadata, and shortcut failures restore the old tree and retain the failed tree', async () => {
+    for (const failure of ['bootstrap', 'metadata', 'shortcut'] as const) {
+      const root = await temp(`phase7-transaction-${failure}`);
+      try {
+        const { env } = await prerequisiteBin(root);
+        const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+        const mutable = join(root, 'mutable');
+        const state = join(mutable, 'state');
+        await mkdir(program, { recursive: true });
+        await writeFile(join(program, 'old-tree.txt'), `prior ${failure}\n`);
+        const baseRunner = prerequisiteRunner();
+        const commandRunner = failure === 'bootstrap'
+          ? async (command: string, args: string[], options: { cwd?: string }) => args[0] === 'add'
+            ? { exitCode: 1, stdout: '', stderr: 'bootstrap fixture failure' }
+            : baseRunner(command, args, options)
+          : baseRunner;
+        const installOptions = {
+          platform: 'win32',
+          env,
+          releaseRoot: process.cwd(),
+          programRoot: program,
+          mutableRoot: mutable,
+          dshHome: state,
+          commandRunner,
+          consent: true,
+          ...(failure === 'metadata' ? { writeInstallMetadata: async () => { throw new Error('metadata fixture failure'); } } : {}),
+          ...(failure === 'shortcut' ? { createShortcut: async () => { throw new Error('shortcut fixture failure'); } } : {})
+        };
+        await expect(installWindowsRelease(installOptions)).rejects.toThrow(/prior program tree was restored|recovery is degraded/i);
+        expect(await readFile(join(program, 'old-tree.txt'), 'utf8')).toBe(`prior ${failure}\n`);
+        const entries = await readdir(dirname(program));
+        const failed = entries.find((entry) => entry.startsWith(`${basename(program)}.failed-`));
+        expect(failed).toBeDefined();
+        expect(await Bun.file(join(dirname(program), failed!, 'Install.cmd')).exists()).toBe(true);
+        expect(await Bun.file(join(program, 'install.json')).exists()).toBe(false);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   test('uninstall removes only program files/cache by default and purges state only explicitly', async () => {
     const root = await temp('phase7-uninstall');
     try {
@@ -215,19 +347,51 @@ describe('Windows release gate foundations', () => {
       await writeFile(join(state, '.credentials.yaml'), 'provider: local\n');
       await mkdir(resolve(shortcut, '..'), { recursive: true });
       await writeFile(shortcut, 'shortcut');
-      const options = { platform: 'win32', programRoot: program, mutableRoot: mutable, dshHome: state, startMenuShortcutPath: shortcut };
+      const options = { platform: 'win32', programRoot: program, mutableRoot: mutable, dshHome: state, runtimeDir: join(program, 'runtime', 'dsh'), startMenuShortcutPath: shortcut };
+      await writeFile(join(program, PROGRAM_OWNERSHIP_FILE), `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1 })}\n`);
+      await writeFile(join(program, 'install.json'), `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1, programRoot: program, mutableRoot: mutable, dshHome: state, runtimeDir: join(program, 'runtime', 'dsh') })}\n`);
+      const outerRollback = `${program}.rollback-old`;
+      await mkdir(outerRollback, { recursive: true });
+      await writeFile(join(outerRollback, 'old-runtime.txt'), 'preserve me');
+      const nestedRollback = join(program, 'runtime', 'dsh.rollback-old');
+      await mkdir(nestedRollback, { recursive: true });
+      await writeFile(join(nestedRollback, 'old-runtime.txt'), 'preserve nested me');
       const first = await uninstallHarness(options);
       expect(first.purged).toBe(false);
       expect(await Bun.file(program).exists()).toBe(false);
       expect(await Bun.file(cache).exists()).toBe(false);
       expect(await Bun.file(join(state, '.credentials.yaml')).exists()).toBe(true);
+      expect(await Bun.file(join(outerRollback, 'old-runtime.txt')).exists()).toBe(true);
+      expect(first.preserved).toContain(outerRollback);
+      expect(first.preserved.some((entry) => entry.includes('.recovery-'))).toBe(true);
       expect((await stat(projectPath)).isDirectory()).toBe(true);
-      await mkdir(program, { recursive: true });
       await mkdir(cache, { recursive: true });
       const purged = await uninstallHarness({ ...options, purge: true });
       expect(purged.purged).toBe(true);
       expect(await Bun.file(mutable).exists()).toBe(false);
       expect((await stat(projectPath)).isDirectory()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('uninstall refuses an unowned program tree before deleting any app state', async () => {
+    const root = await temp('phase7-uninstall-safety');
+    try {
+      const program = join(root, 'program');
+      const mutable = join(root, 'mutable');
+      const cache = join(mutable, 'cache');
+      const shortcut = join(root, 'Start Menu', 'DSH.lnk');
+      await mkdir(program, { recursive: true });
+      await mkdir(cache, { recursive: true });
+      await mkdir(dirname(shortcut), { recursive: true });
+      await writeFile(join(program, 'user-file.txt'), 'must remain');
+      await writeFile(join(cache, 'cache.txt'), 'must remain');
+      await writeFile(shortcut, 'must remain');
+      await expect(uninstallHarness({ platform: 'win32', programRoot: program, mutableRoot: mutable, dshHome: join(mutable, 'state'), startMenuShortcutPath: shortcut })).rejects.toBeInstanceOf(UninstallSafetyError);
+      expect(await Bun.file(join(program, 'user-file.txt')).exists()).toBe(true);
+      expect(await Bun.file(join(cache, 'cache.txt')).exists()).toBe(true);
+      expect(await Bun.file(shortcut).exists()).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

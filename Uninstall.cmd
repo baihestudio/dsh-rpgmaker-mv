@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 set "ROOT=%~dp0"
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%uninstall.ps1" %*
 set "CODE=%ERRORLEVEL%"

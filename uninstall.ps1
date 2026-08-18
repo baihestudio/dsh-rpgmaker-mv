@@ -8,24 +8,27 @@ param(
 $ErrorActionPreference = 'Stop'
 $programRoot = $PSScriptRoot
 $mutableRoot = Join-Path $env:LOCALAPPDATA 'BaiheStudio\DSH-RPGMaker-MV'
+$dshHome = Join-Path $mutableRoot 'state'
 $appData = if ($env:APPDATA) { $env:APPDATA } else { Join-Path $env:USERPROFILE 'AppData\Roaming' }
 $shortcut = Join-Path $appData 'Microsoft\Windows\Start Menu\Programs\BaiheStudio\DSH for RPG Maker MV.lnk'
 
 if ($Purge -and -not $Yes) {
   $answer = Read-Host 'Purge DSH settings, local credentials, logs, cache, and recent-project metadata too? [Y/N]'
-  if ($answer -notmatch '^(?i)y(es)?$') { throw 'Purge cancelled. Program files were not removed.' }
+  if ($answer -notmatch '^(?i)y(es)?$') { throw 'Purge cancelled. No program files were removed.' }
 }
 
-Remove-Item -LiteralPath $shortcut -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath (Join-Path $mutableRoot 'cache') -Recurse -Force -ErrorAction SilentlyContinue
-if ($Purge) {
-  Remove-Item -LiteralPath $mutableRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
-$programParent = Split-Path -Parent $programRoot
-$programName = Split-Path -Leaf $programRoot
-Get-ChildItem -LiteralPath $programParent -Filter "$programName.rollback-*" -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $programRoot -Recurse -Force -ErrorAction SilentlyContinue
-Write-Host 'DSH for RPG Maker MV program files and cache were removed.'
-if ($Purge) { Write-Host 'DSH state and local credential metadata were purged by explicit request.' }
-else { Write-Host "State, credentials, logs, and recent projects remain under $mutableRoot. Projects outside that folder are never deleted." }
+$bun = Get-Command bun.exe -ErrorAction SilentlyContinue
+if (-not $bun) { throw 'Bun was not found. Run Install.cmd or repair the installation, then retry.' }
+$cli = Join-Path $programRoot 'src\cli.ts'
+$arguments = @(
+  'run', $cli, 'uninstall',
+  '--program-root', $programRoot,
+  '--mutable-root', $mutableRoot,
+  '--dsh-home', $dshHome,
+  '--start-menu-shortcut', $shortcut
+)
+if ($Purge) { $arguments += '--purge' }
+& $bun.Source @arguments
+$code = $LASTEXITCODE
+if ($code -ne 0) { throw "DSH uninstall failed (exit code $code)." }
 if (-not $NoPause) { Read-Host 'Press Enter to close' | Out-Null }

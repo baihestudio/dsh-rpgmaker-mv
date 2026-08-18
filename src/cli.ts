@@ -12,6 +12,7 @@ import {
 } from './image-workshop';
 import type { ImageReleasePin } from './image-releases';
 import { childExitCode, redactSensitive, type CommandRunner, type InteractiveSpawner } from './process';
+import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT } from './config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, uninstallWindowsRelease } from './release-gate';
 import type { PrerequisiteConsent } from './prerequisites';
 import type { PortConflictAction, ExistingSessionOpener, PortProbe, RecentProject, RecentProjectChoice } from './windows';
@@ -61,13 +62,18 @@ function parseArgs(argv: string[]): ParsedArgs {
       positionals.push(value);
       continue;
     }
-    const key = value.slice(2);
+    const encoded = value.slice(2);
+    const equals = encoded.indexOf('=');
+    if (equals >= 0) {
+      values[encoded.slice(0, equals)] = encoded.slice(equals + 1);
+      continue;
+    }
     const next = args[index + 1];
     if (next && !next.startsWith('--')) {
-      values[key] = next;
+      values[encoded] = next;
       index += 1;
     } else {
-      flags.add(key);
+      flags.add(encoded);
     }
   }
   return { command, positionals, values, flags };
@@ -94,6 +100,7 @@ function helpText(): string {
     '  --zip <path>              Release ZIP path (release-zip)',
     '  --program-root <path>     Per-user installed program root override',
     '  --mutable-root <path>     Per-user mutable data root override',
+    '  --start-menu-shortcut <path> Override the owned Start Menu shortcut path',
     '  --dsh-home <path>         Override DSH_HOME for this invocation',
     '  --runtime-dir <path>      Override the app-owned runtime tree',
     '  --dsh-executable <path>   Use an explicit DSH executable',
@@ -149,6 +156,7 @@ function baseOptions(parsed: ParsedArgs, dependencies: CliDependencies): Record<
     runtimeDir: option(parsed.values, 'runtime-dir'),
     programRoot: option(parsed.values, 'program-root'),
     mutableRoot: option(parsed.values, 'mutable-root'),
+    startMenuShortcutPath: option(parsed.values, 'start-menu-shortcut'),
     imageMagickExecutable: option(parsed.values, 'image-magick'),
     imageMagickSha256: option(parsed.values, 'image-magick-sha256'),
     imageMagickUrl: option(parsed.values, 'image-magick-url'),
@@ -178,6 +186,28 @@ function numericOption(parsed: ParsedArgs, name: string): number | undefined {
   const number = Number(value);
   if (!Number.isInteger(number)) throw new Error(`Option --${name} must be an integer.`);
   return number;
+}
+
+function validateCliFixedBinding(argv: string[]): void {
+  const [first, ...rest] = argv;
+  const command = first && !first.startsWith('-') ? first : 'launch';
+  if (command !== 'launch') return;
+  const args = first && !first.startsWith('-') ? rest : argv;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    const inline = argument.match(/^--(host|port)=(.*)$/s);
+    if (inline) {
+      const expected = inline[1] === 'host' ? WINDOWS_DSH_HOST : String(WINDOWS_DSH_PORT);
+      if (inline[2] !== expected) throw new Error(`The DSH web binding is fixed at ${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}; caller-supplied --${inline[1]}=${inline[2]} is not allowed.`);
+      continue;
+    }
+    if (argument !== '--host' && argument !== '--port') continue;
+    const value = args[index + 1];
+    if (value === undefined || value.startsWith('--')) throw new Error(`The DSH launch binding option ${argument} requires a value and is fixed at ${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}.`);
+    index += 1;
+    const expected = argument === '--host' ? WINDOWS_DSH_HOST : String(WINDOWS_DSH_PORT);
+    if (value !== expected) throw new Error(`The DSH web binding is fixed at ${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}; caller-supplied ${argument}=${value} is not allowed.`);
+  }
 }
 
 function releaseTargets(parsed: ParsedArgs): ReleaseTarget[] | undefined {
@@ -326,6 +356,7 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         runtimeDir: option(parsed.values, 'runtime-dir'),
         programRoot: option(parsed.values, 'program-root'),
         mutableRoot: option(parsed.values, 'mutable-root'),
+        startMenuShortcutPath: option(parsed.values, 'start-menu-shortcut'),
         bunExecutable: option(parsed.values, 'bun-executable'),
         pwshExecutable: option(parsed.values, 'pwsh-executable'),
         nodeExecutable: option(parsed.values, 'node-executable'),
@@ -350,6 +381,7 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         runtimeDir: option(parsed.values, 'runtime-dir'),
         programRoot: option(parsed.values, 'program-root'),
         mutableRoot: option(parsed.values, 'mutable-root'),
+        startMenuShortcutPath: option(parsed.values, 'start-menu-shortcut'),
         purge: parsed.flags.has('purge')
       });
       io.stdout.write(`Removed program files and cache under ${result.programRoot}.\n`);
@@ -405,6 +437,7 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
     }
 
     if (parsed.command === 'launch') {
+      validateCliFixedBinding(argv);
       // This notice is intentionally unconditional: do not detect editor processes or infer write ownership.
       io.stdout.write(`${SINGLE_WRITER_NOTICE}\n\n`);
       const launchOptions = {

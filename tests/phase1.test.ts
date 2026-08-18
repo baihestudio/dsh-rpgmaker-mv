@@ -704,9 +704,17 @@ describe('doctor and launcher seams', () => {
     const command = String.raw`C:\Program Files\DSH\dsh.cmd`;
     const invocation = prepareProcessInvocation(command, ['--version'], 'win32', { ComSpec: String.raw`C:\Windows\System32\cmd.exe` });
     expect(invocation.command).toBe(String.raw`C:\Windows\System32\cmd.exe`);
-    expect(invocation.args.slice(0, 3)).toEqual(['/d', '/s', '/c']);
-    expect(invocation.args[3]).toContain(`call "${command}" --version`);
-    expect(invocation.args[3]).not.toContain('Game 游戏');
+    expect(invocation.args.slice(0, 4)).toEqual(['/d', '/v:off', '/s', '/c']);
+    expect(invocation.args[4]).toContain(`"${command}" --version`);
+    expect(invocation.args[4]).not.toContain('Game 游戏');
+  });
+  test('Windows .cmd argv preserves percent and exclamation characters at the cmd boundary', () => {
+    const command = String.raw`C:\Program Files\DSH\dsh.cmd`;
+    const userPath = 'C:\\Users\\tester\\100%\\!important!\\选择 project';
+    const invocation = prepareProcessInvocation(command, ['--project', userPath], 'win32', { ComSpec: String.raw`C:\Windows\System32\cmd.exe` });
+    expect(invocation.args.slice(0, 4)).toEqual(['/d', '/v:off', '/s', '/c']);
+    expect(invocation.args[4]).toContain('100^%\\!important!\\选择 project');
+    expect(invocation.args[4]).not.toContain('call ');
   });
   test('launcher rejects an invalid selected project before starting DSH', async () => {
     const root = await disposableDirectory('launcher-invalid');

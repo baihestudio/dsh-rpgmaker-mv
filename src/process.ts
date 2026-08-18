@@ -47,8 +47,12 @@ export class ProcessTerminationError extends Error {
 }
 
 function quoteWindowsCommandArgument(value: string): string {
-  if (value.length > 0 && !/[\s\"&|<>^]/.test(value)) return value;
-  const escaped = value.replaceAll('"', `${String.fromCharCode(92)}"`);
+  // cmd.exe expands percent variables even inside quotes. A caret protects
+  // each percent from that expansion; /v:off below prevents delayed !
+  // expansion. Keep all other argv data quoted when cmd could parse it.
+  const cmdSafe = value.replaceAll('%', '^%');
+  const escaped = cmdSafe.replaceAll('"', `${String.fromCharCode(92)}"`);
+  if (escaped.length > 0 && !/[\s\"&|<>^!%]/.test(value)) return escaped;
   return `"${escaped}"`;
 }
 
@@ -60,8 +64,8 @@ export function prepareProcessInvocation(
 ): ProcessInvocation {
   if (platform !== 'win32' || !/\.(?:cmd|bat)$/i.test(command)) return { command, args };
   const comspec = env.ComSpec ?? env.COMSPEC ?? process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe';
-  const commandLine = ['call', quoteWindowsCommandArgument(command), ...args.map(quoteWindowsCommandArgument)].join(' ');
-  return { command: comspec, args: ['/d', '/s', '/c', commandLine] };
+  const commandLine = [quoteWindowsCommandArgument(command), ...args.map(quoteWindowsCommandArgument)].join(' ');
+  return { command: comspec, args: ['/d', '/v:off', '/s', '/c', commandLine] };
 }
 
 function mergedEnvironment(env?: Record<string, string | undefined>): Record<string, string> {
