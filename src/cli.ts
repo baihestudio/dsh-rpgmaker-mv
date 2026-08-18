@@ -2,6 +2,7 @@ import { bootstrapRuntime, BootstrapError } from './bootstrap';
 import { runDoctor, renderDoctorReport } from './doctor';
 import { launchProject, SINGLE_WRITER_NOTICE, LauncherError } from './launcher';
 import { launchRpgmakerProject } from './rpgmaker';
+import { buildRelease, releaseSummary, type ReleaseTarget } from './release';
 import {
   createImageWorkshop,
   prepareImageToolchain,
@@ -71,14 +72,16 @@ function helpText(): string {
     '  bootstrap   Install or repair the pinned DSH runtime using Bun',
     '  doctor      Check Windows prerequisites and DSH metadata',
     '  launch      Pick or launch an RPG Maker MV project in DSH',
+    '  build-release  Package and smoke-test Windows and Browser artifacts',
     '  image       Run a deterministic Asset Workshop image operation',
     '',
     'Options:',
-    '  --project <path>          Skip the native folder picker',
+    '  --project <path>          Project to launch or package',
+    '  --output <path>           Fresh release output directory (build-release)',
     '  --dsh-home <path>         Override DSH_HOME for this invocation',
     '  --runtime-dir <path>      Override the app-owned runtime tree',
     '  --dsh-executable <path>   Use an explicit DSH executable',
-    '  --preset <id>              Agent preset (rpgmaker, playtest-debug, or asset-workshop)',
+    '  --preset <id>              Agent preset (rpgmaker, playtest-debug, asset-workshop, or build-release)',
     '  --image-magick <path>     Use the resolved pinned ImageMagick executable (requires SHA-256)',
     '  --image-magick-sha256 <hex> Expected SHA-256 for an explicit ImageMagick override',
     '  --image-magick-url <url>  Exact pinned ImageMagick release URL',
@@ -89,6 +92,12 @@ function helpText(): string {
     '  --oxipng-sha256 <hex>     Expected SHA-256 for an explicit oxipng override',
     '  --oxipng-url <url>        Exact pinned oxipng release URL',
     '  --bun-executable <path>   Use an explicit Bun executable',
+    '  --js-executable <path>    Use an explicit Bun or Node executable for packaging/MCP',
+    '  --release-runtime-dir <path>  Use the app-owned rpgmpacker runtime',
+    '  --rpgmaker-installation <path>  Explicit RPG Maker MV installation folder',
+    '  --mcp-runtime-dir <path>  Use the app-owned RPG Maker MCP runtime',
+    '  --source-root <path>      Preset source root override',
+    '  --platforms <list>        Comma-separated Windows and/or Browser targets',
     '  --pwsh-executable <path>  Use an explicit PowerShell executable',
     '  --json                    Render doctor output as JSON',
     '',
@@ -144,6 +153,14 @@ function numericOption(parsed: ParsedArgs, name: string): number | undefined {
   const number = Number(value);
   if (!Number.isInteger(number)) throw new Error(`Option --${name} must be an integer.`);
   return number;
+}
+
+function releaseTargets(parsed: ParsedArgs): ReleaseTarget[] | undefined {
+  const encoded = option(parsed.values, 'platforms');
+  if (encoded === undefined) return undefined;
+  const values = encoded.split(',').map((value) => value.trim()).filter(Boolean);
+  if (values.some((value) => value !== 'Windows' && value !== 'Browser')) throw new Error('--platforms must contain only Windows and Browser.');
+  return values as ReleaseTarget[];
 }
 
 function inputList(parsed: ParsedArgs): string[] {
@@ -272,6 +289,29 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
       });
       io.stdout.write(`Bootstrap ${result.status}: ${result.runtimeDir}\n`);
       if (result.rollbackDir) io.stdout.write(`Previous runtime retained for rollback: ${result.rollbackDir}\n`);
+      return 0;
+    }
+
+    if (parsed.command === 'build-release' || parsed.command === 'release') {
+      const result = await buildRelease({
+        platform: dependencies.platform,
+        env: dependencies.env,
+        dshHome: option(parsed.values, 'dsh-home'),
+        runtimeDir: option(parsed.values, 'runtime-dir'),
+        projectPath: requiredOption(parsed, 'project'),
+        outputRoot: requiredOption(parsed, 'output'),
+        targets: releaseTargets(parsed),
+        rpgmakerInstallationPath: option(parsed.values, 'rpgmaker-installation'),
+        releaseRuntimeDir: option(parsed.values, 'release-runtime-dir'),
+        bunExecutable: option(parsed.values, 'bun-executable'),
+        jsExecutable: option(parsed.values, 'js-executable'),
+        dshExecutable: option(parsed.values, 'dsh-executable'),
+        mcpRuntimeDir: option(parsed.values, 'mcp-runtime-dir'),
+        sourceRoot: option(parsed.values, 'source-root'),
+        commandRunner: dependencies.commandRunner
+      });
+      io.stdout.write(`${releaseSummary(result)}\n`);
+      if (parsed.flags.has('json')) io.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return 0;
     }
 

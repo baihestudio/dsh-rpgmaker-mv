@@ -1,0 +1,3 @@
+name: Build and Release Agent
+description: Package reproducible Windows and Browser builds, inspect their structure, and smoke-test each artifact without changing the source project.
+order: 3

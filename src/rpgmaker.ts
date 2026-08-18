@@ -25,6 +25,7 @@ export const RPGMAKER_MCP_VERSION = '0.1.0';
 export const RPGMAKER_MCP_SERVER_NAME = 'rpgmaker_mv';
 export const RPGMAKER_PRESET_ID = 'rpgmaker';
 export const PLAYTEST_DEBUG_PRESET_ID = 'playtest-debug';
+export const BUILD_RELEASE_PRESET_ID = 'build-release';
 export const RPGMAKER_DSH_PROFILE = 'web';
 const PRESET_OWNERSHIP_FILE = '.dsh-rpgmaker-owned.json';
 const MCP_LOCK_INTEGRITY = 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==';
@@ -504,13 +505,14 @@ async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: 
   if (schemaErrors.length > 0) throw new RpgMakerStartupError(schemaErrors.join('; '));
   const codePresetPath = await findCodeComposition(paths.runtimeDir);
   const agentPreset = options.agentPreset ?? RPGMAKER_PRESET_ID;
-  if (agentPreset !== RPGMAKER_PRESET_ID && agentPreset !== PLAYTEST_DEBUG_PRESET_ID && agentPreset !== ASSET_WORKSHOP_PRESET_ID) {
+  if (agentPreset !== RPGMAKER_PRESET_ID && agentPreset !== PLAYTEST_DEBUG_PRESET_ID && agentPreset !== ASSET_WORKSHOP_PRESET_ID && agentPreset !== BUILD_RELEASE_PRESET_ID) {
     throw new RpgMakerStartupError(`Unknown RPG Maker agent preset: ${agentPreset}`);
   }
   const rpgmakerSourceRoot = options.sourceRoot ?? defaultSourceRoot(RPGMAKER_PRESET_ID);
   const rpgmakerInstalled = await installPreset(rpgmakerSourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
   await installPreset(defaultSourceRoot(PLAYTEST_DEBUG_PRESET_ID), paths.dshHome, codePresetPath, PLAYTEST_DEBUG_PRESET_ID);
   await installPreset(defaultSourceRoot(ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
+  await installPreset(defaultSourceRoot(BUILD_RELEASE_PRESET_ID), paths.dshHome, codePresetPath, BUILD_RELEASE_PRESET_ID);
   let imageToolchain: ImageToolchain | undefined;
   if (agentPreset === ASSET_WORKSHOP_PRESET_ID) {
     try {
@@ -609,10 +611,11 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
     DSH_IMAGE_HELPER_ROOT: deployment.imageToolchain.helperRoot,
     ...(deployment.imageToolchain.oxipng ? { DSH_OXIPNG: deployment.imageToolchain.oxipng } : {})
   } : undefined;
+  const releaseEnvironment = { DSH_RPGMAKER_RELEASE_CLI: fileURLToPath(new URL('./cli.ts', import.meta.url)) };
   const result = await launchProject({
     ...options,
     projectPath,
-    extraEnv: { ...(options.extraEnv ?? {}), ...(imageEnvironment ?? {}) },
+    extraEnv: { ...(options.extraEnv ?? {}), ...(imageEnvironment ?? {}), ...releaseEnvironment },
     dshArgs: ['--profile', RPGMAKER_DSH_PROFILE, ...(options.dshArgs ?? []), '--patch', deployment.compositionPath]
   });
   return { ...result, deployment };

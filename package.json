@@ -14,7 +14,8 @@
     "doctor": "bun run src/cli.ts doctor",
     "launch": "bun run src/cli.ts launch",
     "phase2:real": "bun run scripts/phase2-real-acceptance.ts",
-    "phase4:real": "bun run scripts/phase4-real-acceptance.ts"
+    "phase4:real": "bun run scripts/phase4-real-acceptance.ts",
+    "phase6:real": "bun run scripts/phase6-real-acceptance.ts"
   },
   "type": "module"
 }
