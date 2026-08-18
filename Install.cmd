@@ -1,0 +1,10 @@
+@echo off
+setlocal DisableDelayedExpansion
+set "ROOT=%~dp0"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%install.ps1" %*
+set "CODE=%ERRORLEVEL%"
+if not "%CODE%"=="0" (
+  echo Installation failed with exit code %CODE%.
+  pause
+)
+exit /b %CODE%

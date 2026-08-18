@@ -1,0 +1,734 @@
+import { describe, expect, test } from 'bun:test';
+import { EventEmitter } from 'node:events';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
+import { bootstrapRuntime, findDshExecutable, verifyRuntime } from '../src/bootstrap';
+import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION } from '../src/config';
+import { runDoctor } from '../src/doctor';
+import { launchProject, pickProjectDirectory } from '../src/launcher';
+import { runCli } from '../src/cli';
+import { executeCommand, prepareProcessInvocation, ProcessTerminationError } from '../src/process';
+import { validateMvProject } from '../src/project';
+
+async function disposableDirectory(prefix: string): Promise<string> {
+  return mkdtemp(join(tmpdir(), `${prefix}-`));
+}
+
+async function makeMvProject(parent: string, name = '游戏 project with spaces'): Promise<string> {
+  const project = join(parent, name);
+  await mkdir(join(project, 'data'), { recursive: true });
+  await mkdir(join(project, 'js'), { recursive: true });
+  await writeFile(join(project, 'Game.rpgproject'), '{}\n');
+  return project;
+}
+
+async function makeRuntime(runtime: string, version = DSH_VERSION): Promise<void> {
+  await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true });
+  await mkdir(join(runtime, 'node_modules', 'koffi'), { recursive: true });
+  await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
+  await writeFile(
+    join(runtime, 'package.json'),
+    JSON.stringify({
+      name: 'dsh-rpgmaker-runtime',
+      private: true,
+      dependencies: { [DSH_PACKAGE_NAME]: version }
+    })
+  );
+  await writeFile(
+    join(runtime, 'bun.lock'),
+    JSON.stringify({
+      lockfileVersion: 1,
+      workspaces: { '': { dependencies: { [DSH_PACKAGE_NAME]: version } } },
+      packages: { [DSH_PACKAGE_NAME]: [`${DSH_PACKAGE_NAME}@${version}`, '', {}, version === DSH_VERSION ? DSH_NPM_INTEGRITY : 'sha512-old-runtime'] }
+    })
+  );
+  await writeFile(
+    join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
+    JSON.stringify({ name: DSH_PACKAGE_NAME, version, bin: { dsh: 'lib/bin.js' } })
+  );
+  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), '#!/usr/bin/env bun\n');
+  await writeFile(join(runtime, 'node_modules', 'koffi', 'package.json'), JSON.stringify({ name: 'koffi', version: '2.12.0' }));
+  await writeFile(join(runtime, 'node_modules', '.bin', 'dsh'), '#!/usr/bin/env bun\n');
+}
+function makeTrackedChild(pid = 1234): EventEmitter & { pid: number; exitCode: number | null; signalCode: NodeJS.Signals | null } {
+  const child = new EventEmitter() as EventEmitter & { pid: number; exitCode: number | null; signalCode: NodeJS.Signals | null };
+  child.pid = pid;
+  child.exitCode = null;
+  child.signalCode = null;
+  return child;
+}
+
+  test('timeout does not resolve until process-tree termination completes', async () => {
+    const child = new EventEmitter() as EventEmitter & { pid: number; exitCode: number | null; signalCode: NodeJS.Signals | null };
+    child.pid = 4123;
+    child.exitCode = null;
+    child.signalCode = null;
+    let releaseTermination: (() => void) | undefined;
+    let terminationStarted = false;
+    const command = executeCommand('fake-process', [], { platform: 'win32', timeoutMs: 5 }, {
+      spawnProcess: (() => child) as never,
+      terminateProcessTree: async () => {
+        terminationStarted = true;
+        await new Promise<void>((resolve) => { releaseTermination = resolve; });
+        child.exitCode = 1;
+        child.emit('close', 1);
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(terminationStarted).toBe(true);
+    let resolved = false;
+    void command.then(() => { resolved = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(resolved).toBe(false);
+    releaseTermination?.();
+    await expect(command).resolves.toMatchObject({ exitCode: 124 });
+  });
+  test('bootstrap preserves staging when installer process-tree termination is unconfirmed', async () => {
+    const root = await disposableDirectory('runtime-timeout-preserve');
+    try {
+      let caught: unknown;
+      try {
+        await bootstrapRuntime({
+          runtimeDir: join(root, 'runtime'),
+          bunExecutable: 'bun',
+          commandRunner: async (_command, args) => {
+            if (args[0] === 'add') throw new ProcessTerminationError('installer descendants are still running');
+            return { exitCode: 0, stdout: '', stderr: '' };
+          }
+        });
+      } catch (error) {
+        caught = error;
+      }
+      const entries = await readdir(root);
+      expect(String(caught)).toContain('staging was preserved');
+      expect(entries.some((entry) => entry.startsWith('.runtime.staging-'))).toBe(true);
+      await expect(readFile(join(root, 'runtime', 'package.json'), 'utf8')).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+describe('RPG Maker MV project boundary', () => {
+  test('accepts a project marker and data/js directories in a path with spaces and CJK', async () => {
+    const root = await disposableDirectory('mv-project');
+    try {
+      const project = await makeMvProject(root);
+      await expect(validateMvProject(project)).resolves.toMatchObject({ valid: true, projectPath: project });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reports missing marker and required directories', async () => {
+    const root = await disposableDirectory('invalid-mv-project');
+    try {
+      const result = await validateMvProject(root);
+      expect(result.valid).toBe(false);
+      expect(result.missing).toEqual(['Game.rpgproject', 'data', 'js']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('staged DSH runtime bootstrap', () => {
+  test('leaves a valid runtime unchanged on repeat bootstrap', async () => {
+    const root = await disposableDirectory('runtime-idempotent');
+    try {
+      const runtime = join(root, 'runtime');
+      await makeRuntime(runtime);
+      const calls: string[][] = [];
+      const result = await bootstrapRuntime({
+        runtimeDir: runtime,
+        bunExecutable: 'bun',
+        commandRunner: async (_command, args) => {
+          calls.push(args);
+          return { exitCode: 0, stdout: 'koffi loaded', stderr: '' };
+        }
+      });
+      expect(result.status).toBe('unchanged');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain('-e');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+
+  test('requires the rc.7 lock entry and npm integrity', async () => {
+    const root = await disposableDirectory('runtime-integrity');
+    try {
+      const runtime = join(root, 'runtime');
+      await makeRuntime(runtime);
+      const commandRunner = async () => ({ exitCode: 0, stdout: 'koffi loaded', stderr: '' });
+      expect((await verifyRuntime(runtime, { bunExecutable: 'bun', commandRunner })).valid).toBe(true);
+      const lockPath = join(runtime, 'bun.lock');
+      const lock = await readFile(lockPath, 'utf8');
+      await writeFile(lockPath, lock.replace(DSH_NPM_INTEGRITY, 'sha512-tampered'));
+      const tampered = await verifyRuntime(runtime, { bunExecutable: 'bun', commandRunner });
+      expect(tampered.valid).toBe(false);
+      expect(tampered.errors.join(' ')).toContain('npm integrity');
+      await rm(lockPath);
+      const missing = await verifyRuntime(runtime, { bunExecutable: 'bun', commandRunner });
+      expect(missing.valid).toBe(false);
+      expect(missing.errors.join(' ')).toContain('bun.lock');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('installs a fresh runtime when no active tree exists', async () => {
+    const root = await disposableDirectory('runtime-fresh');
+    try {
+      const runtime = join(root, 'runtime');
+      const calls: string[][] = [];
+      const result = await bootstrapRuntime({
+        runtimeDir: runtime,
+        bunExecutable: 'bun',
+        commandRunner: async (_command, args, options) => {
+          calls.push(args);
+          if (args[0] === 'add') await makeRuntime(options.cwd!);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+      });
+      expect(result.status).toBe('installed');
+      expect(result.rollbackDir).toBeUndefined();
+      expect(calls[0]).toEqual(['add', '--exact', `${DSH_PACKAGE_NAME}@${DSH_VERSION}`]);
+      expect(await readFile(join(runtime, 'package.json'), 'utf8')).toContain(DSH_VERSION);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('prefers the Windows generated DSH shim over the package JavaScript entry', async () => {
+    const root = await disposableDirectory('runtime-shim');
+    try {
+      const runtime = join(root, 'runtime');
+      await makeRuntime(runtime);
+      const shim = join(runtime, 'node_modules', '.bin', 'dsh.cmd');
+      await writeFile(shim, '@echo off\r\n');
+      expect(await findDshExecutable(runtime, 'win32')).toBe(shim);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  test('builds in staging, swaps atomically, and retains the prior runtime', async () => {
+    const root = await disposableDirectory('runtime-repair');
+    try {
+      const runtime = join(root, 'runtime');
+      await makeRuntime(runtime, '0.1.0-rc.5');
+      const oldPackage = await readFile(join(runtime, 'package.json'), 'utf8');
+      const calls: Array<{ args: string[]; cwd?: string }> = [];
+      const result = await bootstrapRuntime({
+        runtimeDir: runtime,
+        bunExecutable: 'bun',
+        commandRunner: async (_command, args, options) => {
+          calls.push({ args, cwd: options.cwd });
+          if (args[0] === 'add') {
+            await makeRuntime(options.cwd!);
+          }
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+      });
+      expect(result.status).toBe('repaired');
+      expect(result.rollbackDir).toBeString();
+      expect(await readFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')).toContain(DSH_VERSION);
+      expect(await readFile(join(result.rollbackDir!, 'package.json'), 'utf8')).toBe(oldPackage);
+      expect(calls.map((call) => call.args.slice(0, 2))).toEqual([
+        ['add', '--exact'],
+        ['pm', 'trust'],
+        ['-e', "import('koffi').then(() => process.exit(0)).catch(() => process.exit(1))"],
+        ['-e', "import('koffi').then(() => process.exit(0)).catch(() => process.exit(1))"]
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+
+  test('failed bootstrap diagnostics redact the credential value', async () => {
+    const root = await disposableDirectory('runtime-secret');
+    try {
+      const secret = 'fake-key-never-log-this';
+      let caught: unknown;
+      try {
+        await bootstrapRuntime({
+          runtimeDir: join(root, 'runtime'),
+          bunExecutable: 'bun',
+          env: { DEEPSEEK_API_KEY: secret },
+          commandRunner: async (_command, args) => {
+            if (args[0] === 'add') return { exitCode: 1, stdout: '', stderr: `install failed for ${secret}` };
+            return { exitCode: 0, stdout: '', stderr: '' };
+          }
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeDefined();
+      expect(String(caught)).not.toContain(secret);
+      expect(String(caught)).toContain('[redacted]');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+
+  test('restores the previous runtime if post-swap verification fails', async () => {
+    const root = await disposableDirectory('runtime-post-swap');
+    try {
+      const runtime = join(root, 'runtime');
+      await makeRuntime(runtime, '0.1.0-rc.5');
+      const oldPackage = await readFile(join(runtime, 'package.json'), 'utf8');
+      let evalCalls = 0;
+      await expect(
+        bootstrapRuntime({
+          runtimeDir: runtime,
+          bunExecutable: 'bun',
+          commandRunner: async (_command, args, options) => {
+            if (args[0] === 'add') await makeRuntime(options.cwd!);
+            if (args[0] === '-e') {
+              evalCalls += 1;
+              return { exitCode: evalCalls === 1 ? 0 : 1, stdout: '', stderr: '' };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+          }
+        })
+      ).rejects.toThrow(/prior runtime was restored/i);
+      expect(await readFile(join(runtime, 'package.json'), 'utf8')).toBe(oldPackage);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reports degraded state and preserves paths when rollback restoration fails', async () => {
+    const root = await disposableDirectory('runtime-degraded');
+    try {
+      const runtime = join(root, 'runtime');
+      await makeRuntime(runtime, '0.1.0-rc.5');
+      let renameCalls = 0;
+      let caught: unknown;
+      try {
+        await bootstrapRuntime({
+          runtimeDir: runtime,
+          bunExecutable: 'bun',
+          renamePath: async (from, to) => {
+            renameCalls += 1;
+            if (renameCalls === 2 || renameCalls === 3) throw new Error(`injected rename failure ${renameCalls}`);
+            await rename(from, to);
+          },
+          commandRunner: async (_command, args, options) => {
+            if (args[0] === 'add') await makeRuntime(options.cwd!);
+            return { exitCode: 0, stdout: '', stderr: '' };
+          }
+        });
+      } catch (error) {
+        caught = error;
+      }
+      const entries = await readdir(root);
+      expect(String(caught)).toContain('DEGRADED');
+      expect(String(caught)).toContain('active runtime is missing');
+      expect(String(caught)).not.toContain('current runtime was not changed');
+      expect(renameCalls).toBe(3);
+      expect(entries.some((entry) => entry.startsWith('runtime.rollback-'))).toBe(true);
+      expect(entries.some((entry) => entry.startsWith('.runtime.staging-'))).toBe(true);
+      await expect(readFile(join(runtime, 'package.json'), 'utf8')).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  test('keeps the current runtime usable when staged verification fails', async () => {
+    const root = await disposableDirectory('runtime-rollback');
+    try {
+      const runtime = join(root, 'runtime');
+      await makeRuntime(runtime, '0.1.0-rc.5');
+      const oldPackage = await readFile(join(runtime, 'package.json'), 'utf8');
+      await expect(
+        bootstrapRuntime({
+          runtimeDir: runtime,
+          bunExecutable: 'bun',
+          commandRunner: async (_command, args, options) => {
+            if (args[0] === 'add') await makeRuntime(options.cwd!);
+            if (args[0] === '-e') return { exitCode: 1, stdout: '', stderr: 'koffi failed' };
+            return { exitCode: 0, stdout: '', stderr: '' };
+          }
+        })
+      ).rejects.toThrow(/current runtime was not changed/i);
+      expect(await readFile(join(runtime, 'package.json'), 'utf8')).toBe(oldPackage);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe('runtime access lock', () => {
+
+  test('launch failure releases the session lease so bootstrap can recover', async () => {
+    const root = await disposableDirectory('runtime-session-failure');
+    try {
+      const runtime = join(root, 'runtime');
+      const dshHome = join(root, 'dsh-home');
+      const project = await makeMvProject(root);
+      await makeRuntime(runtime, '0.1.0-rc.5');
+      await expect(
+        launchProject({
+          platform: 'darwin',
+          runtimeDir: runtime,
+          dshHome,
+          projectPath: project,
+          env: { DSH_HOME: dshHome },
+          spawnInteractive: () => { throw new Error('spawn failed'); }
+        })
+      ).rejects.toThrow(/spawn failed/i);
+
+      const result = await bootstrapRuntime({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        bunExecutable: 'bun',
+        lockTimeoutMs: 500,
+        lockRetryMs: 5,
+        commandRunner: async (_command, args, options) => {
+          if (args[0] === 'add') await makeRuntime(options.cwd!);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+      });
+      expect(result.status).toBe('repaired');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('doctor and launcher wait while bootstrap owns the swap transaction', async () => {
+    const root = await disposableDirectory('runtime-lock');
+    try {
+      const runtime = join(root, 'runtime');
+      const dshHome = join(root, 'dsh-home');
+      const project = await makeMvProject(root);
+      const bin = join(root, 'bin');
+      await mkdir(bin, { recursive: true });
+      for (const name of ['pwsh', 'coreutils-manager', 'find', 'grep', 'git', 'bun']) await writeFile(join(bin, name), '');
+
+      let signalBootstrapHold: (() => void) | undefined;
+      let releaseBootstrapHold: (() => void) | undefined;
+      const bootstrapHoldStarted = new Promise<void>((resolve) => { signalBootstrapHold = resolve; });
+      const bootstrapHold = new Promise<void>((resolve) => { releaseBootstrapHold = resolve; });
+      const commandRunner = async (command: string, args: string[], options: { cwd?: string }) => {
+        if (args[0] === 'add') {
+          await makeRuntime(options.cwd!);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'pm') {
+          signalBootstrapHold?.();
+          await bootstrapHold;
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
+        const name = command.split(/[\\/]/).pop();
+        if (name === 'pwsh') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
+        if (name === 'bun') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
+        if (name === 'git') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
+        if (name === 'coreutils-manager' && args[0] === '--help') return { exitCode: 0, stdout: "coreutils-manager 0.1.0\nManage coreutils utilities and PowerShell profiles\nUsage: coreutils-manager <COMMAND>\nCommands:\n  enable    Enable one or more utilities\n  disable   Disable one or more utilities\n  status    List all utilities with their status\n", stderr: '' };
+        if (name === 'coreutils-manager' && args[0] === 'status') return { exitCode: 0, stdout: "find            enabled\ngrep            enabled\n", stderr: '' };
+        if (name === 'find' || name === 'grep') return { exitCode: 0, stdout: `${name} 0.1.0`, stderr: '' };
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+
+      const installing = bootstrapRuntime({
+        runtimeDir: runtime,
+        dshHome,
+        env: { PATH: bin, DSH_HOME: dshHome },
+        bunExecutable: 'bun',
+        commandRunner,
+        lockTimeoutMs: 1000,
+        lockRetryMs: 5
+      });
+      await bootstrapHoldStarted;
+
+      let doctorFinished = false;
+      let launched = false;
+      const launchChild = makeTrackedChild(99);
+      const doctor = runDoctor({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        env: { PATH: bin, DSH_HOME: dshHome },
+        commandRunner,
+        lockTimeoutMs: 1000,
+        lockRetryMs: 5
+      }).then((report) => { doctorFinished = true; return report; });
+      const launch = launchProject({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        projectPath: project,
+        env: { PATH: bin, DSH_HOME: dshHome },
+        commandRunner,
+        spawnInteractive: () => { launched = true; return launchChild; },
+        lockTimeoutMs: 1000,
+        lockRetryMs: 5
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(doctorFinished).toBe(false);
+      expect(launched).toBe(false);
+      releaseBootstrapHold?.();
+
+      await installing;
+      const report = await doctor;
+      const launchResult = await launch;
+      expect(report.runtime.valid).toBe(true);
+      expect(launched).toBe(true);
+      launchChild.exitCode = 0;
+      launchChild.emit('exit', 0);
+      await launchResult.releaseSession();
+      expect(await readFile(join(runtime, 'package.json'), 'utf8')).toContain(DSH_VERSION);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  test('bootstrap waits for a live DSH session and swaps after child exit', async () => {
+    const root = await disposableDirectory('runtime-session-lease');
+    try {
+      const runtime = join(root, 'runtime');
+      const dshHome = join(root, 'dsh-home');
+      const project = await makeMvProject(root);
+      await makeRuntime(runtime, '0.1.0-rc.5');
+      const child = makeTrackedChild(701);
+      const launch = await launchProject({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        projectPath: project,
+        env: { DSH_HOME: dshHome },
+        spawnInteractive: () => child
+      });
+
+      const bin = join(root, 'bin');
+      await mkdir(bin, { recursive: true });
+      for (const name of ['pwsh', 'coreutils-manager', 'find', 'grep', 'git', 'bun']) await writeFile(join(bin, name), '');
+      const doctor = await runDoctor({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        env: { PATH: bin, DSH_HOME: dshHome },
+        commandRunner: async (command, args) => {
+          const name = command.split(/[\\\\/]/).pop();
+          if (name === 'pwsh') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
+          if (name === 'bun') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
+          if (name === 'git') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
+          if (name === 'coreutils-manager' && args[0] === '--help') return { exitCode: 0, stdout: 'manager help', stderr: '' };
+          if (name === 'coreutils-manager' && args[0] === 'status') return { exitCode: 0, stdout: 'find enabled\\ngrep enabled', stderr: '' };
+          if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
+          return { exitCode: 0, stdout: `${name ?? ''} 0.1.0`, stderr: '' };
+        }
+      });
+      expect(doctor.platform).toBe('darwin');
+
+      let swapStarted = false;
+      const installing = bootstrapRuntime({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        bunExecutable: 'bun',
+        lockTimeoutMs: 1000,
+        lockRetryMs: 5,
+        commandRunner: async (_command, args, options) => {
+          if (args[0] === 'add') {
+            swapStarted = true;
+            await makeRuntime(options.cwd!);
+          }
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(swapStarted).toBe(false);
+      expect(await readFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')).toContain('0.1.0-rc.5');
+
+      child.exitCode = 0;
+      child.emit('exit', 0);
+      await launch.releaseSession();
+      const result = await installing;
+      expect(result.status).toBe('repaired');
+      expect(await readFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')).toContain(DSH_VERSION);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+describe('doctor and launcher seams', () => {
+  test('doctor reports prerequisites and never echoes the credential value', async () => {
+    const root = await disposableDirectory('doctor');
+    try {
+      const bin = join(root, 'bin');
+      await mkdir(bin, { recursive: true });
+      for (const name of ['pwsh', 'coreutils-manager', 'find', 'grep', 'git', 'bun']) {
+        await writeFile(join(bin, name), '');
+      }
+      const runtime = join(root, 'runtime');
+      await makeRuntime(runtime);
+      const dshHome = join(root, 'dsh-home');
+      await mkdir(dshHome, { recursive: true });
+      await writeFile(join(dshHome, '.credentials.yaml'), 'provider: local\n');
+      const secret = 'test-secret-must-not-appear';
+      const report = await runDoctor({
+        platform: 'darwin',
+        env: { PATH: bin, DSH_HOME: dshHome, DEEPSEEK_API_KEY: secret },
+        runtimeDir: runtime,
+        commandRunner: async (command, args) => {
+          const name = command.split(/[\\/]/).pop();
+          if (name === 'pwsh') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
+          if (name === 'bun') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
+          if (name === 'git') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
+          if (name === 'coreutils-manager' && args[0] === '--help') return { exitCode: 0, stdout: "coreutils-manager 0.1.0\nManage coreutils utilities and PowerShell profiles\nUsage: coreutils-manager <COMMAND>\nCommands:\n  enable    Enable one or more utilities\n  disable   Disable one or more utilities\n  status    List all utilities with their status\n", stderr: '' };
+          if (name === 'coreutils-manager' && args[0] === 'status') return { exitCode: 0, stdout: "find            enabled\ngrep            enabled\n", stderr: '' };
+          if (name === 'find') return { exitCode: 0, stdout: 'find 0.1.0', stderr: '' };
+          if (name === 'grep') return { exitCode: 0, stdout: 'grep 0.1.0', stderr: '' };
+          if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+      });
+      expect(report.ok).toBe(true);
+      expect(report.credentials.configured).toBe(true);
+      expect(JSON.stringify(report)).not.toContain(secret);
+      expect(report.checks.map((check) => check.id)).toEqual(expect.arrayContaining(['powershell', 'coreutils', 'git', 'bun', 'dsh-runtime', 'credentials']));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('doctor rejects non-Microsoft uutils/coreutils lookalikes', async () => {
+    const root = await disposableDirectory('doctor-coreutils-identity');
+    try {
+      const bin = join(root, 'bin');
+      await mkdir(bin, { recursive: true });
+      for (const name of ['coreutils-manager', 'find', 'grep']) await writeFile(join(bin, name), '');
+      const report = await runDoctor({
+        platform: 'darwin',
+        env: { PATH: bin },
+        commandRunner: async (command) => {
+          const name = command.split(/[\\/]/).pop();
+          return { exitCode: 0, stdout: `${name} (uutils/coreutils) 0.1.0`, stderr: '' };
+        }
+      });
+      expect(report.checks.find((check) => check.id === 'coreutils')?.ok).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('launcher validates the selected project and passes it as cwd without a shell', async () => {
+    const root = await disposableDirectory('launcher');
+    try {
+      const project = await makeMvProject(root);
+      const dsh = join(root, 'dsh.exe');
+      await writeFile(dsh, '');
+      let launched: { command: string; args: string[]; cwd?: string; env?: Record<string, string | undefined> } | undefined;
+      const child = makeTrackedChild();
+      const result = await launchProject({
+        platform: 'win32',
+        projectPath: project,
+        dshHome: join(root, 'dsh-home'),
+        dshExecutable: dsh,
+        env: {},
+        dshArgs: ['--test'],
+        spawnInteractive: (command, args, options) => {
+          launched = { command, args, cwd: options.cwd, env: options.env };
+          return child;
+        }
+      });
+      expect(result.projectPath).toBe(project);
+      expect(launched).toMatchObject({ command: dsh, args: ['--test'], cwd: project });
+      expect(launched!.env?.DSH_HOME).toBe(join(root, 'dsh-home'));
+      expect(result.onboardingMessage).toBeDefined();
+      child.exitCode = 0;
+      child.emit('exit', 0);
+      await result.releaseSession();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+
+  test('native Windows picker returns the selected path without shell interpolation', async () => {
+    const root = await disposableDirectory('picker');
+    try {
+      const selected = join(root, '选择 project with spaces');
+      const result = await pickProjectDirectory({
+        platform: 'win32',
+        env: {},
+        pwshExecutable: 'pwsh.exe',
+        commandRunner: async (_command, args) => {
+          expect(args).toContain('-Command');
+          expect(args.join(' ')).not.toContain(selected);
+          return { exitCode: 0, stdout: `${selected}\r\n`, stderr: '' };
+        }
+      });
+      expect(result).toBe(selected);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('CLI always prints the single-writer contract before launching', async () => {
+    const root = await disposableDirectory('cli-launch');
+    try {
+      const project = await makeMvProject(root);
+      const dsh = join(root, 'dsh.exe');
+      await writeFile(dsh, '');
+      let output = '';
+      const code = await runCli(['launch', '--project', project, '--dsh-executable', dsh, '--dsh-home', join(root, 'dsh-home')], {
+        platform: 'win32',
+        env: {},
+        rpgmaker: false,
+        io: { stdout: { write: (text) => { output += text; } }, stderr: { write: () => undefined } },
+        spawnInteractive: () => {
+          const child = makeTrackedChild();
+          setTimeout(() => { child.exitCode = 0; child.emit('exit', 0); }, 0);
+          return child;
+        }
+      });
+      expect(code).toBe(0);
+      expect(output).toContain('The agent and RPG Maker MCP are the sole writers');
+      expect(output).toContain('read-only');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+
+  test('Windows .cmd DSH shims are invoked through cmd.exe without using the project path as command text', () => {
+    const command = String.raw`C:\Program Files\DSH\dsh.cmd`;
+    const invocation = prepareProcessInvocation(command, ['--version'], 'win32', { ComSpec: String.raw`C:\Windows\System32\cmd.exe` });
+    expect(invocation.command).toBe(String.raw`C:\Windows\System32\cmd.exe`);
+    expect(invocation.args.slice(0, 4)).toEqual(['/d', '/v:off', '/s', '/c']);
+    expect(invocation.args[4]).toBe(`""${command}" --version"`);
+    expect(invocation.args[4]).not.toContain('Game 游戏');
+  });
+  test('Windows .cmd argv preserves percent and exclamation characters at the cmd boundary', () => {
+    const command = String.raw`C:\Program Files\DSH\dsh.cmd`;
+    const userPath = 'C:\\Users\\tester\\100%\\!important!\\选择 project';
+    const invocation = prepareProcessInvocation(command, ['--project', userPath], 'win32', { ComSpec: String.raw`C:\Windows\System32\cmd.exe` });
+    expect(invocation.args.slice(0, 4)).toEqual(['/d', '/v:off', '/s', '/c']);
+    expect(invocation.args[4]).toContain('100^%\\!important!\\选择 project');
+    expect(invocation.args[4]).not.toContain('call ');
+  });
+  test('launcher rejects an invalid selected project before starting DSH', async () => {
+    const root = await disposableDirectory('launcher-invalid');
+    try {
+      await expect(
+        launchProject({
+          platform: 'win32',
+          projectPath: root,
+          dshExecutable: join(root, 'dsh.exe'),
+          spawnInteractive: () => ({ pid: 1234 })
+        })
+      ).rejects.toThrow(/not a valid RPG Maker MV project/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

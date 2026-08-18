@@ -1,0 +1,19 @@
+{
+  "frames": {
+    "atlas-cyan.png": {
+      "frame": { "x": 0, "y": 0, "w": 1, "h": 2 },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": { "x": 1, "y": 0, "w": 1, "h": 2 },
+      "sourceSize": { "w": 2, "h": 2 }
+    },
+    "atlas-orange.png": {
+      "frame": { "x": 2, "y": 0, "w": 2, "h": 2 },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": { "x": 0, "y": 0, "w": 2, "h": 2 },
+      "sourceSize": { "w": 2, "h": 2 }
+    }
+  },
+  "meta": { "size": { "w": 4, "h": 2 } }
+}
