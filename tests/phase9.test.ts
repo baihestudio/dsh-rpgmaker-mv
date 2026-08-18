@@ -17,7 +17,7 @@ import {
 import { installPreset } from '../src/rpgmaker';
 import { buildReleaseZip, inspectReleaseZip } from '../src/release-gate';
 import { validateRelativePath, resolveWorkspacePath } from '../bundle/dsh-image-workshop/lib/workspace.js';
-import { createImageInspectTool, createImageResizePixelTool } from '../bundle/dsh-image-workshop/lib/tools.js';
+import { createImageInspectTool, createImageResizePixelTool, createImageTrimPadTool, createImageSheetSliceTool, createImageSheetAssembleTool, createImageAtlasPackTool, createImageOptimizePngTool } from '../bundle/dsh-image-workshop/lib/tools.js';
 import * as imageWorkshopPlugin from '../bundle/dsh-image-workshop/lib/index.js';
 import { clearWorkshopRunner, setWorkshopRunner } from '../bundle/dsh-image-workshop/lib/workshop-client.js';
 
@@ -162,6 +162,227 @@ describe('image tool adapter seam', () => {
         await expect(tool.execute({ input: '/etc/passwd', output: 'x2.png', scale: 2 }, agentExec(workspace))).rejects.toThrow(/project-relative/);
         await expect(tool.execute({ input: 'hero.png', output: 'x2.png', scale: 2 }, {})).rejects.toThrow(/workspace cwd/);
         expect(calls).toHaveLength(1);
+      } finally {
+        clearWorkshopRunner();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('image_trim_pad maps trim/pad args and rejects invalid params and existing outputs', async () => {
+    const root = await temp('adapter-trimpad');
+    try {
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, 'hero.png'), 'png');
+      const calls: Array<{ args: string[] }> = [];
+      setWorkshopRunner(async (_bun, args) => {
+        calls.push({ args });
+        const output = args[args.indexOf('--output') + 1];
+        return JSON.stringify({ schemaVersion: 2, operation: 'trim-pad', toolchain: {}, inputs: [], outputs: [{ kind: 'image', path: output, width: 64, height: 64 }], options: {}, fidelity: { dimensions: true }, verificationLevel: 'decoded-pixels', lossless: true });
+      });
+      try {
+        const tool = createImageTrimPadTool();
+        const result = await tool.execute({ input: 'hero.png', output: 'padded.png', trim: false, width: 64, height: 64, gravity: 'north' }, agentExec(workspace));
+        expect(result.operation).toBe('trim-pad');
+        expect(result.outputPaths).toEqual(['padded.png']);
+        expect(result.manifestPath).toBe('padded.png.manifest.json');
+        expect(calls[0].args[0]).toBe('trim-pad');
+        expect(calls[0].args).toEqual(['trim-pad', '--input', join(workspace, 'hero.png'), '--output', join(workspace, 'padded.png'), '--no-trim', '--width', '64', '--height', '64', '--gravity', 'north']);
+        expect(tool.output.render({}, result)[0].text).toContain('trim-pad succeeded');
+        expect(tool.output.render({}, result)[0].text).toContain('padded.png');
+
+        calls.length = 0;
+        await tool.execute({ input: 'hero.png', output: 'padded2.png' }, agentExec(workspace));
+        expect(calls[0].args).toEqual(['trim-pad', '--input', join(workspace, 'hero.png'), '--output', join(workspace, 'padded2.png')]);
+
+        await expect(tool.execute({ input: 'hero.png', output: 'x.png', width: 64 }, agentExec(workspace))).rejects.toThrow(/together/);
+        await expect(tool.execute({ input: 'hero.png', output: 'x.png', gravity: 'sideways' }, agentExec(workspace))).rejects.toThrow(/gravity/);
+        await writeFile(join(workspace, 'exists.png'), 'x');
+        await expect(tool.execute({ input: 'hero.png', output: 'exists.png' }, agentExec(workspace))).rejects.toThrow(/already exists/);
+        await expect(tool.execute({ input: 'missing.png', output: 'x.png' }, agentExec(workspace))).rejects.toThrow(/does not exist/);
+        await expect(tool.execute({ input: '../out.png', output: 'x.png' }, agentExec(workspace))).rejects.toThrow(/traversal/);
+      } finally {
+        clearWorkshopRunner();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('image_sheet_slice maps cell args and rejects existing output dirs', async () => {
+    const root = await temp('adapter-sheet-slice');
+    try {
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, 'sheet.png'), 'png');
+      const calls: Array<{ args: string[] }> = [];
+      setWorkshopRunner(async (_bun, args) => {
+        calls.push({ args });
+        const outputDir = args[args.indexOf('--output-dir') + 1];
+        return JSON.stringify({ schemaVersion: 2, operation: 'sheet-slice', toolchain: {}, inputs: [], outputs: [
+          { kind: 'image', path: join(outputDir, 'frame-0001.png'), width: 32, height: 32 },
+          { kind: 'image', path: join(outputDir, 'frame-0002.png'), width: 32, height: 32 }
+        ], options: {}, fidelity: { frames: [] }, verificationLevel: 'decoded-pixels', lossless: true });
+      });
+      try {
+        const tool = createImageSheetSliceTool();
+        const result = await tool.execute({ input: 'sheet.png', outputDir: 'frames', cellWidth: 32, cellHeight: 32 }, agentExec(workspace));
+        expect(result.operation).toBe('sheet-slice');
+        expect(result.outputPaths).toEqual(['frames/frame-0001.png', 'frames/frame-0002.png']);
+        expect(result.manifestPath).toBe('frames/manifest.json');
+        expect(calls[0].args[0]).toBe('sheet-slice');
+        expect(calls[0].args).toEqual(['sheet-slice', '--input', join(workspace, 'sheet.png'), '--output-dir', join(workspace, 'frames'), '--cell-width', '32', '--cell-height', '32']);
+
+        await expect(tool.execute({ input: 'sheet.png', outputDir: 'frames', cellWidth: 0, cellHeight: 32 }, agentExec(workspace))).rejects.toThrow(/cellWidth/);
+        await expect(tool.execute({ input: 'sheet.png', outputDir: 'frames', cellWidth: 32 }, agentExec(workspace))).rejects.toThrow(/cellHeight/);
+        await mkdir(join(workspace, 'exists'));
+        await expect(tool.execute({ input: 'sheet.png', outputDir: 'exists', cellWidth: 32, cellHeight: 32 }, agentExec(workspace))).rejects.toThrow(/already exists/);
+        await expect(tool.execute({ input: 'missing.png', outputDir: 'frames2', cellWidth: 32, cellHeight: 32 }, agentExec(workspace))).rejects.toThrow(/does not exist/);
+      } finally {
+        clearWorkshopRunner();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('image_sheet_assemble maps real schema arrays to one JSON argv element', async () => {
+    const root = await temp('adapter-sheet-assemble');
+    try {
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, 'a.png'), 'a');
+      await writeFile(join(workspace, 'b.png'), 'b');
+      const calls: Array<{ args: string[] }> = [];
+      setWorkshopRunner(async (_bun, args) => {
+        calls.push({ args });
+        const output = args[args.indexOf('--output') + 1];
+        return JSON.stringify({ schemaVersion: 2, operation: 'sheet-assemble', toolchain: {}, inputs: [], outputs: [{ kind: 'image', path: output, width: 64, height: 32 }], options: {}, fidelity: { dimensions: true }, verificationLevel: 'decoded-pixels', lossless: true });
+      });
+      try {
+        const tool = createImageSheetAssembleTool();
+        const result = await tool.execute({ inputs: ['a.png', 'b.png'], output: 'sheet.png', columns: 2 }, agentExec(workspace));
+        expect(result.operation).toBe('sheet-assemble');
+        expect(result.outputPaths).toEqual(['sheet.png']);
+        expect(result.manifestPath).toBe('sheet.png.manifest.json');
+        expect(calls[0].args[0]).toBe('sheet-assemble');
+        expect(calls[0].args[1]).toBe('--inputs-json');
+        expect(JSON.parse(calls[0].args[2])).toEqual([join(workspace, 'a.png'), join(workspace, 'b.png')]);
+        expect(calls[0].args).toEqual(['sheet-assemble', '--inputs-json', JSON.stringify([join(workspace, 'a.png'), join(workspace, 'b.png')]), '--output', join(workspace, 'sheet.png'), '--columns', '2']);
+
+        await expect(tool.execute({ inputs: [], output: 's.png', columns: 2 }, agentExec(workspace))).rejects.toThrow(/non-empty/);
+        await expect(tool.execute({ inputs: ['a.png'], output: 's.png', columns: 0 }, agentExec(workspace))).rejects.toThrow(/columns/);
+        await expect(tool.execute({ inputs: ['a.png', '../out.png'], output: 's.png', columns: 2 }, agentExec(workspace))).rejects.toThrow(/traversal/);
+        await expect(tool.execute({ inputs: ['missing.png'], output: 's.png', columns: 1 }, agentExec(workspace))).rejects.toThrow(/does not exist/);
+      } finally {
+        clearWorkshopRunner();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('image_atlas_pack maps real schema arrays and bounded options', async () => {
+    const root = await temp('adapter-atlas-pack');
+    try {
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, 'a.png'), 'a');
+      await writeFile(join(workspace, 'b.png'), 'b');
+      const calls: Array<{ args: string[] }> = [];
+      setWorkshopRunner(async (_bun, args) => {
+        calls.push({ args });
+        const outputDir = args[args.indexOf('--output') + 1];
+        return JSON.stringify({ schemaVersion: 2, operation: 'atlas-pack', toolchain: {}, inputs: [], outputs: [
+          { kind: 'image', path: join(outputDir, 'atlas.png'), width: 64, height: 32 },
+          { kind: 'json', path: join(outputDir, 'atlas.json') }
+        ], options: {}, fidelity: { frames: [] }, verificationLevel: 'representative-pixels', lossless: false });
+      });
+      try {
+        const tool = createImageAtlasPackTool();
+        const result = await tool.execute({ inputs: ['a.png', 'b.png'], output: 'atlas', maxSize: 256, padding: 2, extrusion: 1, fixedGrid: true }, agentExec(workspace));
+        expect(result.operation).toBe('atlas-pack');
+        expect(result.outputPaths).toEqual(['atlas/atlas.png']);
+        expect(result.manifestPath).toBe('atlas/manifest.json');
+        expect(calls[0].args[0]).toBe('atlas-pack');
+        expect(JSON.parse(calls[0].args[2])).toEqual([join(workspace, 'a.png'), join(workspace, 'b.png')]);
+        expect(calls[0].args).toContain('--fixed-grid');
+        expect(calls[0].args).toContain('--padding');
+        expect(calls[0].args).toContain('--extrusion');
+
+        calls.length = 0;
+        const minimal = await tool.execute({ inputs: ['a.png', 'b.png'], output: 'atlas2', maxSize: 128 }, agentExec(workspace));
+        expect(calls[0].args).toEqual(['atlas-pack', '--inputs-json', JSON.stringify([join(workspace, 'a.png'), join(workspace, 'b.png')]), '--output', join(workspace, 'atlas2'), '--max-size', '128']);
+
+        await expect(tool.execute({ inputs: ['a.png'], output: 'atlas', maxSize: 0 }, agentExec(workspace))).rejects.toThrow(/maxSize/);
+        await expect(tool.execute({ inputs: ['a.png'], output: 'atlas', maxSize: 256, padding: 100 }, agentExec(workspace))).rejects.toThrow(/padding/);
+        await expect(tool.execute({ inputs: ['a.png'], output: 'atlas', maxSize: 256, extrusion: -1 }, agentExec(workspace))).rejects.toThrow(/extrusion/);
+        await mkdir(join(workspace, 'exists'));
+        await expect(tool.execute({ inputs: ['a.png'], output: 'exists', maxSize: 256 }, agentExec(workspace))).rejects.toThrow(/already exists/);
+      } finally {
+        clearWorkshopRunner();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('image_optimize_png maps level and rejects non-PNG or out-of-range params', async () => {
+    const root = await temp('adapter-optimize-png');
+    try {
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, 'hero.png'), 'png');
+      const calls: Array<{ args: string[] }> = [];
+      setWorkshopRunner(async (_bun, args) => {
+        calls.push({ args });
+        const output = args[args.indexOf('--output') + 1];
+        return JSON.stringify({ schemaVersion: 2, operation: 'optimize-png', toolchain: {}, inputs: [], outputs: [{ kind: 'image', path: output, width: 32, height: 32 }], options: {}, fidelity: { decodedPixelsEqual: true }, verificationLevel: 'decoded-pixels', lossless: true });
+      });
+      try {
+        const tool = createImageOptimizePngTool();
+        const result = await tool.execute({ input: 'hero.png', output: 'optimized.png', level: 6 }, agentExec(workspace));
+        expect(result.operation).toBe('optimize-png');
+        expect(result.outputPaths).toEqual(['optimized.png']);
+        expect(result.manifestPath).toBe('optimized.png.manifest.json');
+        expect(calls[0].args[0]).toBe('optimize-png');
+        expect(calls[0].args).toEqual(['optimize-png', '--input', join(workspace, 'hero.png'), '--output', join(workspace, 'optimized.png'), '--level', '6']);
+
+        calls.length = 0;
+        await tool.execute({ input: 'hero.png', output: 'opt2.png' }, agentExec(workspace));
+        expect(calls[0].args).toEqual(['optimize-png', '--input', join(workspace, 'hero.png'), '--output', join(workspace, 'opt2.png'), '--level', '4']);
+
+        await expect(tool.execute({ input: 'hero.png', output: 'opt.jpg', level: 4 }, agentExec(workspace))).rejects.toThrow(/PNG/);
+        await expect(tool.execute({ input: 'hero.png', output: 'opt2.png', level: 9 }, agentExec(workspace))).rejects.toThrow(/level/);
+        await writeFile(join(workspace, 'opt3.png'), 'x');
+        await expect(tool.execute({ input: 'hero.png', output: 'opt3.png' }, agentExec(workspace))).rejects.toThrow(/already exists/);
+      } finally {
+        clearWorkshopRunner();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('forwards the agent abort signal to the workshop runner', async () => {
+    const root = await temp('adapter-abort');
+    try {
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, 'hero.png'), 'png');
+      let receivedSignal: AbortSignal | undefined;
+      setWorkshopRunner(async (_bun, _args, _env, signal) => {
+        receivedSignal = signal;
+        return JSON.stringify({ path: join(workspace, 'hero.png'), width: 1, height: 1, format: 'PNG', channels: 'srgb', hasAlpha: false, opaque: true, bytes: 1, sha256: 'x' });
+      });
+      try {
+        const controller = new AbortController();
+        const tool = createImageInspectTool();
+        const result = await tool.execute({ input: 'hero.png' }, { ...agentExec(workspace), signal: controller.signal });
+        expect(result.path).toBe('hero.png');
+        expect(receivedSignal).toBe(controller.signal);
       } finally {
         clearWorkshopRunner();
       }
@@ -515,8 +736,8 @@ describe('release bundle', () => {
     }
   });
 
-  test('exposes exactly the two Ticket 02 tools', () => {
-    expect(IMAGE_WORKSHOP_TOOL_NAMES).toEqual(['image_inspect', 'image_resize_pixel']);
+  test('exposes exactly the seven Ticket 03 tools', () => {
+    expect(IMAGE_WORKSHOP_TOOL_NAMES).toEqual(['image_inspect', 'image_resize_pixel', 'image_trim_pad', 'image_sheet_slice', 'image_sheet_assemble', 'image_atlas_pack', 'image_optimize_png']);
   });
 
   test('mounts under the shipped entry with only the required tools service', async () => {
@@ -535,9 +756,9 @@ describe('release bundle', () => {
       }
     };
     const dispose = await imageWorkshopPlugin.apply(ctx);
-    expect(registered.sort()).toEqual(['image_inspect', 'image_resize_pixel']);
+    expect(registered.sort()).toEqual(['image_atlas_pack', 'image_inspect', 'image_optimize_png', 'image_resize_pixel', 'image_sheet_assemble', 'image_sheet_slice', 'image_trim_pad']);
     expect(typeof dispose).toBe('function');
     dispose();
-    expect(disposed).toBe(2);
+    expect(disposed).toBe(7);
   });
 });

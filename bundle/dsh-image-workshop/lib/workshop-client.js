@@ -4,7 +4,9 @@
  * The plugin never constructs ImageMagick or shell commands. It invokes the
  * harness CLI (resolved through DSH_IMAGE_WORKSHOP_CLI, an internal launcher
  * detail) with structured argv and parses the canonical JSON the CLI emits.
- * The runner is injectable so tests can substitute a deterministic fake.
+ * The runner is injectable so tests can substitute a deterministic fake. An
+ * optional AbortSignal cancels a running operation by terminating the child
+ * process tree.
  */
 import { spawn } from 'node:child_process'
 
@@ -40,7 +42,7 @@ let workshopRunner
 
 const OUTPUT_LIMIT = 16 * 1024
 
-function runReal(args, env) {
+function runReal(args, env, signal) {
   const cli = env.DSH_IMAGE_WORKSHOP_CLI
   if (!cli) {
     throw new Error('image workspace: DSH_IMAGE_WORKSHOP_CLI is not configured; the harness launcher must set it.')
@@ -54,6 +56,22 @@ function runReal(args, env) {
     })
     let stdout = ''
     let stderr = ''
+    let aborted = false
+    const abort = () => {
+      aborted = true
+      if (!child.killed) child.kill()
+    }
+    if (signal) {
+      if (signal.aborted) {
+        abort()
+        reject(new Error('image workspace operation was cancelled.'))
+        return
+      }
+      signal.addEventListener('abort', abort, { once: true })
+    }
+    const detach = () => {
+      if (signal) signal.removeEventListener('abort', abort)
+    }
     child.stdout.on('data', (chunk) => {
       stdout += chunk
       if (stdout.length > OUTPUT_LIMIT) stdout = stdout.slice(-OUTPUT_LIMIT)
@@ -62,8 +80,16 @@ function runReal(args, env) {
       stderr += chunk
       if (stderr.length > OUTPUT_LIMIT) stderr = stderr.slice(-OUTPUT_LIMIT)
     })
-    child.on('error', reject)
+    child.on('error', (error) => {
+      detach()
+      reject(error)
+    })
     child.on('close', (code) => {
+      detach()
+      if (aborted) {
+        reject(new Error('image workspace operation was cancelled.'))
+        return
+      }
       if (code === 0) resolvePromise(stdout)
       else reject(new Error(`image workspace CLI failed (exit ${code ?? 'signal'}): ${(stderr.trim() || stdout.trim()).slice(-2000)}`))
     })
@@ -73,14 +99,15 @@ function runReal(args, env) {
 /**
  * Run one Image Workshop operation with structured argv and parse the canonical
  * JSON the CLI writes to stdout. An injected runner receives the operation argv
- * (without the CLI entry); the real path prepends the harness CLI and runner.
+ * (without the CLI entry) and the optional abort signal; the real path prepends
+ * the harness CLI and runner.
  */
-export async function invokeImageOperation(operation, cliArgs, env = process.env) {
+export async function invokeImageOperation(operation, cliArgs, env = process.env, signal) {
   const args = [operation, ...cliArgs]
   const safeEnv = workshopEnvironment(env)
   const stdout = workshopRunner
-    ? await workshopRunner(safeEnv.BUN_EXECUTABLE ?? 'bun', args, safeEnv)
-    : await runReal(args, safeEnv)
+    ? await workshopRunner(safeEnv.BUN_EXECUTABLE ?? 'bun', args, safeEnv, signal)
+    : await runReal(args, safeEnv, signal)
   const trimmed = String(stdout ?? '').trim()
   let parsed
   try {

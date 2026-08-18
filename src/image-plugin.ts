@@ -19,9 +19,9 @@ export const IMAGE_WORKSHOP_PLUGIN_LICENSE = 'MIT';
 export const IMAGE_WORKSHOP_PLUGIN_PROFILE = 'web';
 export const IMAGE_WORKSHOP_PLUGIN_ENTRYPOINT = 'lib/index.js';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const IMAGE_WORKSHOP_PLUGIN_SHA256 = '7272de0740250ed5740281be6119f49d282d3ab50e2b7d04ab80114bfc66cfb2';
+export const IMAGE_WORKSHOP_PLUGIN_SHA256 = '4ffa07998f52ff50b2ee044f75509d44649f0cafaeecc5a6f989047289b06e11';
 export const IMAGE_WORKSHOP_BUNDLE_RELATIVE = join('bundle', 'dsh-image-workshop');
-export const IMAGE_WORKSHOP_TOOL_NAMES = ['image_inspect', 'image_resize_pixel'] as const;
+export const IMAGE_WORKSHOP_TOOL_NAMES = ['image_inspect', 'image_resize_pixel', 'image_trim_pad', 'image_sheet_slice', 'image_sheet_assemble', 'image_atlas_pack', 'image_optimize_png'] as const;
 export const IMAGE_WORKSHOP_PLUGIN_ROW_ID = 'image-workshop-plugin';
 
 export interface ImageWorkshopPluginOptions extends PathOptions {

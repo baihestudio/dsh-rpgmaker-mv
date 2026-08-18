@@ -639,7 +639,7 @@ describe('Asset Workshop CLI and real preset preparation seam', () => {
       expect(deployment.agentPreset).toBe('asset-workshop');
       expect(deployment.imageToolchain?.imageMagickVersion).toBe('7.1.2-29');
       expect(deployment.imageToolchain?.oxipngVersion).toBe('10.2.0');
-      expect(await readFile(join(deployment.presetDir, 'skills', 'asset-workshop', 'SKILL.md'), 'utf8')).toContain('resize-pixel');
+      expect(await readFile(join(deployment.presetDir, 'skills', 'asset-workshop', 'SKILL.md'), 'utf8')).toContain('image_resize_pixel');
       const composition = await readFile(deployment.compositionPath, 'utf8');
       expect(composition).toContain('default: asset-workshop');
       expect((composition.match(/id: mcp-rpgmaker-mv/g) ?? [])).toHaveLength(1);

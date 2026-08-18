@@ -27,21 +27,29 @@ scoped to this Agent only. Use them instead of constructing commands:
   Provide `scale`, or both `width` and `height` that match one integer scale;
   non-integer scales are rejected rather than smoothed. `output` must not
   exist and the source is never overwritten.
+- `image_trim_pad` — trim fully transparent margins and/or pad a transparent
+  canvas. `trim` defaults to true; supplying `width` and `height` together
+  pads to that exact canvas size, with optional `gravity` placement.
+  `output` must not exist and the source is never overwritten.
+- `image_sheet_slice` — slice a sprite sheet into equal `cellWidth` ×
+  `cellHeight` frames into a new `outputDir` (must not exist), writing
+  `frame-0001.png`… and `manifest.json`.
+- `image_sheet_assemble` — assemble equal-sized images (`inputs` array) into
+  one sprite sheet with `columns`; the input count must be divisible by
+  `columns`. `output` must not exist and sources are never overwritten.
+- `image_atlas_pack` — pack differently sized images (`inputs` array, unique
+  file names) into a PNG atlas plus JSON frame map in a new `output` directory
+  (must not exist). `maxSize` is required; `padding`, `extrusion`, and
+  `fixedGrid` are optional. Sources are never overwritten.
+- `image_optimize_png` — lossless oxipng optimization (`level` 0-6, default 4)
+  that preserves decoded pixels, dimensions, and alpha. PNG input/output only;
+  `output` must not exist and the source is never overwritten.
 
 Every path passed to these tools is project-relative to the current workspace;
 absolute paths, `..` traversal, symlink/junction escapes, missing inputs, and
 pre-existing outputs are rejected. External sources must first be copied into
-the workspace.
-
-Only these two typed tools are available in this release. The trim-pad,
-sheet-slice, sheet-assemble, atlas-pack, and optimize-png operations are not
-yet exposed as typed tools; do not claim, guess, or invoke them. The launcher's
-internal CLI is a maintainer/debug seam only and must never be explained to
-the user or invoked directly.
-
-Within these two tools, the supported operation is `resize-pixel`: integer
-nearest-neighbour scaling only; reject non-integer scales rather than
-introducing a smoothing filter.
+the workspace. Array inputs (sheet assembly, atlas packing) are real schema
+arrays; never encode them as JSON strings or shell text.
 
 The workflow has bounded ImageMagick resource and time limits. Treat malformed
 inputs, non-zero exits, missing output files, failed dimension/alpha checks,
