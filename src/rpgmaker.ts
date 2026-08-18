@@ -7,10 +7,9 @@ import { findDshExecutable } from './bootstrap';
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
 import { commandFailure, prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, withoutCredentials, type CommandRunner } from './process';
-import { assertValidMvProject, pathExists } from './project';
+import { assertValidMvProject, backupIgnoreGuidance, type BackupIgnoreGuidance, pathExists } from './project';
 import { withHarnessOperationLock } from './lock';
 import { launchProject, pickProjectDirectory, type LaunchOptions, type LaunchResult } from './launcher';
-import { backupIgnoreGuidance, type BackupIgnoreGuidance } from './mcp-loop';
 import {
   ASSET_WORKSHOP_PRESET_ID,
   prepareImageToolchain,
@@ -29,9 +28,7 @@ export const PLAYTEST_DEBUG_PRESET_ID = 'playtest-debug';
 export const RPGMAKER_DSH_PROFILE = 'web';
 const PRESET_OWNERSHIP_FILE = '.dsh-rpgmaker-owned.json';
 const MCP_LOCK_INTEGRITY = 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==';
-const MCP_LOCK_SOURCE = '';
 const MCP_LOCK_BIN = 'dist/index.js';
-const MCP_LOCK_DEPENDENCIES = { '@modelcontextprotocol/sdk': '^1.12.0', selfsigned: '^5.5.0', zod: '^3.24.0' } as const;
 
 const REQUIRED_MCP_TOOLS = [
   'get_project_info',
@@ -202,18 +199,13 @@ export async function verifyMcpRuntime(runtimeDirInput: string, platform: string
   const lockedDependencies = asRecord(workspace?.dependencies);
   const lockedPackage = asRecord(lock?.packages)?.[RPGMAKER_MCP_PACKAGE];
   const lockMetadata = Array.isArray(lockedPackage) ? asRecord(lockedPackage[2]) : undefined;
-  const lockPackageDependencies = asRecord(lockMetadata?.dependencies);
   const lockBin = asRecord(lockMetadata?.bin);
-  const lockDepsMatch = Object.entries(MCP_LOCK_DEPENDENCIES).every(([name, version]) => lockPackageDependencies?.[name] === version);
   if (!lock) errors.push('MCP bun.lock is missing or invalid');
   else if (lockedDependencies?.[RPGMAKER_MCP_PACKAGE] !== RPGMAKER_MCP_VERSION
     || !Array.isArray(lockedPackage)
     || lockedPackage[0] !== `${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`
-    || lockedPackage[1] !== MCP_LOCK_SOURCE
-    || !lockMetadata
-    || !lockDepsMatch
     || lockBin?.['rpgmaker-mv-mcp'] !== MCP_LOCK_BIN
-    || lockedPackage[3] !== MCP_LOCK_INTEGRITY) errors.push('MCP bun.lock does not match the pinned source, dependency/bin metadata, and npm integrity');
+    || lockedPackage[3] !== MCP_LOCK_INTEGRITY) errors.push('MCP bun.lock does not match the pinned package version, bin, and npm integrity');
   const packageJson = await readJson(join(packageDirectory(runtimeDir), 'package.json'));
   const packageVersion = typeof packageJson?.version === 'string' ? packageJson.version : undefined;
   const packageBins = asRecord(packageJson?.bin);

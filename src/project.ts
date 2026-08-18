@@ -1,4 +1,4 @@
-import { access, constants, stat } from 'node:fs/promises';
+import { access, constants, readFile, stat } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { isRegularFile } from './files';
 
@@ -11,6 +11,14 @@ export interface ProjectValidation {
   markerPath: string;
   missing: string[];
   reason?: string;
+}
+
+export interface BackupIgnoreGuidance {
+  configured: boolean;
+  needsConsent: boolean;
+  suggestedEntry: '.mcp-backups/';
+  gitignorePath: string;
+  message: string;
 }
 
 async function exists(path: string, expected: 'file' | 'directory'): Promise<boolean> {
@@ -60,4 +68,27 @@ export async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function backupIgnoreGuidance(projectPath: string): Promise<BackupIgnoreGuidance> {
+  const gitignorePath = join(projectPath, '.gitignore');
+  let content = '';
+  try {
+    content = await readFile(gitignorePath, 'utf8');
+  } catch {
+    // A missing ignore file is a user choice; guidance never creates it silently.
+  }
+  const configured = content.split(/\r?\n/).some((line) => {
+    const value = line.trim();
+    return value === '.mcp-backups/' || value === '.mcp-backups';
+  });
+  return {
+    configured,
+    needsConsent: !configured,
+    suggestedEntry: '.mcp-backups/',
+    gitignorePath,
+    message: configured
+      ? '.mcp-backups/ is already ignored; project version control remains authoritative.'
+      : 'MCP backups are stored under .mcp-backups/. Add .mcp-backups/ to .gitignore only with the user’s consent; this command does not edit .gitignore.'
+  };
 }

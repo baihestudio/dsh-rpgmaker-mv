@@ -2,7 +2,8 @@ import { homedir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 
 export const DSH_PACKAGE_NAME = '@deepseek-ai/dsh';
-export const DSH_VERSION = '0.1.0-rc.6';
+export const DSH_VERSION = '0.1.0-rc.7';
+export const DSH_NPM_INTEGRITY = 'sha512-ZceDCJ8FAywih+USW/OMk9jEhunlvJBGEz4kqrhau23hPzbciOazZrywH0nBRsaalSeAJ1JGBmjtw4OSjToStw==';
 export const DSH_RUNTIME_NAME = 'dsh-rpgmaker-runtime';
 
 export interface HarnessPaths {

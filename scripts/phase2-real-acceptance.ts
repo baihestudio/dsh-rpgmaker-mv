@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { strict as assert } from 'node:assert';
 
-import { findDshExecutable } from '../src/bootstrap';
+import { findDshExecutable, verifyRuntime } from '../src/bootstrap';
+import { DSH_PACKAGE_NAME, DSH_VERSION } from '../src/config';
 import { prepareRpgMakerDeployment } from '../src/rpgmaker';
 import { runCommand } from '../src/process';
 
@@ -43,10 +44,12 @@ try {
   await mkdir(mcpRuntime, { recursive: true });
   const install = await runCommand('bun', ['init', '-y'], { cwd: runtime, env: safeEnv, timeoutMs: 60_000 });
   if (install.exitCode !== 0) throw new Error(install.stderr);
-  const addDsh = await runCommand('bun', ['add', '--exact', '@deepseek-ai/dsh@0.1.0-rc.6'], { cwd: runtime, env: safeEnv, timeoutMs: 15 * 60_000 });
+  const addDsh = await runCommand('bun', ['add', '--exact', `${DSH_PACKAGE_NAME}@${DSH_VERSION}`], { cwd: runtime, env: safeEnv, timeoutMs: 15 * 60_000 });
   if (addDsh.exitCode !== 0) throw new Error(addDsh.stderr || addDsh.stdout);
   const trust = await runCommand('bun', ['pm', 'trust', '--all'], { cwd: runtime, env: safeEnv, timeoutMs: 15 * 60_000 });
   if (trust.exitCode !== 0) throw new Error(trust.stderr || trust.stdout);
+  const runtimeVerification = await verifyRuntime(runtime, { bunExecutable: 'bun', commandRunner: runCommand, env: safeEnv, platform: process.platform });
+  if (!runtimeVerification.valid) throw new Error(`${DSH_VERSION} runtime verification failed: ${runtimeVerification.errors.join('; ')}`);
   const installMcp = await runCommand('bun', ['init', '-y'], { cwd: mcpRuntime, env: safeEnv, timeoutMs: 60_000 });
   if (installMcp.exitCode !== 0) throw new Error(installMcp.stderr);
   const addMcp = await runCommand('bun', ['add', '--exact', '@xerolo44/rpgmaker-mv-mcp@0.1.0'], { cwd: mcpRuntime, env: safeEnv, timeoutMs: 15 * 60_000 });
@@ -64,6 +67,7 @@ try {
     projectPath: project,
     sourceRoot: join(process.cwd(), 'presets', 'rpgmaker')
   });
+  assert.equal(runtimeVerification.dshPackageVersion, DSH_VERSION);
   assert.equal(deployment.mcpPackageVersion, '0.1.0');
   assert.equal(deployment.toolNames.length, 41);
 

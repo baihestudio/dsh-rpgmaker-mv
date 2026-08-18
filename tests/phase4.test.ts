@@ -14,6 +14,7 @@ import {
   type AtlasPackAsync,
   type ImageToolchain
 } from '../src/image-workshop';
+import { DSH_VERSION } from '../src/config';
 import { prepareRpgMakerDeployment } from '../src/rpgmaker';
 import type { ImageReleasePin } from '../src/image-releases';
 import type { CommandOptions, CommandResult } from '../src/process';
@@ -186,7 +187,7 @@ class FakeImageTools {
         await mkdir(join(cwd, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist'), { recursive: true });
         await mkdir(join(cwd, 'node_modules', '.bin'), { recursive: true });
         await writeFile(join(cwd, 'package.json'), JSON.stringify({ dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } }));
-        await writeFile(join(cwd, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0', '', { dependencies: { '@modelcontextprotocol/sdk': '^1.12.0', selfsigned: '^5.5.0', zod: '^3.24.0' }, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA=='] } }));
+        await writeFile(join(cwd, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0', 'registry.npmjs.org', { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA=='] } }));
         await writeFile(join(cwd, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'package.json'), JSON.stringify({ version: '0.1.0', bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }));
         await writeFile(join(cwd, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist', 'index.js'), 'fixture');
       }
@@ -620,8 +621,9 @@ describe('Asset Workshop CLI and real preset preparation seam', () => {
       const dshRuntime = join(root, 'dsh-runtime');
       await mkdir(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code'), { recursive: true });
       await mkdir(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'bin'), { recursive: true });
-      await writeFile(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ version: '0.1.0-rc.6', bin: { dsh: 'bin/dsh.js' } }));
-      await writeFile(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'bin', 'dsh.js'), 'fixture');
+      await writeFile(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ version: DSH_VERSION, bin: { dsh: 'lib/bin.js' } }));
+      await mkdir(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true });
+      await writeFile(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'fixture');
       await writeFile(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml'), "- id: code-tool\n  name: fake\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n");
       const bun = join(root, 'bun.exe');
       const dsh = join(root, 'dsh.exe');

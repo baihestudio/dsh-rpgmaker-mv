@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename as fsRename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 
-import { DSH_PACKAGE_NAME, DSH_RUNTIME_NAME, DSH_VERSION, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_RUNTIME_NAME, DSH_VERSION, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
 import { commandFailure, ProcessTerminationError, redactSensitive, runCommand, withoutCredentials, type CommandResult, type CommandRunner } from './process';
 import { pathExists } from './project';
 import { withHarnessOperationLock } from './lock';
@@ -54,6 +54,19 @@ function asObject(value: unknown): JsonObject | undefined {
 async function readJson(path: string): Promise<JsonObject | undefined> {
   try {
     return asObject(JSON.parse(await readFile(path, 'utf8')));
+  } catch {
+    return undefined;
+  }
+}
+
+async function readBunLock(path: string): Promise<JsonObject | undefined> {
+  try {
+    const content = await readFile(path, 'utf8');
+    try {
+      return asObject(JSON.parse(content));
+    } catch {
+      return asObject(JSON.parse(content.replace(/,\s*([}\]])/g, '$1')));
+    }
   } catch {
     return undefined;
   }
@@ -114,6 +127,18 @@ export async function verifyRuntime(runtimeDirInput: string, options: Pick<Boots
   const dependencies = asObject(rootPackage?.dependencies);
   if (dependencies?.[DSH_PACKAGE_NAME] !== DSH_VERSION) {
     errors.push(`runtime dependency ${DSH_PACKAGE_NAME}@${DSH_VERSION} is not pinned in package.json`);
+  }
+  const lock = await readBunLock(join(runtimeDir, 'bun.lock'));
+  const workspace = asObject(asObject(lock?.workspaces)?.['']);
+  const lockedDependencies = asObject(workspace?.dependencies);
+  const lockedPackage = asObject(lock?.packages)?.[DSH_PACKAGE_NAME];
+  const lockIntegrity = Array.isArray(lockedPackage) && typeof lockedPackage[3] === 'string' ? lockedPackage[3] : undefined;
+  if (!lock) errors.push('runtime bun.lock is missing or invalid');
+  else if (lockedDependencies?.[DSH_PACKAGE_NAME] !== DSH_VERSION
+    || !Array.isArray(lockedPackage)
+    || lockedPackage[0] !== `${DSH_PACKAGE_NAME}@${DSH_VERSION}`
+    || lockIntegrity !== DSH_NPM_INTEGRITY) {
+    errors.push(`runtime bun.lock does not match ${DSH_PACKAGE_NAME}@${DSH_VERSION} and its pinned npm integrity`);
   }
 
   const dshPackage = await readJson(await packagePath(runtimeDir));

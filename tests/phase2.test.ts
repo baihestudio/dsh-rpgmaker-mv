@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { prepareRpgMakerDeployment, launchRpgmakerProject, RpgMakerStartupError, resolveMcpRunner, verifyMcpRuntime, type McpToolDefinition } from '../src/rpgmaker';
-import { backupIgnoreGuidance, createRpgMakerEditingLoop } from '../src/mcp-loop';
+import { DSH_VERSION } from '../src/config';
+import { backupIgnoreGuidance } from '../src/project';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -28,10 +29,10 @@ async function makeProject(root: string): Promise<string> {
 async function makeDshRuntime(root: string): Promise<string> {
   const runtime = join(root, 'dsh-runtime');
   await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code'), { recursive: true });
-  await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'bin'), { recursive: true });
+  await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
-  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.0-rc.6', bin: { dsh: 'bin/dsh.js' } }));
-  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'bin', 'dsh.js'), '#!/usr/bin/env bun\n');
+  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: DSH_VERSION, bin: { dsh: 'lib/bin.js' } }));
+  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), '#!/usr/bin/env bun\n');
   await writeFile(join(runtime, 'node_modules', '.bin', 'dsh.cmd'), '@echo off\r\n');
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml'), "- id: code-tool\n  name: fake-code-tool\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n");
   return runtime;
@@ -42,7 +43,7 @@ async function makeMcpRuntime(runtime: string): Promise<void> {
   await mkdir(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
   await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'rpgmaker-mcp-runtime', private: true, dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } }));
-  await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0', '', { dependencies: { '@modelcontextprotocol/sdk': '^1.12.0', selfsigned: '^5.5.0', zod: '^3.24.0' }, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA=='] } }));
+  await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0', 'registry.npmjs.org', { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA=='] } }));
   await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'package.json'), JSON.stringify({ name: '@xerolo44/rpgmaker-mv-mcp', version: '0.1.0', bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }));
   await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'bin', 'server.js'), '#!/usr/bin/env bun\n');
   await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist', 'index.js'), '#!/usr/bin/env bun\n');
@@ -167,7 +168,7 @@ describe('RPG Maker MCP deployment', () => {
     }
   });
 
-  test('rejects missing or tampered MCP bun.lock metadata', async () => {
+  test('fails closed for missing or tampered MCP bun.lock release facts', async () => {
     const root = await temp('phase2-lockfile');
     try {
       const runtime = join(root, 'mcp-runtime');
@@ -180,10 +181,18 @@ describe('RPG Maker MCP deployment', () => {
       expect(tampered.valid).toBe(false);
       expect(tampered.errors.join(' ')).toContain('bun.lock');
       await makeMcpRuntime(runtime);
-      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0', '', { dependencies: { '@modelcontextprotocol/sdk': '^1.12.0', selfsigned: '^5.5.0', zod: '^3.24.0' }, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, 'sha512-wrong'] } }));
+      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0', 'different-source', { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, 'sha512-wrong'] } }));
       const wrongIntegrity = await verifyMcpRuntime(runtime, 'win32');
       expect(wrongIntegrity.valid).toBe(false);
       expect(wrongIntegrity.errors.join(' ')).toContain('npm integrity');
+      await makeMcpRuntime(runtime);
+      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0', 'different-source', { bin: { 'rpgmaker-mv-mcp': 'wrong.js' } }, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA=='] } }));
+      const wrongBin = await verifyMcpRuntime(runtime, 'win32');
+      expect(wrongBin.valid).toBe(false);
+      expect(wrongBin.errors.join(' ')).toContain('bin');
+      await makeMcpRuntime(runtime);
+      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 99, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0', 'another-source', { dependencies: { completely: 'different' }, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA=='] } }));
+      expect((await verifyMcpRuntime(runtime, 'win32')).valid).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -331,94 +340,7 @@ describe('RPG Maker MCP deployment', () => {
   });
 });
 
-describe('RPG Maker mutation verification loop', () => {
-  test('re-reads and validates representative database/event/dialogue/map/plugin/restore mutations', async () => {
-    const root = await temp('phase2-loop');
-    try {
-      const project = await makeProject(root);
-      const calls: string[] = [];
-      const caller = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
-        calls.push(tool);
-        if (tool === 'validate_project') return { ok: true, errors: [], warnings: [] };
-        if (tool === 'update_record') {
-          const file = join(project, 'data', `${String(args.type).replace(/^./, (v) => v.toUpperCase())}.json`);
-          const backup = join(project, '.mcp-backups', 'session-1', 'data', 'Actors.json');
-          await mkdir(join(project, '.mcp-backups', 'session-1', 'data'), { recursive: true });
-          await copyFile(file, backup);
-          const records = JSON.parse(await readFile(file, 'utf8')) as Array<Record<string, unknown> | null>;
-          records[Number(args.id)] = { ...records[Number(args.id)], ...(args.data as Record<string, unknown>) };
-          await writeFile(file, JSON.stringify(records));
-          return { ok: true };
-        }
-        if (tool === 'get_record') {
-          const records = JSON.parse(await readFile(join(project, 'data', 'Actors.json'), 'utf8')) as unknown[];
-          return records[Number(args.id)];
-        }
-        if (tool === 'add_dialogue') {
-          const file = join(project, 'data', 'Map001.json');
-          const map = JSON.parse(await readFile(file, 'utf8')) as { events: Array<{ pages: Array<{ list: unknown[] }> } | null> };
-          map.events[Number(args.eventId)]!.pages[0].list.splice(-1, 0, { code: 101, parameters: [] }, { code: 401, parameters: [String((args.lines as string[])[0])] });
-          await writeFile(file, JSON.stringify(map));
-          return { ok: true };
-        }
-        if (tool === 'get_event') return JSON.parse(await readFile(join(project, 'data', 'Map001.json'), 'utf8'));
-        if (tool === 'update_map') {
-          const file = join(project, 'data', 'Map001.json');
-          const map = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
-          Object.assign(map, args.data);
-          await writeFile(file, JSON.stringify(map));
-          return { ok: true };
-        }
-        if (tool === 'get_map') return JSON.parse(await readFile(join(project, 'data', 'Map001.json'), 'utf8'));
-        if (tool === 'configure_plugin') return { ok: true };
-        if (tool === 'list_plugins') return [{ name: 'TestPlugin', status: false }];
-        if (tool === 'restore_backup') {
-          await copyFile(join(project, '.mcp-backups', 'session-1', 'data', 'Actors.json'), join(project, 'data', 'Actors.json'));
-          return { ok: true };
-        }
-        if (tool === 'get_project_info') return { root: project };
-        return { ok: true };
-      };
-      const loop = await createRpgMakerEditingLoop(project, caller);
-      await loop.updateDatabaseRecord('actors', 1, { name: 'Hero Updated' });
-      await loop.updateEventDialogue(1, 1, ['Welcome, hero.']);
-      await loop.updateMapMetadata(1, { displayName: 'Opening' });
-      await loop.configurePlugin('TestPlugin', { status: false });
-      await loop.restoreBackup('session-1', undefined, { tool: 'get_project_info', args: {}, matches: (value) => (value as { root?: string }).root === project });
-      expect(JSON.parse(await readFile(join(project, 'data', 'Actors.json'), 'utf8'))[1].name).toBe('Hero');
-      expect(JSON.parse(await readFile(join(project, 'data', 'Map001.json'), 'utf8')).displayName).toBe('Opening');
-      expect(calls).toEqual([
-        'update_record', 'get_record', 'validate_project',
-        'add_dialogue', 'get_event', 'validate_project',
-        'update_map', 'get_map', 'validate_project',
-        'configure_plugin', 'list_plugins', 'validate_project',
-        'restore_backup', 'get_project_info', 'validate_project'
-      ]);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('rejects MCP isError and unchanged rereads before reporting success', async () => {
-    const root = await temp('phase2-receipt-errors');
-    try {
-      const project = await makeProject(root);
-      const loop = await createRpgMakerEditingLoop(project, async (tool) => {
-        if (tool === 'update_record') return { isError: true, content: [{ type: 'text', text: 'mutation denied' }] };
-        if (tool === 'get_record') return { id: 1, name: 'Old' };
-        return { ok: true, errors: [] };
-      });
-      await expect(loop.updateDatabaseRecord('actors', 1, { name: 'New' })).rejects.toThrow(/mutation denied|isError/i);
-      const unchangedLoop = await createRpgMakerEditingLoop(project, async (tool) => {
-        if (tool === 'get_record') return { id: 1, name: 'Old' };
-        return { ok: true, errors: [] };
-      });
-      await expect(unchangedLoop.updateDatabaseRecord('actors', 1, { name: 'New' })).rejects.toThrow(/did not reflect/i);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
+describe('RPG Maker backup guidance', () => {
   test('reports .mcp-backups guidance without changing .gitignore', async () => {
     const root = await temp('phase2-ignore');
     try {

@@ -27,15 +27,18 @@ try {
   const preset = await presets.resolve('rpgmaker');
   const debugPreset = await presets.resolve('playtest-debug');
   if (preset.id !== 'rpgmaker' || debugPreset.id !== 'playtest-debug') throw new Error(`unexpected presets ${preset.id}, ${debugPreset.id}`);
+  if (preset.name !== 'RPG Maker MV Agent' || debugPreset.name !== 'Playtest Debug Agent') throw new Error(`unexpected preset display metadata: ${preset.name}, ${debugPreset.name}`);
   await presets.standingKeyFor('rpgmaker');
   const debugKey = await presets.standingKeyFor('playtest-debug');
   const tools = mounted.ctx.get('tools');
   const schemas = tools?.schemas?.() ?? [];
   const debugSchemas = tools?.schemas?.(debugKey) ?? [];
   const mcpTools = schemas.filter((schema) => schema.name?.startsWith('mcp__rpgmaker_mv__'));
+  const debugMcpTools = debugSchemas.filter((schema) => schema.name?.startsWith('mcp__rpgmaker_mv__'));
   const requiredPlaytestTools = ['playtest_start', 'playtest_status', 'playtest_log', 'playtest_stop'];
-  if (mcpTools.length < 41) throw new Error(`official DSH registered only ${mcpTools.length} RPG Maker tools`);
-  if (requiredPlaytestTools.some((name) => !mcpTools.some((schema) => schema.name === `mcp__rpgmaker_mv__${name}`))) {
+  if (new Set(schemas.map((schema) => schema.name)).size !== schemas.length) throw new Error('rc.7 mounted duplicate tool schemas');
+  if (mcpTools.length < 41 || debugMcpTools.length < 41) throw new Error(`official DSH registered only ${mcpTools.length}/${debugMcpTools.length} RPG Maker tools`);
+  if (requiredPlaytestTools.some((name) => !mcpTools.some((schema) => schema.name === `mcp__rpgmaker_mv__${name}`) || !debugMcpTools.some((schema) => schema.name === `mcp__rpgmaker_mv__${name}`))) {
     throw new Error(`official DSH did not register every RPG Maker Playtest tool: ${requiredPlaytestTools.join(', ')}`);
   }
   if (schemas.some((schema) => schema.name === 'playtest_debug') || debugSchemas.some((schema) => schema.name === 'playtest_debug')) {
@@ -44,15 +47,25 @@ try {
 
   const agentLoop = mounted.ctx.get('agentLoop');
   if (!agentLoop) throw new Error('official DSH agent-loop service did not mount');
-  let agentHandle;
+  let rpgmakerHandle;
   try {
-    agentHandle = await agentLoop.createAgent(mounted.ctx, {
+    rpgmakerHandle = await agentLoop.createAgent(mounted.ctx, {
+      sessionId: randomUUID(),
+      meta: { cwd: process.cwd(), agentPreset: 'rpgmaker' },
+      setup: async (agentCtx) => { await presets.mount(agentCtx, 'rpgmaker'); }
+    });
+  } finally {
+    if (rpgmakerHandle) await rpgmakerHandle.dispose();
+  }
+  let debugHandle;
+  try {
+    debugHandle = await agentLoop.createAgent(mounted.ctx, {
       sessionId: randomUUID(),
       meta: { cwd: process.cwd(), agentPreset: 'playtest-debug' },
       setup: async (agentCtx) => { await presets.mount(agentCtx, 'playtest-debug'); }
     });
   } finally {
-    if (agentHandle) await agentHandle.dispose();
+    if (debugHandle) await debugHandle.dispose();
   }
 
   let callNumber = 0;

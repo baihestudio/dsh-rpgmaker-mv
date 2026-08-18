@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:f
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { bootstrapRuntime, findDshExecutable } from '../src/bootstrap';
+import { bootstrapRuntime, findDshExecutable, verifyRuntime } from '../src/bootstrap';
+import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION } from '../src/config';
 import { runDoctor } from '../src/doctor';
 import { launchProject, pickProjectDirectory } from '../src/launcher';
 import { runCli } from '../src/cli';
@@ -23,8 +24,8 @@ async function makeMvProject(parent: string, name = '游戏 project with spaces'
   return project;
 }
 
-async function makeRuntime(runtime: string, version = '0.1.0-rc.6'): Promise<void> {
-  await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh'), { recursive: true });
+async function makeRuntime(runtime: string, version = DSH_VERSION): Promise<void> {
+  await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', 'koffi'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
   await writeFile(
@@ -32,15 +33,22 @@ async function makeRuntime(runtime: string, version = '0.1.0-rc.6'): Promise<voi
     JSON.stringify({
       name: 'dsh-rpgmaker-runtime',
       private: true,
-      dependencies: { '@deepseek-ai/dsh': version }
+      dependencies: { [DSH_PACKAGE_NAME]: version }
+    })
+  );
+  await writeFile(
+    join(runtime, 'bun.lock'),
+    JSON.stringify({
+      lockfileVersion: 1,
+      workspaces: { '': { dependencies: { [DSH_PACKAGE_NAME]: version } } },
+      packages: { [DSH_PACKAGE_NAME]: [`${DSH_PACKAGE_NAME}@${version}`, '', {}, version === DSH_VERSION ? DSH_NPM_INTEGRITY : 'sha512-old-runtime'] }
     })
   );
   await writeFile(
     join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
-    JSON.stringify({ name: '@deepseek-ai/dsh', version, bin: { dsh: 'bin/dsh.js' } })
+    JSON.stringify({ name: DSH_PACKAGE_NAME, version, bin: { dsh: 'lib/bin.js' } })
   );
-  await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'bin'), { recursive: true });
-  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'bin', 'dsh.js'), '#!/usr/bin/env bun\n');
+  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), '#!/usr/bin/env bun\n');
   await writeFile(join(runtime, 'node_modules', 'koffi', 'package.json'), JSON.stringify({ name: 'koffi', version: '2.12.0' }));
   await writeFile(join(runtime, 'node_modules', '.bin', 'dsh'), '#!/usr/bin/env bun\n');
 }
@@ -149,6 +157,28 @@ describe('staged DSH runtime bootstrap', () => {
   });
 
 
+  test('requires the rc.7 lock entry and npm integrity', async () => {
+    const root = await disposableDirectory('runtime-integrity');
+    try {
+      const runtime = join(root, 'runtime');
+      await makeRuntime(runtime);
+      const commandRunner = async () => ({ exitCode: 0, stdout: 'koffi loaded', stderr: '' });
+      expect((await verifyRuntime(runtime, { bunExecutable: 'bun', commandRunner })).valid).toBe(true);
+      const lockPath = join(runtime, 'bun.lock');
+      const lock = await readFile(lockPath, 'utf8');
+      await writeFile(lockPath, lock.replace(DSH_NPM_INTEGRITY, 'sha512-tampered'));
+      const tampered = await verifyRuntime(runtime, { bunExecutable: 'bun', commandRunner });
+      expect(tampered.valid).toBe(false);
+      expect(tampered.errors.join(' ')).toContain('npm integrity');
+      await rm(lockPath);
+      const missing = await verifyRuntime(runtime, { bunExecutable: 'bun', commandRunner });
+      expect(missing.valid).toBe(false);
+      expect(missing.errors.join(' ')).toContain('bun.lock');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('installs a fresh runtime when no active tree exists', async () => {
     const root = await disposableDirectory('runtime-fresh');
     try {
@@ -165,8 +195,8 @@ describe('staged DSH runtime bootstrap', () => {
       });
       expect(result.status).toBe('installed');
       expect(result.rollbackDir).toBeUndefined();
-      expect(calls[0]).toEqual(['add', '--exact', '@deepseek-ai/dsh@0.1.0-rc.6']);
-      expect(await readFile(join(runtime, 'package.json'), 'utf8')).toContain('0.1.0-rc.6');
+      expect(calls[0]).toEqual(['add', '--exact', `${DSH_PACKAGE_NAME}@${DSH_VERSION}`]);
+      expect(await readFile(join(runtime, 'package.json'), 'utf8')).toContain(DSH_VERSION);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -204,7 +234,7 @@ describe('staged DSH runtime bootstrap', () => {
       });
       expect(result.status).toBe('repaired');
       expect(result.rollbackDir).toBeString();
-      expect(await readFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')).toContain('0.1.0-rc.6');
+      expect(await readFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')).toContain(DSH_VERSION);
       expect(await readFile(join(result.rollbackDir!, 'package.json'), 'utf8')).toBe(oldPackage);
       expect(calls.map((call) => call.args.slice(0, 2))).toEqual([
         ['add', '--exact'],
@@ -454,7 +484,7 @@ describe('runtime access lock', () => {
       launchChild.exitCode = 0;
       launchChild.emit('exit', 0);
       await launchResult.releaseSession();
-      expect(await readFile(join(runtime, 'package.json'), 'utf8')).toContain('0.1.0-rc.6');
+      expect(await readFile(join(runtime, 'package.json'), 'utf8')).toContain(DSH_VERSION);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -523,7 +553,7 @@ describe('runtime access lock', () => {
       await launch.releaseSession();
       const result = await installing;
       expect(result.status).toBe('repaired');
-      expect(await readFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')).toContain('0.1.0-rc.6');
+      expect(await readFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')).toContain(DSH_VERSION);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
