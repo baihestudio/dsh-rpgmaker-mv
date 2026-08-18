@@ -292,7 +292,7 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
       return 0;
     }
 
-    if (parsed.command === 'build-release' || parsed.command === 'release') {
+    if (parsed.command === 'build-release') {
       const result = await buildRelease({
         platform: dependencies.platform,
         env: dependencies.env,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -16,7 +16,8 @@ import {
   RPGMPACKER_SCRIPT,
   RPGMPACKER_VERSION
 } from '../src/release';
-import { prepareRpgMakerDeployment } from '../src/rpgmaker';
+import { isSuccessfulProjectValidation, prepareRpgMakerDeployment } from '../src/rpgmaker';
+import { runCli } from '../src/cli';
 import { DSH_VERSION } from '../src/config';
 import type { CommandOptions, CommandResult } from '../src/process';
 
@@ -81,13 +82,40 @@ async function makePackagedOutputs(output: string, targets: string[]): Promise<v
       await mkdir(join(output, 'Windows', 'www', 'js'), { recursive: true });
       await writeFile(join(output, 'Windows', 'Game.exe'), 'disposable game\n');
       await writeFile(join(output, 'Windows', 'www', 'index.html'), '<html>Windows</html>\n');
+      await writeFile(join(output, 'Windows', 'www', 'data', 'System.json'), '{}\n');
+      await writeFile(join(output, 'Windows', 'www', 'js', 'main.js'), 'console.log("Windows");\n');
     } else {
       await mkdir(join(output, 'Browser', 'data'), { recursive: true });
       await mkdir(join(output, 'Browser', 'js'), { recursive: true });
       await writeFile(join(output, 'Browser', 'index.html'), '<html>Browser</html>\n');
+      await writeFile(join(output, 'Browser', 'data', 'System.json'), '{}\n');
+      await writeFile(join(output, 'Browser', 'js', 'main.js'), 'console.log("Browser");\n');
     }
   }
 }
+
+describe('validate_project result boundary', () => {
+  test('requires a non-error result with ok true and no validation errors', () => {
+    expect(isSuccessfulProjectValidation({ isError: false, ok: true })).toBe(true);
+    expect(isSuccessfulProjectValidation({ ok: true, errors: [] })).toBe(true);
+    expect(isSuccessfulProjectValidation({ isError: true, ok: true })).toBe(false);
+    expect(isSuccessfulProjectValidation({ isError: false, ok: true, errors: ['missing System.json'] })).toBe(false);
+    expect(isSuccessfulProjectValidation({ isError: false, ok: true, errors: 'none' })).toBe(false);
+    expect(isSuccessfulProjectValidation({ isError: false, content: [{ type: 'text', text: '{"ok":true,"errors":[]}' }] })).toBe(true);
+    expect(isSuccessfulProjectValidation({ isError: false, content: [{ type: 'text', text: '{"ok":true,"errors":["broken"]}' }] })).toBe(false);
+  });
+
+  test('does not retain the unrequested release CLI alias', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    await expect(runCli(['release'], {
+      env: {},
+      io: { stdout: { write: (text) => { stdout.push(text); } }, stderr: { write: (text) => { stderr.push(text); } } }
+    })).resolves.toBe(2);
+    expect(stdout.join('')).toBe('');
+    expect(stderr.join('')).toContain('build-release');
+  });
+});
 
 function fakePackerRunner(projectPath: string, order: string[], mode: 'success' | 'failure' | 'invalid' | 'mutate' = 'success') {
   return async (command: string, args: string[], options: CommandOptions): Promise<CommandResult> => {
@@ -99,7 +127,7 @@ function fakePackerRunner(projectPath: string, order: string[], mode: 'success' 
     if (first.endsWith('dist/index.js')) {
       order.push('package');
       expect(args).toContain('--input');
-      expect(args[args.indexOf('--input') + 1]).toBe(projectPath);
+      expect(args[args.indexOf('--input') + 1]).toBe(await realpath(projectPath));
       if (mode === 'failure') return { exitCode: 17, stdout: '', stderr: 'template copy failed' };
       const output = args[args.indexOf('--output') + 1];
       const platformIndex = args.indexOf('--platforms');
@@ -249,8 +277,38 @@ describe('build-release packaging boundary', () => {
         rpgmakerInstallationPath: installation, jsExecutable: runner,
         prepareDeployment: async () => undefined, validateProject: async () => undefined,
         commandRunner: async () => { called = true; return { exitCode: 0, stdout: '', stderr: '' }; }
-      })).rejects.toThrow(/outside the source project|source mutation/i);
+      })).rejects.toThrow(/outside the source project|source mutation|overlapping/i);
       expect(called).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('canonicalizes project aliases and rejects output parent symlink aliases', async () => {
+    const root = await temp('phase6-symlink-boundary');
+    try {
+      const project = await makeProject(root);
+      const projectAlias = join(root, 'project alias');
+      await symlink(project, projectAlias, 'dir');
+      const installation = await makeInstallation(root);
+      const runner = await makeJavaScriptRunner(root);
+      const output = join(root, 'release output');
+      const result = await buildRelease({
+        platform: 'darwin', env: { PATH: '' }, projectPath: projectAlias, outputRoot: output,
+        targets: ['Browser'], rpgmakerInstallationPath: installation, releaseRuntimeDir: join(root, 'runtime'),
+        jsExecutable: runner, prepareDeployment: async () => undefined, validateProject: async () => undefined,
+        commandRunner: fakePackerRunner(project, [])
+      });
+      expect(result.projectPath).toBe(await realpath(project));
+
+      const sourceOutputAlias = join(root, 'source output alias');
+      await symlink(project, sourceOutputAlias, 'dir');
+      await expect(buildRelease({
+        platform: 'darwin', env: { PATH: '' }, projectPath: projectAlias, outputRoot: join(sourceOutputAlias, 'release'),
+        targets: ['Browser'], rpgmakerInstallationPath: installation, jsExecutable: runner,
+        prepareDeployment: async () => undefined, validateProject: async () => undefined,
+        commandRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' })
+      })).rejects.toThrow(/physically overlapping|source project/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -265,7 +323,9 @@ describe('build-release smoke seams', () => {
       await mkdir(join(artifact, 'data'), { recursive: true });
       await mkdir(join(artifact, 'js'), { recursive: true });
       await writeFile(join(artifact, 'index.html'), '<!doctype html>smoke\n');
-      expect(await inspectReleaseArtifact(artifact, 'Browser')).toMatchObject({ requiredPaths: ['index.html', 'data', 'js'] });
+      await writeFile(join(artifact, 'data', 'System.json'), '{}\n');
+      await writeFile(join(artifact, 'js', 'main.js'), 'fixture\n');
+      expect(await inspectReleaseArtifact(artifact, 'Browser')).toMatchObject({ requiredPaths: ['index.html', 'data/System.json', 'js/main.js'] });
       await expect(smokeWebArtifact(artifact)).resolves.toMatchObject({ kind: 'web', status: 'passed', cleanup: 'confirmed', probedPaths: ['/index.html', '/'] });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -280,6 +340,8 @@ describe('build-release smoke seams', () => {
       await mkdir(join(artifact, 'www', 'js'), { recursive: true });
       await writeFile(join(artifact, 'Game.exe'), 'fixture');
       await writeFile(join(artifact, 'www', 'index.html'), 'fixture');
+      await writeFile(join(artifact, 'www', 'data', 'System.json'), '{}');
+      await writeFile(join(artifact, 'www', 'js', 'main.js'), 'fixture');
       let launched: string | undefined;
       const child = fakeChild();
       await expect(smokeWindowsArtifact(artifact, {
@@ -301,6 +363,8 @@ describe('build-release smoke seams', () => {
       await mkdir(join(artifact, 'www', 'js'), { recursive: true });
       await writeFile(join(artifact, 'Game.exe'), 'fixture');
       await writeFile(join(artifact, 'www', 'index.html'), 'fixture');
+      await writeFile(join(artifact, 'www', 'data', 'System.json'), '{}');
+      await writeFile(join(artifact, 'www', 'js', 'main.js'), 'fixture');
       const exited = fakeChild(1);
       await expect(smokeWindowsArtifact(artifact, { platform: 'win32', timeoutMs: 2, spawnProcess: () => exited, terminateProcessTree: async () => { throw new Error('must not be called'); } })).rejects.toThrow(/exited immediately/i);
       const live = fakeChild();
@@ -320,6 +384,8 @@ describe('build-release smoke seams', () => {
       await mkdir(join(artifact, 'www', 'js'), { recursive: true });
       await writeFile(join(artifact, 'Game.exe'), 'fixture');
       await writeFile(join(artifact, 'www', 'index.html'), 'fixture');
+      await writeFile(join(artifact, 'www', 'data', 'System.json'), '{}');
+      await writeFile(join(artifact, 'www', 'js', 'main.js'), 'fixture');
       await expect(smokeWindowsArtifact(artifact, { platform: 'darwin' })).resolves.toMatchObject({ status: 'unsupported', cleanup: 'not-run' });
     } finally {
       await rm(root, { recursive: true, force: true });

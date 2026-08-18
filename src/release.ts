@@ -2,8 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename as fsRename, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import { tmpdir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { findDshExecutable } from './bootstrap';
 import { resolveHarnessPaths, type PathOptions } from './config';
@@ -20,7 +19,7 @@ export const RELEASE_TARGETS = ['Windows', 'Browser'] as const;
 export type ReleaseTarget = (typeof RELEASE_TARGETS)[number];
 
 const WINDOWS_TEMPLATE = 'nwjs-win';
-const WINDOWS_ENTRY_NAMES = ['Game.exe', 'nw.exe', 'nwjs.exe'] as const;
+const WINDOWS_ENTRY_NAMES = ['Game.exe'] as const;
 const PACKAGER_TIMEOUT_MS = 15 * 60_000;
 const SMOKE_TIMEOUT_MS = 2_000;
 const HTTP_TIMEOUT_MS = 10_000;
@@ -175,8 +174,9 @@ function normalizedPath(value: string, platform: string): string {
   return platform === 'win32' ? result.toLowerCase() : result;
 }
 
-function samePath(left: string, right: string, platform: string): boolean {
-  return normalizedPath(left, platform) === normalizedPath(right, platform);
+function physicallyWithin(parent: string, child: string, platform: string): boolean {
+  const rest = relative(normalizedPath(parent, platform), normalizedPath(child, platform));
+  return rest === '' || (!rest.startsWith(`..${sep}`) && rest !== '..' && !isAbsolute(rest));
 }
 
 async function directoryExists(path: string): Promise<boolean> {
@@ -435,19 +435,19 @@ export async function inspectReleaseArtifact(artifactPathInput: string, target: 
   let entryPath: string | undefined;
   if (target === 'Windows') {
     entryPath = await findWindowsEntry(artifactPath);
-    if (!entryPath) throw new ReleaseError(`Invalid Windows artifact: missing Game.exe or nw.exe at ${artifactPath}.`);
-    requiredPaths.push(entryPath, 'www/index.html', 'www/data', 'www/js');
+    if (!entryPath) throw new ReleaseError(`Invalid Windows artifact: missing Game.exe at ${artifactPath}.`);
+    requiredPaths.push(entryPath, 'www/index.html', 'www/data/System.json', 'www/js/main.js');
     await requireArtifactPath(artifactPath, entryPath, 'file');
     await requireArtifactPath(artifactPath, 'www/index.html', 'file');
-    await requireArtifactPath(artifactPath, 'www/data', 'directory');
-    await requireArtifactPath(artifactPath, 'www/js', 'directory');
+    await requireArtifactPath(artifactPath, 'www/data/System.json', 'file');
+    await requireArtifactPath(artifactPath, 'www/js/main.js', 'file');
   } else {
     const webRoot = await directoryExists(join(artifactPath, 'www')) ? 'www' : '';
     const prefix = webRoot ? `${webRoot}/` : '';
-    requiredPaths.push(`${prefix}index.html`, `${prefix}data`, `${prefix}js`);
+    requiredPaths.push(`${prefix}index.html`, `${prefix}data/System.json`, `${prefix}js/main.js`);
     await requireArtifactPath(artifactPath, `${webRoot ? `${webRoot}/` : ''}index.html`, 'file');
-    await requireArtifactPath(artifactPath, `${webRoot ? `${webRoot}/` : ''}data`, 'directory');
-    await requireArtifactPath(artifactPath, `${webRoot ? `${webRoot}/` : ''}js`, 'directory');
+    await requireArtifactPath(artifactPath, `${webRoot ? `${webRoot}/` : ''}data/System.json`, 'file');
+    await requireArtifactPath(artifactPath, `${webRoot ? `${webRoot}/` : ''}js/main.js`, 'file');
     return { target, requiredPaths, ...(webRoot ? { webRoot } : {}) };
   }
   return { target, requiredPaths, ...(entryPath ? { entryPath } : {}) };
@@ -648,22 +648,72 @@ function changedFiles(before: TreeSnapshot, after: TreeSnapshot): string[] {
   return [...keys].filter((key) => before.entries.get(key) !== after.entries.get(key));
 }
 
+interface CanonicalOutputPath {
+  lexicalPath: string;
+  canonicalPath: string;
+  canonicalParent: string;
+}
+
+async function canonicalizeOutputPath(outputRootInput: string): Promise<CanonicalOutputPath> {
+  const lexicalPath = resolve(outputRootInput);
+  let cursor = lexicalPath;
+  const missing: string[] = [];
+
+  while (true) {
+    let info;
+    try {
+      info = await lstat(cursor);
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'ENOENT') {
+        throw new ReleaseError(`Release output path could not be inspected: ${lexicalPath}.`);
+      }
+      const parent = dirname(cursor);
+      if (parent === cursor) throw new ReleaseError(`Release output path has no existing parent: ${lexicalPath}.`);
+      missing.unshift(basename(cursor));
+      cursor = parent;
+      continue;
+    }
+
+    if (missing.length > 0 && !(await stat(cursor).catch(() => undefined))?.isDirectory()) {
+      throw new ReleaseError(`Release output parent is not a directory: ${cursor}.`);
+    }
+    const canonicalBase = await realpath(cursor).catch(() => undefined);
+    if (!canonicalBase) throw new ReleaseError(`Release output path could not be canonicalized: ${lexicalPath}.`);
+    const canonicalPath = missing.length > 0 ? join(canonicalBase, ...missing) : canonicalBase;
+    const canonicalParent = missing.length > 0 ? join(canonicalBase, ...missing.slice(0, -1)) : dirname(canonicalBase);
+    return { lexicalPath, canonicalPath, canonicalParent };
+  }
+}
+
+async function canonicalProjectPath(projectPath: string): Promise<string> {
+  const canonical = await realpath(projectPath).catch(() => undefined);
+  if (!canonical || !(await stat(canonical).catch(() => undefined))?.isDirectory()) {
+    throw new ReleaseError(`Selected RPG Maker MV project could not be canonicalized: ${projectPath}.`);
+  }
+  return canonical;
+}
+
 async function beginOutput(outputRootInput: string, projectPath: string, platform: string): Promise<{ outputRoot: string; staging: string }> {
-  const outputRoot = resolve(outputRootInput);
-  const project = resolve(projectPath);
-  if (within(project, outputRoot) || within(outputRoot, project)) throw new ReleaseError(`Release output must be outside the source project; refusing source mutation path ${outputRoot}.`);
-  const parent = dirname(outputRoot);
-  await mkdir(parent, { recursive: true });
-  const parentReal = await realpath(parent);
-  const lexicalTemp = resolve(tmpdir());
-  const canonicalTemp = await realpath(lexicalTemp);
-  const expectedParent = within(lexicalTemp, parent)
-    ? resolve(canonicalTemp, relative(lexicalTemp, parent))
-    : parent;
-  if (!samePath(expectedParent, parentReal, platform)) throw new ReleaseError(`Release output parent resolves through a symlink or junction: ${parent}.`);
-  if (await entryExists(outputRoot)) throw new ReleaseError(`Release output must be a fresh destination; refusing to overwrite ${outputRoot}.`);
-  const staging = await mkdtemp(join(parentReal, `.${basename(outputRoot)}.dsh-release-${randomUUID()}-`));
-  return { outputRoot, staging };
+  const output = await canonicalizeOutputPath(outputRootInput);
+  if (physicallyWithin(projectPath, output.canonicalPath, platform) || physicallyWithin(output.canonicalPath, projectPath, platform)) {
+    throw new ReleaseError(`Release output must be outside the source project; refusing physically overlapping source/output paths ${output.lexicalPath}.`);
+  }
+
+  if (await entryExists(output.lexicalPath)) {
+    throw new ReleaseError(`Release output must be a fresh destination; refusing to overwrite ${output.lexicalPath}.`);
+  }
+  await mkdir(output.canonicalParent, { recursive: true });
+  const parentReal = await realpath(output.canonicalParent).catch(() => undefined);
+  if (!parentReal) throw new ReleaseError(`Release output parent could not be canonicalized: ${output.canonicalParent}.`);
+  const canonicalFinal = join(parentReal, basename(output.lexicalPath));
+  if (physicallyWithin(projectPath, canonicalFinal, platform) || physicallyWithin(canonicalFinal, projectPath, platform)) {
+    throw new ReleaseError(`Release output must be outside the source project; refusing physically overlapping source/output paths ${output.lexicalPath}.`);
+  }
+  if (await entryExists(output.lexicalPath)) {
+    throw new ReleaseError(`Release output appeared while preparing packaging; refusing to overwrite ${output.lexicalPath}.`);
+  }
+  const staging = await mkdtemp(join(parentReal, `.${basename(output.lexicalPath)}.dsh-release-${randomUUID()}-`));
+  return { outputRoot: output.lexicalPath, staging };
 }
 
 async function commitOutput(staging: string, outputRoot: string): Promise<void> {
@@ -682,7 +732,8 @@ function packagingArgs(runtime: RpgmPackerRuntime, projectPath: string, staging:
 export async function buildRelease(options: BuildReleaseOptions): Promise<BuildReleaseResult> {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
-  const project = await assertValidMvProject(options.projectPath);
+  const validation = await assertValidMvProject(options.projectPath);
+  const project = { ...validation, projectPath: await canonicalProjectPath(validation.projectPath) };
   const targets = targetsFor(options.targets);
 
   if (options.prepareDeployment) {

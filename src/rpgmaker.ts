@@ -380,6 +380,29 @@ function validateToolSet(tools: McpToolDefinition[]): string[] {
   return missing.length > 0 ? [`tools/list is missing required RPG Maker tools: ${missing.join(', ')}`] : [];
 }
 
+export function isSuccessfulProjectValidation(result: unknown): boolean {
+  const envelope = asRecord(result);
+  if (!envelope || envelope.isError === true) return false;
+
+  let validation: unknown = result;
+  const content = envelope.content;
+  if (Array.isArray(content)) {
+    const text = content.find((block: unknown) => asRecord(block)?.type === 'text');
+    if (typeof asRecord(text)?.text === 'string') {
+      try {
+        validation = JSON.parse(asRecord(text)?.text as string);
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  const payload = asRecord(validation);
+  if (!payload || payload.isError === true || payload.ok !== true) return false;
+  const errors = payload.errors ?? envelope.errors;
+  return errors === undefined || (Array.isArray(errors) && errors.length === 0);
+}
+
 async function defaultSchemaProbe(request: McpSchemaProbeRequest): Promise<McpSchemaProbeResult> {
   const invocation = prepareProcessInvocation(request.command, request.args, request.platform, request.env);
   const child = spawn(invocation.command, invocation.args, {
@@ -421,18 +444,10 @@ async function defaultSchemaProbe(request: McpSchemaProbeRequest): Promise<McpSc
             }
             if (message.id === 3) {
               if (message.error) finish(new RpgMakerStartupError(`RPG Maker MCP project validation failed: ${message.error.message ?? 'unknown MCP error'}`));
-              else {
-                if ((message.result as { isError?: unknown } | undefined)?.isError === true) {
-                  finish(new RpgMakerStartupError('RPG Maker MCP project validation returned isError=true'));
-                }
-                const content = message.result?.content ?? [];
-                const text = content.find((block: unknown) => (block as { type?: unknown })?.type === 'text') as { text?: unknown } | undefined;
-                let validation: unknown = message.result;
-                if (typeof text?.text === 'string') {
-                  try { validation = JSON.parse(text.text); } catch { validation = undefined; }
-                }
-                if (!validation || (validation as { ok?: unknown }).ok !== true) finish(new RpgMakerStartupError(`RPG Maker MCP project validation failed: ${JSON.stringify(validation)}`));
-                else finish(undefined, { tools: discoveredTools ?? [] });
+              else if (!isSuccessfulProjectValidation(message.result)) {
+                finish(new RpgMakerStartupError(`RPG Maker MCP project validation failed: ${JSON.stringify(message.result)}`));
+              } else {
+                finish(undefined, { tools: discoveredTools ?? [] });
               }
             }
           } catch {

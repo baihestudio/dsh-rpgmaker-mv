@@ -33,6 +33,7 @@ async function makeProject(): Promise<string> {
   await json(join(project, 'data', 'MapInfos.json'), [null, { id: 1, name: 'Start', parentId: 0, order: 1 }]);
   await json(join(project, 'data', 'Map001.json'), { displayName: 'Start', width: 17, height: 13, data: new Array(17 * 13 * 6).fill(0), events: [null] });
   await writeFile(join(project, 'js', 'plugins.js'), 'var $plugins = [];\n');
+  await writeFile(join(project, 'js', 'main.js'), 'console.log("Phase 6");\n');
   return project;
 }
 
