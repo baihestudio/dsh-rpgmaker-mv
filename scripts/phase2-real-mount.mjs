@@ -14,6 +14,12 @@ function unwrap(value) {
   try { return JSON.parse(text); } catch { return text; }
 }
 
+function assertValidation(label, validation) {
+  if (validation?.ok !== true || !Array.isArray(validation.errors) || validation.errors.length > 0) {
+    throw new Error(`${label} project validation failed: ${JSON.stringify(validation)}`);
+  }
+}
+
 let mounted;
 try {
   mounted = await profileModule.runProfile({
@@ -85,27 +91,38 @@ try {
     throw new Error(`real MCP Playtest was not idle at mount acceptance: ${JSON.stringify(playtestStatus)}`);
   }
   const validation = unwrap(await call('validate_project', {}));
-  if (validation?.ok !== true) throw new Error(`startup project validation failed: ${JSON.stringify(validation)}`);
+  assertValidation('startup', validation);
   const initial = unwrap(await call('get_record', { type: 'actors', id: 1 }));
   if (initial?.name !== 'Hero') throw new Error('unexpected initial actor state');
   await call('update_record', { type: 'actors', id: 1, data: { name: 'Updated Hero' }, merge: true });
   const reread = unwrap(await call('get_record', { type: 'actors', id: 1 }));
   if (reread?.name !== 'Updated Hero') throw new Error('database reread did not reflect mutation');
   const validationAfterDatabase = unwrap(await call('validate_project', {}));
-  if (validationAfterDatabase?.ok !== true) throw new Error('database mutation validation failed');
+  assertValidation('database mutation', validationAfterDatabase);
   await call('add_dialogue', { mapId: 1, eventId: 1, lines: ['Welcome, hero.'], pageIndex: 0 });
-  await call('get_event', { mapId: 1, eventId: 1 });
+  const eventAfterDialogue = unwrap(await call('get_event', { mapId: 1, eventId: 1 }));
+  const dialogueAdded = eventAfterDialogue?.pages?.[0]?.list?.some((command) => command?.code === 401 && command?.parameters?.[0] === 'Welcome, hero.');
+  if (!dialogueAdded) throw new Error('event reread did not reflect dialogue mutation');
+  const validationAfterDialogue = unwrap(await call('validate_project', {}));
+  assertValidation('dialogue mutation', validationAfterDialogue);
   await call('update_map', { mapId: 1, data: { displayName: 'Opening' } });
-  await call('get_map', { mapId: 1 });
+  const mapAfterUpdate = unwrap(await call('get_map', { mapId: 1 }));
+  if (mapAfterUpdate?.displayName !== 'Opening') throw new Error('map reread did not reflect metadata mutation');
+  const validationAfterMap = unwrap(await call('validate_project', {}));
+  assertValidation('map mutation', validationAfterMap);
   await call('configure_plugin', { name: 'TestPlugin', status: false });
-  await call('list_plugins', {});
+  const pluginsAfterUpdate = unwrap(await call('list_plugins', {}));
+  const plugin = Array.isArray(pluginsAfterUpdate) ? pluginsAfterUpdate.find((entry) => entry?.name === 'TestPlugin') : undefined;
+  if (plugin?.status !== false) throw new Error('plugin reread did not reflect configuration mutation');
+  const validationAfterPlugin = unwrap(await call('validate_project', {}));
+  assertValidation('plugin mutation', validationAfterPlugin);
   const backups = unwrap(await call('list_backups', {}));
   if (!Array.isArray(backups) || backups.length === 0) throw new Error('official DSH MCP did not create a backup');
   await call('restore_backup', { session: backups[0].session });
   const restored = unwrap(await call('get_record', { type: 'actors', id: 1 }));
   if (restored?.name !== 'Hero') throw new Error('restore reread did not restore the actor record');
   const finalValidation = unwrap(await call('validate_project', {}));
-  if (finalValidation?.ok !== true) throw new Error('restore validation failed');
+  assertValidation('restore', finalValidation);
   console.log(JSON.stringify({ ok: true, preset: preset.id, selectedDebugPreset: debugPreset.id, playtestStatus, mcpTools: mcpTools.length, calls: callNumber, mutation: reread.name, restored: restored.name }));
 } finally {
   if (mounted) await mounted.shutdown.shutdown(0);
