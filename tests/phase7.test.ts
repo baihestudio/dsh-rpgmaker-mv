@@ -446,6 +446,8 @@ describe('Windows release gate foundations', () => {
       await writeFile(dsh, 'fixture');
       const launched = child();
       let args: string[] = [];
+      let probes = 0;
+      const opened: string[] = [];
       const result = await launchProject({
         platform: 'win32',
         projectPath: selected,
@@ -454,12 +456,14 @@ describe('Windows release gate foundations', () => {
         programRoot: join(root, 'program'),
         dshExecutable: dsh,
         bindWeb: true,
-        portProbe: async () => false,
+        portProbe: async () => { probes += 1; return probes > 1; },
+        openExistingSession: async (url) => { opened.push(url); },
         dshArgs: ['--profile', 'web', '--patch', 'composition.yml'],
         env: {},
         spawnInteractive: (_command, received) => { args = received; return launched; }
       });
       expect(args).toEqual(['--profile', 'web', '--patch', 'composition.yml', '--host', '127.0.0.1', '--port', '3081']);
+      expect(opened).toEqual(['http://127.0.0.1:3081/']);
       expect(await readFile(join(root, 'mutable', 'recent-projects.json'), 'utf8')).toContain('选择 project with spaces');
       launched.exitCode = 0;
       launched.emit('exit', 0);

@@ -13,6 +13,7 @@ import {
   ensureFixedPortAvailable,
   ensureHarnessLayout,
   openExistingDshSession,
+  probeLoopbackPort,
   recordRecentProject,
   selectProject,
   type ExistingSessionOpener,
@@ -273,6 +274,32 @@ function validateRequestedBinding(options: LaunchOptions): void {
   }
 }
 
+async function openStartedWebSession(
+  options: LaunchOptions,
+  platform: string,
+  env: Record<string, string | undefined>,
+  child: unknown
+): Promise<void> {
+  if (!options.bindWeb || platform !== 'win32') return;
+  const probe = options.portProbe ?? probeLoopbackPort;
+  const lifecycle = child as { exitCode?: number | null; signalCode?: string | null };
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    if (lifecycle.exitCode != null || lifecycle.signalCode != null) return;
+    if (await probe(WINDOWS_DSH_HOST, WINDOWS_DSH_PORT)) {
+      const url = `http://${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}/`;
+      try {
+        const open = options.openExistingSession ?? ((target: string) => openExistingDshSession(target, { platform, env, commandRunner: options.commandRunner }));
+        await open(url);
+      } catch {
+        options.notify?.(`DSH started, but the browser could not be opened automatically. Open ${url} manually.`);
+      }
+      return;
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+  }
+  options.notify?.(`DSH is still starting. Open http://${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}/ manually when it is ready.`);
+}
+
 async function launchProjectUnlocked(
   options: LaunchOptions,
   platform: string,
@@ -320,6 +347,7 @@ async function launchProjectUnlocked(
     env: childEnv,
     platform
   });
+  await openStartedWebSession(options, platform, env, child);
 
   return {
     projectPath: validation.projectPath,

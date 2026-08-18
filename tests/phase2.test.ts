@@ -308,6 +308,8 @@ describe('RPG Maker MCP deployment', () => {
       child.exitCode = null;
       child.signalCode = null;
       let launch: { args: string[]; cwd?: string } | undefined;
+      let probes = 0;
+      const opened: string[] = [];
       const result = await launchRpgmakerProject({
         platform: 'win32',
         dshHome: join(root, 'dsh-home'),
@@ -322,6 +324,8 @@ describe('RPG Maker MCP deployment', () => {
           return { exitCode: 0, stdout: '', stderr: '' };
         },
         schemaProbe: async () => ({ tools: toolNames() }),
+        portProbe: async () => { probes += 1; return probes > 1; },
+        openExistingSession: async (url) => { opened.push(url); },
         spawnInteractive: (_command, args, options) => {
           launch = { args, cwd: options.cwd };
           return child;
@@ -331,6 +335,7 @@ describe('RPG Maker MCP deployment', () => {
       expect(launch?.args.slice(0, 2)).toEqual(['--profile', 'web']);
       expect(launch?.args[2]).toBe('--patch');
       expect(launch?.args[3]).toBe(result.deployment.compositionPath);
+      expect(opened).toEqual(['http://127.0.0.1:3081/']);
       child.exitCode = 0;
       child.emit('exit', 0);
       await result.releaseSession();
