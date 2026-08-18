@@ -2,6 +2,7 @@ import { basename, dirname, join } from 'node:path';
 import { stat } from 'node:fs/promises';
 
 import { resolveHarnessPaths, type PathOptions } from './config';
+import { ownedCoreutilsCommands } from './prerequisites';
 import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 import { resolveExecutable, resolveWindowsPwsh } from './executable';
@@ -138,8 +139,9 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
 
   const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform, env });
   const coreutils = options.coreutilsExecutable ?? env.COREUTILS_MANAGER ?? await resolveExecutable('coreutils-manager', { platform, env }) ?? await resolveExecutable('coreutils', { platform, env });
-  const coreutilsFind = await resolveExecutable('find', { platform, env });
-  const coreutilsGrep = await resolveExecutable('grep', { platform, env });
+  const ownedCoreutils = await ownedCoreutilsCommands(coreutils, env);
+  const coreutilsFind = ownedCoreutils.find ?? await resolveExecutable('find', { platform, env });
+  const coreutilsGrep = ownedCoreutils.grep ?? await resolveExecutable('grep', { platform, env });
   const git = options.gitExecutable ?? env.GIT_EXECUTABLE ?? await resolveExecutable('git', { platform, env });
   const bun = options.bunExecutable ?? env.BUN_EXECUTABLE ?? await resolveExecutable('bun', { platform, env });
   const node = options.nodeExecutable ?? env.NODE_EXECUTABLE ?? await resolveExecutable('node', { platform, env });

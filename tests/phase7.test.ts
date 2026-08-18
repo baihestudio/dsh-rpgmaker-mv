@@ -201,6 +201,52 @@ describe('Windows release gate foundations', () => {
     }
   });
 
+  test('resolves find/grep from the verified Microsoft Coreutils root even when System32 precedes it on PATH', async () => {
+    const root = await temp('phase7-coreutils-shadow');
+    try {
+      const system32 = join(root, 'System32');
+      const coreutilsBin = join(root, 'Program Files', 'coreutils', 'bin');
+      await mkdir(system32, { recursive: true });
+      await mkdir(coreutilsBin, { recursive: true });
+      const { bin, env } = await prerequisiteBin(root);
+      for (const name of ['coreutils-manager.exe', 'find.exe', 'grep.exe']) {
+        await writeFile(join(coreutilsBin, name), 'fixture');
+      }
+      await writeFile(join(system32, 'find.exe'), 'fixture windows find');
+      // A clean WinGet install appends Coreutils after the inherited System32
+      // directory; refreshWindowsEnvironment keeps the old PATH prefix first.
+      const shadowed = { ...env, PATH: `${system32};${coreutilsBin};${bin}` };
+      const report = await verifyWindowsPrerequisites({ platform: 'win32', env: shadowed, commandRunner: prerequisiteRunner() });
+      const coreutils = report.checks.find((check) => check.id === 'coreutils');
+      expect(coreutils?.ok).toBe(true);
+      expect(coreutils?.executable).toContain('coreutils');
+      expect(report.ok).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reports the resolved non-owned path when Coreutils find/grep are missing', async () => {
+    const root = await temp('phase7-coreutils-diagnostic');
+    try {
+      const system32 = join(root, 'System32');
+      const coreutilsBin = join(root, 'Program Files', 'coreutils', 'bin');
+      await mkdir(system32, { recursive: true });
+      await mkdir(coreutilsBin, { recursive: true });
+      const { bin, env } = await prerequisiteBin(root);
+      await writeFile(join(coreutilsBin, 'coreutils-manager.exe'), 'fixture');
+      await writeFile(join(system32, 'find.exe'), 'fixture windows find');
+      const report = await verifyWindowsPrerequisites({ platform: 'win32', env: { ...env, PATH: `${system32};${coreutilsBin};${bin}` }, commandRunner: prerequisiteRunner() });
+      const coreutils = report.checks.find((check) => check.id === 'coreutils');
+      expect(coreutils?.ok).toBe(false);
+      expect(coreutils?.detail).toContain('find resolved to');
+      expect(coreutils?.detail).toContain('outside the Coreutils root');
+      expect(coreutils?.detail).not.toContain(env.LOCALAPPDATA!);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('Windows install wrappers pass explicit consent to the CLI without touching live roots', async () => {
     if (process.platform !== 'win32') return;
     const root = await temp('phase7-wrapper-100%!');

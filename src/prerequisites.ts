@@ -112,6 +112,48 @@ function coreutilsRoot(manager: string | undefined): string | undefined {
   return base === 'bin' || base === 'cmd' ? parent.slice(0, parent.lastIndexOf('/')) : parent;
 }
 
+/** Directories where a Microsoft Coreutils install keeps its manager and shim executables. */
+function coreutilsCommandDirectories(manager: string | undefined): string[] {
+  const root = coreutilsRoot(manager);
+  if (!root) return [];
+  return [root, join(root, 'bin'), join(root, 'cmd')];
+}
+
+/**
+ * Resolve find/grep owned by the verified Coreutils installation root rather than
+ * whatever shadows them earlier on PATH (Windows System32 ships a native find.exe).
+ * A clean WinGet install appends the Coreutils directory after inherited PATH
+ * entries, so PATH-only resolution can pick the unrelated System32 shim and fail
+ * the ownership check even though the package is correctly installed.
+ */
+export async function ownedCoreutilsCommands(manager: string | undefined, env: Record<string, string | undefined>): Promise<{ find?: string; grep?: string }> {
+  const result: { find?: string; grep?: string } = {};
+  for (const directory of coreutilsCommandDirectories(manager)) {
+    if (!result.find) result.find = await resolveExecutable(join(directory, 'find'), { platform: 'win32', env });
+    if (!result.grep) result.grep = await resolveExecutable(join(directory, 'grep'), { platform: 'win32', env });
+    if (result.find && result.grep) break;
+  }
+  return result;
+}
+
+function coreutilsFailureDetail(
+  manager: string | undefined,
+  contractOk: boolean,
+  find: string | undefined,
+  grep: string | undefined,
+  managerRoot: string | undefined
+): string {
+  const parts: string[] = [];
+  if (!manager) parts.push('coreutils-manager.exe was not resolved on PATH');
+  else if (!contractOk) parts.push(`coreutils-manager --help/status contract failed at ${manager}`);
+  const describe = (name: string, value: string | undefined): string => {
+    if (!value) return `${name} was not resolved`;
+    return isWithin(managerRoot, value) ? `${name} verified at ${value}` : `${name} resolved to ${value} outside the Coreutils root ${managerRoot ?? 'unknown'}`;
+  };
+  parts.push(describe('find', find), describe('grep', grep));
+  return parts.join('; ');
+}
+
 function check(
   id: WindowsPrerequisiteId,
   label: string,
@@ -152,8 +194,11 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const git = await resolved('git', options.gitExecutable ?? env.GIT_EXECUTABLE, env);
   const manager = await resolved('coreutils-manager', options.coreutilsExecutable ?? env.COREUTILS_MANAGER, env)
     ?? await resolved('coreutils', undefined, env);
-  const find = await resolved('find', undefined, env);
-  const grep = await resolved('grep', undefined, env);
+  // Prefer find/grep owned by the verified Coreutils root so a clean install
+  // succeeds even when System32/find.exe or another shim precedes Coreutils on PATH.
+  const ownedCommands = await ownedCoreutilsCommands(manager, env);
+  const find = ownedCommands.find ?? await resolved('find', undefined, env);
+  const grep = ownedCommands.grep ?? await resolved('grep', undefined, env);
 
   const nodeVersion = await commandVersion(runner, node, env);
   const nodeLts = await commandVersion(runner, node, env, ['-p', 'process.release.lts']);
@@ -179,8 +224,8 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const gitIdentity = /(?:^|\r?\n)\s*git version\s+\d+\.\d+\.\d+/i.test(gitVersion.output);
   const nodeOk = nodeVersion.ok && nodeIdentity && atLeast(nodeParsed, [18, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && npmIdentity && Boolean(versionNumbers(npmVersion.output));
   const powershellOk = pwshVersion.ok && powershellIdentity && atLeast(pwshParsed, [7, 4, 0]);
-  const coreutilsOk = managerHelp.ok && managerStatus.ok
-    && managerContract(managerHelp.output, managerStatus.output)
+  const coreutilsContractOk = managerHelp.ok && managerStatus.ok && managerContract(managerHelp.output, managerStatus.output);
+  const coreutilsOk = coreutilsContractOk
     && findVersion.ok && grepVersion.ok
     && isWithin(managerRoot, find) && isWithin(managerRoot, grep);
 
@@ -242,7 +287,7 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
       coreutilsOk,
       coreutilsOk
         ? `Microsoft Coreutils manager and enabled find/grep are available under ${managerRoot}`
-        : 'Microsoft Coreutils manager, enabled find, and enabled grep were not verified; install Microsoft.Coreutils with WinGet',
+        : `Microsoft Coreutils manager, enabled find, and enabled grep were not verified; install Microsoft.Coreutils with WinGet (${coreutilsFailureDetail(manager, coreutilsContractOk, find, grep, managerRoot)})`,
       manager
     )
   ];
