@@ -195,7 +195,7 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const git = await resolved('git', options.gitExecutable ?? env.GIT_EXECUTABLE, env);
   const manager = await resolved('coreutils-manager', options.coreutilsExecutable ?? env.COREUTILS_MANAGER, env)
     ?? await resolved('coreutils', undefined, env);
-  const sevenZip = options.sevenZipExecutable ?? env.SEVEN_ZIP_EXECUTABLE ?? await resolveWindowsSevenZip({ platform: 'win32', env });
+  const sevenZip = options.sevenZipExecutable ?? env.SEVEN_ZIP_EXECUTABLE ?? await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: runner });
   // Prefer find/grep owned by the verified Coreutils root so a clean install
   // succeeds even when System32/find.exe or another shim precedes Coreutils on PATH.
   const ownedCommands = await ownedCoreutilsCommands(manager, env);

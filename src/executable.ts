@@ -2,10 +2,12 @@ import { isRegularFile } from './files';
 import { lstat, readdir } from 'node:fs/promises';
 import { extname, isAbsolute, join } from 'node:path';
 import { environmentPath, pathDelimiter } from './config';
+import { runCommand, withoutCredentials, type CommandRunner } from './process';
 
 export interface ExecutableLookupOptions {
   platform?: string;
   env?: Record<string, string | undefined>;
+  commandRunner?: CommandRunner;
 }
 
 function looksLikePath(value: string): boolean {
@@ -96,15 +98,59 @@ export async function resolveWindowsSevenZip(options: ExecutableLookupOptions = 
     env.LOCALAPPDATA ? join(env.LOCALAPPDATA, 'Programs') : undefined
   ];
   const seen = new Set<string>();
+  const consider = async (candidate: string | undefined): Promise<string | undefined> => {
+    if (!candidate) return undefined;
+    const identity = candidate.toLowerCase();
+    if (seen.has(identity)) return undefined;
+    seen.add(identity);
+    return await isRegularFile(candidate) ? candidate : undefined;
+  };
   for (const root of roots) {
     if (!root) continue;
-    const candidate = join(root, '7-Zip', '7z.exe');
-    const identity = candidate.toLowerCase();
-    if (seen.has(identity)) continue;
-    seen.add(identity);
-    if (await isRegularFile(candidate)) return candidate;
+    const found = await consider(join(root, '7-Zip', '7z.exe'));
+    if (found) return found;
+  }
+  // WinGet allows a custom InstallLocation (e.g. D:\解压\7-Zip). The package
+  // records it under the 7-Zip registry keys, so an already-installed 7-Zip
+  // must be reused from there before falling back to a PATH lookup.
+  const runner = options.commandRunner ?? runCommand;
+  for (const candidate of await readSevenZipRegistryPaths(runner, env)) {
+    const found = await consider(candidate);
+    if (found) return found;
   }
   return resolveExecutable('7z', { platform, env });
+}
+
+const SEVEN_ZIP_REGISTRY_KEYS = [
+  ['HKLM', 'SOFTWARE\\7-Zip'],
+  ['HKLM', 'SOFTWARE\\WOW6432Node\\7-Zip'],
+  ['HKCU', 'SOFTWARE\\7-Zip']
+] as const;
+
+/** Read 7-Zip install paths from the supported registry keys without touching live values on non-Windows hosts. */
+async function readSevenZipRegistryPaths(runner: CommandRunner, env: Record<string, string | undefined>): Promise<string[]> {
+  const reg = env.SystemRoot ? join(env.SystemRoot, 'System32', 'reg.exe') : 'reg.exe';
+  const results: string[] = [];
+  for (const [hive, key] of SEVEN_ZIP_REGISTRY_KEYS) {
+    try {
+      const result = await runner(reg, ['query', `${hive}\\${key}`, '/v', 'Path'], {
+        env: withoutCredentials(env),
+        platform: 'win32',
+        timeoutMs: 15_000
+      });
+      if (result.exitCode !== 0) continue;
+      const value = result.stdout.match(/^\s*Path\s+REG_[A-Z_]+\s+(.*)$/im)?.[1]?.trim();
+      if (!value) continue;
+      const expanded = value.replace(/%([^%]+)%/g, (_match, name: string) => env[name] ?? process.env[name] ?? `%${name}%`);
+      if (expanded.includes('%')) continue;
+      const leaf = expanded.trim().replace(/[\\/]+$/, '');
+      if (!leaf) continue;
+      results.push(join(leaf, '7z.exe'));
+    } catch {
+      // A missing/unreadable registry key is not an error; other roots still apply.
+    }
+  }
+  return results;
 }
 
 /**

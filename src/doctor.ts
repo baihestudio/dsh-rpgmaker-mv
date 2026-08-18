@@ -152,7 +152,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     : undefined;
   const python = options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? wingetPython ?? await resolveExecutable('python', { platform, env });
   const sevenZip = platform === 'win32'
-    ? options.sevenZipExecutable ?? env.SEVEN_ZIP_EXECUTABLE ?? await resolveWindowsSevenZip({ platform, env })
+    ? options.sevenZipExecutable ?? env.SEVEN_ZIP_EXECUTABLE ?? await resolveWindowsSevenZip({ platform, env, commandRunner: runner })
     : undefined;
 
   const checks: DoctorCheck[] = [];

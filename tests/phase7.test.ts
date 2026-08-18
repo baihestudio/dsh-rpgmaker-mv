@@ -208,6 +208,86 @@ describe('Windows release gate foundations', () => {
     }
   });
 
+  test('resolves installed 7-Zip from the 7-Zip registry key before PATH (custom WinGet location)', async () => {
+    const root = await temp('phase7-sevenzip-registry');
+    try {
+      const custom = join(root, '解压', '7-Zip', '7z.exe');
+      await mkdir(dirname(custom), { recursive: true });
+      await writeFile(custom, 'fixture');
+      const env = { PATH: join(root, 'no-sevenzip-on-path') };
+      const runner = async (command: string, args: string[]) => {
+        if (basename(command).toLowerCase() === 'reg.exe' && args[0] === 'query' && args[1] === 'HKLM\\SOFTWARE\\7-Zip') {
+          return { exitCode: 0, stdout: `\r\n    Path    REG_SZ    ${dirname(custom)}\r\n`, stderr: '' };
+        }
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+      expect(await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: runner })).toBe(custom);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('falls back to PATH when the 7-Zip registry key is missing or malformed', async () => {
+    const root = await temp('phase7-sevenzip-registry-missing');
+    try {
+      const bin = join(root, 'bin');
+      await mkdir(bin, { recursive: true });
+      await writeFile(join(bin, '7z.exe'), 'fixture');
+      const env = { PATH: bin };
+      const runner = async () => ({ exitCode: 1, stdout: '', stderr: 'ERROR: The system was unable to find the specified registry key or value.' });
+      expect(await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: runner })).toBe(join(bin, '7z.exe'));
+
+      const malformed = async (command: string) => (basename(command).toLowerCase() === 'reg.exe'
+        ? { exitCode: 0, stdout: '\r\n    Path    REG_SZ    %NOT_SET%\\7-Zip\r\n', stderr: '' }
+        : { exitCode: 1, stdout: '', stderr: '' });
+      expect(await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: malformed })).toBe(join(bin, '7z.exe'));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('prefers a standard 7-Zip root over the registry key', async () => {
+    const root = await temp('phase7-sevenzip-registry-priority');
+    try {
+      const standard = join(root, 'Program Files', '7-Zip', '7z.exe');
+      await mkdir(dirname(standard), { recursive: true });
+      await writeFile(standard, 'fixture');
+      const custom = join(root, 'custom', '7z.exe');
+      await mkdir(dirname(custom), { recursive: true });
+      await writeFile(custom, 'fixture');
+      const env = { PATH: join(root, 'no-sevenzip-on-path'), ProgramFiles: join(root, 'Program Files') };
+      const runner = async () => ({ exitCode: 0, stdout: `\r\n    Path    REG_SZ    ${dirname(custom)}\r\n`, stderr: '' });
+      expect(await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: runner })).toBe(standard);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects an unrelated 7z shim resolved through the registry key', async () => {
+    const root = await temp('phase7-sevenzip-registry-shim');
+    try {
+      const custom = join(root, 'shim', '7z.exe');
+      await mkdir(dirname(custom), { recursive: true });
+      await writeFile(custom, 'fixture');
+      const { env } = await prerequisiteBin(root);
+      const base = prerequisiteRunner();
+      const report = await verifyWindowsPrerequisites({
+        platform: 'win32', env, commandRunner: async (command, args, options) => {
+          if (basename(command).toLowerCase() === 'reg.exe' && args[1]?.includes('7-Zip')) {
+            return { exitCode: 0, stdout: `\r\n    Path    REG_SZ    ${dirname(custom)}\r\n`, stderr: '' };
+          }
+          if (basename(command).toLowerCase() === '7z.exe' && args[0] === 'i') {
+            return { exitCode: 0, stdout: 'acme archiver 1.0\n', stderr: '' };
+          }
+          return base(command, args, options);
+        }
+      });
+      expect(report.checks.find((item) => item.id === '7zip')?.ok).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('resolves the branded program/mutable roots and state layout without using a live profile', async () => {
     const root = await temp('phase7-paths');
     try {
