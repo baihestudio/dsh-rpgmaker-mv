@@ -29,7 +29,9 @@ export async function runVisionToolkitProfileProbe({ includePresets = process.en
   const presetIds = ['rpgmaker', 'playtest-debug', 'asset-workshop', 'build-release']
   let mounted
   try {
-    mounted = await profileModule.runProfile({ profile: 'web', patchFiles: [], args: [], environment })
+    const port = process.env.VISION_TOOLKIT_PROBE_PORT
+    if (!port || !/^\d+$/.test(port)) throw new Error('Vision Toolkit probe requires an allocated loopback port.')
+    mounted = await profileModule.runProfile({ profile: 'web', patchFiles: [], args: ['--host', '127.0.0.1', '--port', port], environment })
     const settings = mounted.ctx.get('settings')
     const attachments = mounted.ctx.get('attachments')
     const tools = mounted.ctx.get('tools')

@@ -136,6 +136,7 @@ describe('Vision Toolkit profile integration', () => {
         }
         expect(command).toBe(dsh);
         expect(options.env?.PATH).toContain(join('runtime', 'pnpm', 'node_modules', '.bin'));
+        expect(options.env?.PATH).toContain(join(root, 'native bun bin'));
         await writeInstalledProfile(dshHome);
         return { exitCode: 0, stdout: '', stderr: '' };
       };
@@ -148,7 +149,7 @@ describe('Vision Toolkit profile integration', () => {
         npmExecutable: npm,
         prepareRuntime: false,
         activationCheck: async () => visionToolkitActivationFixture(),
-        env: { PATH: '' },
+        env: { Path: join(root, 'native bun bin') },
         commandRunner
       });
       expect(result.valid).toBe(true);

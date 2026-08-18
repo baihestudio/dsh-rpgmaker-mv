@@ -12,6 +12,7 @@ import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
 import { runDoctor } from '../src/doctor';
 import { runCommand } from '../src/process';
+import { resolveExecutable } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, recordRecentProject, readRecentProjects, uninstallHarness, UninstallSafetyError } from '../src/windows';
 import { visionToolkitActivationFixture, visionToolkitFixture } from './fixtures/vision-toolkit';
 
@@ -72,7 +73,7 @@ function runInteractive(command: string, args: string[], env: Record<string, str
 async function prerequisiteBin(root: string): Promise<{ bin: string; env: Record<string, string> }> {
   const bin = join(root, 'fake prerequisite bin');
   await mkdir(bin, { recursive: true });
-  for (const name of ['node.exe', 'npm.cmd', 'bun.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe']) await writeFile(join(bin, name), 'fixture');
+  for (const name of ['node.exe', 'npm.cmd', 'python.exe', 'bun.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe']) await writeFile(join(bin, name), 'fixture');
   return { bin, env: { PATH: bin, LOCALAPPDATA: join(root, 'Local AppData'), APPDATA: join(root, 'Roaming AppData') } };
 }
 
@@ -87,6 +88,7 @@ function prerequisiteRunner() {
     if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
     if (name === 'node.exe') return { exitCode: 0, stdout: 'v20.18.0', stderr: '' };
     if (name === 'npm.cmd') return { exitCode: 0, stdout: '10.8.2', stderr: '' };
+    if (name === 'python.exe') return { exitCode: 0, stdout: 'Python 3.13.15', stderr: '' };
     if (name === 'bun.exe') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
     if (name === 'pwsh.exe') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
     if (name === 'git.exe') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
@@ -97,6 +99,17 @@ function prerequisiteRunner() {
 }
 
 describe('Windows release gate foundations', () => {
+  test('resolves Windows executables from a case-insensitive Path environment key', async () => {
+    const root = await temp('windows-path-case');
+    try {
+      const npm = join(root, 'npm.cmd');
+      await writeFile(npm, 'fixture');
+      expect(await resolveExecutable('npm', { platform: 'win32', env: { Path: root } })).toBe(npm);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('resolves the branded program/mutable roots and state layout without using a live profile', async () => {
     const root = await temp('phase7-paths');
     try {
@@ -113,13 +126,13 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('requires explicit consent before WinGet prerequisite installation and verifies all five identities', async () => {
+  test('requires explicit consent before WinGet prerequisite installation and verifies all six identities', async () => {
     const root = await temp('phase7-prerequisites');
     try {
       const { bin, env } = await prerequisiteBin(root);
       const report = await verifyWindowsPrerequisites({ platform: 'win32', env, commandRunner: prerequisiteRunner() });
       expect(report.ok).toBe(true);
-      expect(report.checks.map((check) => check.id)).toEqual(['node', 'bun', 'powershell', 'git', 'coreutils']);
+      expect(report.checks.map((check) => check.id)).toEqual(['node', 'python', 'bun', 'powershell', 'git', 'coreutils']);
       const missing = await verifyWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, commandRunner: prerequisiteRunner() });
       expect(missing.ok).toBe(false);
       await expect(installWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, consent: false, commandRunner: prerequisiteRunner() })).rejects.toBeInstanceOf(PrerequisiteConsentError);
@@ -197,6 +210,8 @@ describe('Windows release gate foundations', () => {
       });
       expect(report.ok).toBe(true);
       expect(report.checks.map((check) => check.id)).toContain('node');
+      expect(report.checks.map((check) => check.id)).toContain('python');
+      expect(report.executablePaths.python).toContain('python.exe');
       expect(report.checks.map((check) => check.id)).toContain('app-layout');
       expect(report.checks.map((check) => check.id)).toContain('vision-toolkit-profile');
       expect(report.checks.map((check) => check.id)).toContain('vision-toolkit-provider');
@@ -242,7 +257,9 @@ describe('Windows release gate foundations', () => {
       expect(dependencyPreparations).toBe(1);
       expect(await Bun.file(join(program, 'Install.cmd')).exists()).toBe(true);
       expect(await Bun.file(join(program, PROGRAM_OWNERSHIP_FILE)).exists()).toBe(true);
-      expect(JSON.parse(await readFile(join(program, 'install.json'), 'utf8')).owner).toBe(PROGRAM_OWNER);
+      const metadata = JSON.parse(await readFile(join(program, 'install.json'), 'utf8'));
+      expect(metadata.owner).toBe(PROGRAM_OWNER);
+      expect(metadata.prerequisites.some((item: { id: string }) => item.id === 'python')).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'dsh', 'package.json')).exists()).toBe(true);
       expect((await stat(join(mutable, 'logs'))).isDirectory()).toBe(true);
       expect((await stat(join(mutable, 'cache'))).isDirectory()).toBe(true);

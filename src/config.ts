@@ -84,3 +84,9 @@ export function resolveHarnessPaths(options: PathOptions = {}): HarnessPaths {
 export function pathDelimiter(platform: string = process.platform): string {
   return platform === 'win32' ? ';' : delimiter;
 }
+
+export function environmentPath(env: Record<string, string | undefined>, platform: string = process.platform): string {
+  if (platform !== 'win32') return env.PATH ?? '';
+  const key = Object.keys(env).find((candidate) => candidate.toLowerCase() === 'path');
+  return key ? env[key] ?? '' : '';
+}

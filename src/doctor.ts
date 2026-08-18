@@ -33,6 +33,7 @@ export interface DoctorOptions extends PathOptions {
   gitExecutable?: string;
   nodeExecutable?: string;
   npmExecutable?: string;
+  pythonExecutable?: string;
   verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; image: DoctorCheck; packager: DoctorCheck }>;
   verifyVisionToolkit?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<VisionToolkitVerification>;
   verifyVisionToolkitActivation?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<VisionToolkitActivation>;
@@ -141,6 +142,10 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   const bun = options.bunExecutable ?? env.BUN_EXECUTABLE ?? await resolveExecutable('bun', { platform, env });
   const node = options.nodeExecutable ?? env.NODE_EXECUTABLE ?? await resolveExecutable('node', { platform, env });
   const npm = options.npmExecutable ?? env.NPM_EXECUTABLE ?? await resolveExecutable('npm', { platform, env });
+  const wingetPython = platform === 'win32' && env.LOCALAPPDATA
+    ? await resolveExecutable(join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe'), { platform, env })
+    : undefined;
+  const python = options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? wingetPython ?? await resolveExecutable('python', { platform, env });
 
   const checks: DoctorCheck[] = [];
   const executablePaths: Record<string, string | undefined> = {
@@ -151,7 +156,8 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     git,
     bun,
     node,
-    npm
+    npm,
+    python
   };
 
   const pwshVersion = await commandVersion(runner, pwsh, commandEnv);
@@ -203,6 +209,16 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   ));
 
   if (platform === 'win32') {
+    const pythonVersion = await commandVersion(runner, python, commandEnv);
+    const pythonParsed = versionNumbers(pythonVersion.output);
+    checks.push(check(
+      'python',
+      'Python 3.11+',
+      pythonVersion.ok && /(?:^|\r?\n)\s*Python\s+\d+\.\d+/i.test(pythonVersion.output) && atLeast(pythonParsed, [3, 11, 0]),
+      pythonVersion.ok && pythonParsed ? `Python ${pythonParsed.join('.')} is available at ${python}` : 'Python 3.11+ was not verified; run Install.cmd to install Python.Python.3.13 with WinGet',
+      python
+    ));
+
     const nodeVersion = await commandVersion(runner, node, commandEnv);
     const nodeLts = await commandVersion(runner, node, commandEnv, ['-p', 'process.release.lts']);
     const npmVersion = await commandVersion(runner, npm, commandEnv);

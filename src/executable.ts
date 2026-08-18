@@ -1,7 +1,7 @@
 import { isRegularFile } from './files';
 import { lstat } from 'node:fs/promises';
 import { extname, isAbsolute, join } from 'node:path';
-import { pathDelimiter } from './config';
+import { environmentPath, pathDelimiter } from './config';
 
 export interface ExecutableLookupOptions {
   platform?: string;
@@ -39,7 +39,7 @@ export async function resolveExecutable(name: string, options: ExecutableLookupO
     return undefined;
   }
 
-  const entries = (env.PATH ?? '').split(pathDelimiter(platform)).filter(Boolean);
+  const entries = environmentPath(env, platform).split(pathDelimiter(platform)).filter(Boolean);
   const names = platform === 'win32'
     ? (extname(requested) ? [requested] : [`${requested}.exe`, `${requested}.cmd`, `${requested}.bat`, `${requested}.ps1`, requested])
     : [requested];

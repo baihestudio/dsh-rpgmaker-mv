@@ -6,11 +6,12 @@
 2. Double-click `Install.cmd`.
 3. Give the installer one explicit consent when prompted if it may install or repair prerequisites. This consent covers missing, wrong-version, and wrong-identity checks; command presence is never treated as consent. The installer uses WinGet only after that consent for:
    - Node.js LTS and npm (`OpenJS.NodeJS.LTS`)
+   - Python 3.13 (`Python.Python.3.13`; Vision Toolkit requires Python 3.11+)
    - Bun (`Oven-sh.Bun`)
    - PowerShell 7.4+ (`Microsoft.PowerShell`)
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
-4. The installer verifies executable paths and versions, stages the pinned DSH `0.1.0-rc.7` runtime with Bun, installs the exact RPG Maker MCP, build packager, and Vision Toolkit profile dependency, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. The Vision Toolkit package and license notice are listed in [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md).
+4. The installer verifies executable paths and versions, supplies the verified WinGet Python to Vision Toolkit's isolated managed environment, stages the pinned DSH `0.1.0-rc.7` runtime with Bun, installs the exact RPG Maker MCP, build packager, and Vision Toolkit profile dependency, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. The Vision Toolkit package and license notice are listed in [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md).
 
 No Git clone, npm install, or manual package command is needed for this path. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported repair path; a previous runtime is retained by the staged runtime swap for recovery. If post-swap bootstrap, metadata, or shortcut creation fails, the prior program tree is restored and the failed new tree is retained as a named diagnostic/recovery directory.
 

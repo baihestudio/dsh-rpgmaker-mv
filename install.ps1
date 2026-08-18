@@ -26,7 +26,7 @@ function Refresh-Path {
 $consent = [bool] $Yes
 if (-not $consent) {
   Write-Host 'DSH for RPG Maker MV may use WinGet to install or repair these prerequisites:'
-  Write-Host '  - Node.js LTS/npm, Bun, PowerShell 7.4+, Git for Windows, Microsoft Coreutils'
+  Write-Host '  - Node.js LTS/npm, Python 3.13, Bun, PowerShell 7.4+, Git for Windows, Microsoft Coreutils'
   $answer = Read-Host 'Allow WinGet to install or repair prerequisites? [Y/N]'
   if ($answer -notmatch '^(?i)y(es)?$') {
     $consent = $false

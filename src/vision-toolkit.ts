@@ -5,7 +5,7 @@ import { basename, dirname, extname, join, relative, resolve, sep } from 'node:p
 import { fileURLToPath } from 'node:url';
 
 import { findDshExecutable } from './bootstrap';
-import { resolveHarnessPaths, pathDelimiter, type HarnessPaths, type PathOptions } from './config';
+import { environmentPath, resolveHarnessPaths, pathDelimiter, type HarnessPaths, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
 import { commandFailure, prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, withoutCredentials, type CommandRunner } from './process';
 
@@ -140,7 +140,7 @@ function pluginEnvironment(env: Record<string, string | undefined>): Record<stri
 }
 
 function prependPath(env: Record<string, string | undefined>, directory: string, platform: string): Record<string, string | undefined> {
-  const current = env.PATH ?? '';
+  const current = environmentPath(env, platform);
   return { ...env, PATH: [directory, current].filter(Boolean).join(pathDelimiter(platform)) };
 }
 
@@ -450,12 +450,14 @@ async function runVisionToolkitActivationProbe(options: VisionToolkitOptions, pa
   if (!node) throw new Error('Node.js or Bun was not found; cannot verify Vision Toolkit activation.');
   const boot = await findProfileBoot(paths.runtimeDir);
   const probe = fileURLToPath(new URL('../scripts/vision-toolkit-profile-probe.mjs', import.meta.url));
+  const port = await freeLoopbackPort();
   const processEnv = {
     ...env,
     DSH_HOME: paths.dshHome,
     PROFILE_FILE: boot.profileFile,
     ENVIRONMENT_MODULE: boot.environmentModule,
-    VISION_TOOLKIT_CHECK_PRESETS: '0'
+    VISION_TOOLKIT_CHECK_PRESETS: '0',
+    VISION_TOOLKIT_PROBE_PORT: String(port)
   };
   const runner = options.commandRunner ?? runCommand;
   const result = await runner(node, [probe], {

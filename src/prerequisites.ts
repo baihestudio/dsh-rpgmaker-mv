@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { resolveExecutable } from './executable';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 
-export const WINDOWS_PREREQUISITE_IDS = ['node', 'bun', 'powershell', 'git', 'coreutils'] as const;
+export const WINDOWS_PREREQUISITE_IDS = ['node', 'python', 'bun', 'powershell', 'git', 'coreutils'] as const;
 export type WindowsPrerequisiteId = (typeof WINDOWS_PREREQUISITE_IDS)[number];
 
 export interface WindowsPrerequisiteCheck {
@@ -31,6 +31,7 @@ export interface WindowsPrerequisiteOptions {
   commandRunner?: CommandRunner;
   nodeExecutable?: string;
   npmExecutable?: string;
+  pythonExecutable?: string;
   bunExecutable?: string;
   pwshExecutable?: string;
   gitExecutable?: string;
@@ -141,6 +142,10 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const runner = options.commandRunner ?? runCommand;
   const node = await resolved('node', options.nodeExecutable ?? env.NODE_EXECUTABLE, env);
   const npm = await resolved('npm', options.npmExecutable ?? env.NPM_EXECUTABLE, env);
+  const wingetPython = env.LOCALAPPDATA
+    ? await resolveExecutable(join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe'), { platform: 'win32', env })
+    : undefined;
+  const python = await resolved('python', options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? wingetPython, env);
   const bun = await resolved('bun', options.bunExecutable ?? env.BUN_EXECUTABLE, env);
   const pwsh = await resolved('pwsh', options.pwshExecutable ?? env.PWSH_EXECUTABLE, env);
   const git = await resolved('git', options.gitExecutable ?? env.GIT_EXECUTABLE, env);
@@ -152,6 +157,7 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const nodeVersion = await commandVersion(runner, node, env);
   const nodeLts = await commandVersion(runner, node, env, ['-p', 'process.release.lts']);
   const npmVersion = await commandVersion(runner, npm, env);
+  const pythonVersion = await commandVersion(runner, python, env);
   const bunVersion = await commandVersion(runner, bun, env);
   const pwshVersion = await commandVersion(runner, pwsh, env);
   const gitVersion = await commandVersion(runner, git, env);
@@ -162,9 +168,11 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const managerRoot = coreutilsRoot(manager);
   const nodeParsed = versionNumbers(nodeVersion.output);
   const nodeLtsName = nodeLts.output.trim().split(/\r?\n/).find(Boolean);
+  const pythonParsed = versionNumbers(pythonVersion.output);
   const pwshParsed = versionNumbers(pwshVersion.output);
   const nodeIdentity = /(?:^|\r?\n)\s*v\d+\.\d+\.\d+/i.test(nodeVersion.output);
   const npmIdentity = /(?:^|\r?\n)\s*v?\d+\.\d+\.\d+/i.test(npmVersion.output);
+  const pythonIdentity = /(?:^|\r?\n)\s*Python\s+\d+\.\d+/i.test(pythonVersion.output);
   const bunIdentity = /(?:^|\r?\n)\s*\d+\.\d+\.\d+/i.test(bunVersion.output);
   const powershellIdentity = /PowerShell\s+\d+\.\d+/i.test(pwshVersion.output);
   const gitIdentity = /(?:^|\r?\n)\s*git version\s+\d+\.\d+\.\d+/i.test(gitVersion.output);
@@ -187,6 +195,17 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
       node,
       nodeParsed?.join('.'),
       nodeParsed && versionNumbers(npmVersion.output) && nodeLtsName ? { node: nodeParsed.join('.'), npm: versionNumbers(npmVersion.output)!.join('.'), lts: nodeLtsName } : undefined
+    ),
+    check(
+      'python',
+      'Python 3.11+',
+      'Python.Python.3.13',
+      pythonVersion.ok && pythonIdentity && atLeast(pythonParsed, [3, 11, 0]),
+      pythonVersion.ok && pythonIdentity && pythonParsed
+        ? `Python ${pythonParsed.join('.')} is available at ${python}`
+        : 'Python 3.11+ was not verified; install Python.Python.3.13 with WinGet',
+      python,
+      pythonParsed?.join('.')
     ),
     check(
       'bun',

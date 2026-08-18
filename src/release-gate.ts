@@ -4,7 +4,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { bootstrapRuntime, type BootstrapResult } from './bootstrap';
-import { PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { environmentPath, pathDelimiter, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
 import { prepareImageToolchain } from './image-workshop';
 import { withoutCredentials, runCommand, type CommandRunner } from './process';
@@ -105,9 +105,12 @@ async function copyReleaseTree(sourceRootInput: string, destination: string): Pr
   }
 }
 
-function generatedEnvironment(env: Record<string, string | undefined>, paths: HarnessPaths): Record<string, string | undefined> {
+function generatedEnvironment(env: Record<string, string | undefined>, paths: HarnessPaths, prerequisites: WindowsPrerequisiteReport): Record<string, string | undefined> {
+  const executableDirs = prerequisites.checks.flatMap((item) => item.executable ? [dirname(item.executable)] : []);
+  const path = [...new Set([...executableDirs, ...environmentPath(env, 'win32').split(pathDelimiter('win32')).filter(Boolean)])].join(pathDelimiter('win32'));
   return {
     ...env,
+    PATH: path,
     DSH_HOME: paths.dshHome,
     DSH_RPGMAKER_PROGRAM_ROOT: paths.programRoot,
     DSH_RPGMAKER_DATA_ROOT: paths.mutableRoot,
@@ -216,7 +219,7 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
     await rename(staging, paths.programRoot);
     stagingActive = false;
 
-    const installedEnv = generatedEnvironment(env, paths);
+    const installedEnv = generatedEnvironment(env, paths, prerequisites);
     let bootstrap: BootstrapResult;
     let shortcutPath: string;
     try {
@@ -272,7 +275,7 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         paths,
         env: installedEnv,
         bunExecutable,
-        npmExecutable: options.npmExecutable ?? env.NPM_EXECUTABLE,
+        npmExecutable: options.npmExecutable ?? await resolveExecutable('npm', { platform, env: installedEnv }),
         commandRunner: options.commandRunner
       });
       const metadataPath = join(paths.programRoot, 'install.json');
