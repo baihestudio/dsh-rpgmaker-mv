@@ -41,6 +41,8 @@ If neither `DEEPSEEK_API_KEY` nor DSH's local credential metadata is present, DS
 ```powershell
 bun test
 bun run check
+# Optional real disposable pinned-DSH asset preset mount (no MCP service)
+bun run phase4:real
 # Optional real disposable DSH + Xerolo MCP acceptance
 bun run phase2:real
 ```
@@ -66,23 +68,30 @@ Reports distinguish static validation, process launch, crash/log evidence, clean
 Select the deterministic image preset when launching a project:
 
 ```powershell
-./launch.ps1 --project 'C:\Games\My RPG 游戏' --preset asset-workshop --image-magick 'C:\DSH\tools\ImageMagick\magick.exe'
+./launch.ps1 --project 'C:\Games\My RPG 游戏' --preset asset-workshop
+# For an explicit override, also pass --image-magick-sha256 <64-hex-digest>
 ```
 
-The launcher requires the resolved ImageMagick executable to report exactly
-`7.1.2-29`, stages the exact `free-tex-packer-core@0.3.9` helper under
-`DSH_HOME`, and writes an app-owned image tool manifest. The helper is installed
-with Bun and native dependencies are trusted in its staging tree. An existing
-manifest can supply the pinned ImageMagick path; PATH aliases and `convert` are
-not accepted. `oxipng@10.2.0` is optional and is only invoked by an explicit
-`optimize-png` operation with a distinct output path.
+The launcher resolves ImageMagick from the harness-owned tool manifest/install
+area and requires exactly `7.1.2-29`. The static release manifest records the
+exact HTTPS asset URL, archive SHA-256, and installed executable SHA-256; the
+resolved executable is hashed on every launch. Explicit ImageMagick and
+`oxipng@10.2.0` overrides must supply their expected SHA-256 (or a matching
+app-owned manifest) and are rejected otherwise. The helper is staged under
+`DSH_HOME` with Bun, trusted there, and checked against its exact lockfile
+integrity and lock hash. PATH aliases and `convert` are never accepted.
+`oxipng` remains optional and is only invoked by an explicit `optimize-png`
+operation with a distinct output path.
 
 The skill owns pixel-safe resize, transparent trim/pad, fixed-grid sheet
-slice/assembly, and no-rotation atlas packing. Every mutation refuses an
-existing output or source overwrite and emits a JSON manifest containing tool
-paths/versions, dimensions, alpha mode, hashes, and fidelity evidence. Optional
-Photoshop, Aseprite, and TexturePacker installations are detected as hints only;
-they are never downloaded or required.
+slice/assembly, and no-rotation atlas packing. Each operation rejects an
+existing output directory, canonicalizes approved parents, writes to a unique
+sibling staging directory, verifies there, and commits without clobbering a
+racing output. Manifests are emitted only after verification; atlas manifests
+list both the PNG and JSON artifacts and report representative-pixel
+verification rather than claiming universal losslessness. Optional Photoshop,
+Aseprite, and TexturePacker installations are detected as hints only; they are
+never downloaded or required.
 
 The same operations are available at the helper seam for disposable checks:
 

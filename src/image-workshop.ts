@@ -1,26 +1,66 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import { link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 
+import {
+  ASSET_WORKSHOP_PRESET_ID,
+  FREE_TEX_PACKER_VERSION,
+  IMAGE_MAGICK_VERSION,
+  IMAGE_WORKSHOP_MANIFEST_FORMAT,
+  OXIPNG_VERSION,
+  ImageWorkshopError,
+  detectOptionalEnhancements,
+  ensureImageHelperRuntime,
+  prepareImageToolchain,
+  resolveImageToolchain,
+  toolchainManifestForRoot,
+  toolchainSummary,
+  verifyImageToolchain,
+  writeImageToolchainManifest,
+  type ImageHelperRuntimeOptions,
+  type ImageToolchain,
+  type ImageToolchainManifest,
+  type ImageToolchainOptions,
+  type ImageToolchainPreparation,
+  type ImageToolchainPreparationOptions,
+  type NativeToolManifest,
+  type OptionalEnhancements
+} from './image-toolchain';
 import { resolveHarnessPaths, type PathOptions } from './config';
-import { isRegularFile } from './files';
-import { pathExists } from './project';
-import { resolveExecutable } from './executable';
 import { commandFailure, runCommand, withoutCredentials, type CommandRunner } from './process';
 
-export const IMAGE_MAGICK_VERSION = '7.1.2-29';
-export const FREE_TEX_PACKER_VERSION = '0.3.9';
-export const OXIPNG_VERSION = '10.2.0';
-export const ASSET_WORKSHOP_PRESET_ID = 'asset-workshop';
-export const IMAGE_WORKSHOP_MANIFEST_FORMAT = 1;
+export {
+  ASSET_WORKSHOP_PRESET_ID,
+  FREE_TEX_PACKER_VERSION,
+  IMAGE_MAGICK_VERSION,
+  IMAGE_WORKSHOP_MANIFEST_FORMAT,
+  OXIPNG_VERSION,
+  ImageWorkshopError,
+  detectOptionalEnhancements,
+  ensureImageHelperRuntime,
+  prepareImageToolchain,
+  resolveImageToolchain,
+  toolchainManifestForRoot,
+  toolchainSummary,
+  verifyImageToolchain,
+  writeImageToolchainManifest
+};
+export type {
+  ImageHelperRuntimeOptions,
+  ImageToolchain,
+  ImageToolchainManifest,
+  ImageToolchainOptions,
+  ImageToolchainPreparation,
+  ImageToolchainPreparationOptions,
+  NativeToolManifest,
+  OptionalEnhancements
+};
 
-const FREE_TEX_PACKAGE = 'free-tex-packer-core';
-const DEFAULT_TOOLCHAIN_RELATIVE = join('rpgmaker-mv', 'image-workshop');
-const IMAGE_MANIFEST_NAME = 'toolchain.json';
 const DEFAULT_MAX_PIXELS = 16_777_216;
 const DEFAULT_TIMEOUT_MS = 120_000;
+const FREE_TEX_PACKAGE = 'free-tex-packer-core';
 const RESOURCE_ARGS = [
   '-limit', 'memory', '256MiB',
   '-limit', 'map', '512MiB',
@@ -29,69 +69,12 @@ const RESOURCE_ARGS = [
 ];
 const PNG_DETERMINISM_ARGS = ['-define', 'png:exclude-chunk=date,time'];
 
-export interface OptionalEnhancements {
-  aseprite?: string;
-  texturePacker?: string;
-  photoshop?: string;
+export interface AtlasPackFile {
+  name: string;
+  buffer: Buffer;
 }
 
-export interface ImageToolchainManifest {
-  format: number;
-  imageMagick: {
-    path: string;
-    version: string;
-    sha256?: string;
-  };
-  helperRoot: string;
-  optionalEnhancements?: OptionalEnhancements;
-  oxipng?: {
-    path: string;
-    version: string;
-    sha256?: string;
-  };
-}
-
-export interface ImageToolchain {
-  toolchainRoot: string;
-  manifestPath: string;
-  imageMagick: string;
-  imageMagickVersion: string;
-  helperRoot: string;
-  helperPackagePath: string;
-  helperPackageVersion: string;
-  oxipng?: string;
-  oxipngVersion?: string;
-  optionalEnhancements: OptionalEnhancements;
-}
-
-export interface ImageToolchainOptions extends PathOptions {
-  toolchainRoot?: string;
-  manifestPath?: string;
-  imageMagickExecutable?: string;
-  helperRoot?: string;
-  oxipngExecutable?: string;
-  verifyOxipng?: boolean;
-  commandRunner?: CommandRunner;
-}
-
-export interface ImageHelperRuntimeOptions extends ImageToolchainOptions {
-  helperRuntimeDir?: string;
-  bunExecutable?: string;
-  now?: () => Date;
-}
-
-export interface ImageToolchainPreparationOptions extends ImageToolchainOptions {
-  helperRuntimeDir?: string;
-  bunExecutable?: string;
-  now?: () => Date;
-  imageMagickSha256?: string;
-  oxipngSha256?: string;
-}
-
-export interface ImageToolchainPreparation {
-  toolchain: ImageToolchain;
-  helperRuntimeDir: string;
-}
+export type AtlasPackAsync = (files: Array<{ path: string; contents: Buffer }>, config: Record<string, unknown>) => Promise<AtlasPackFile[]>;
 
 export interface ImageWorkshopDependencies {
   commandRunner?: CommandRunner;
@@ -99,9 +82,12 @@ export interface ImageWorkshopDependencies {
   env?: Record<string, string | undefined>;
   timeoutMs?: number;
   maxPixels?: number;
+  /** Test-owned seam; production resolves the pinned helper from helperRoot. */
+  atlasPacker?: AtlasPackAsync;
 }
 
 export interface ImageMetadata {
+  kind?: 'image';
   path: string;
   width: number;
   height: number;
@@ -113,6 +99,16 @@ export interface ImageMetadata {
   sha256: string;
 }
 
+export interface FileArtifactMetadata {
+  kind: 'json';
+  path: string;
+  format: 'JSON';
+  bytes: number;
+  sha256: string;
+}
+
+export type ImageArtifact = ImageMetadata | FileArtifactMetadata;
+
 export interface ImageOperationResult {
   operation: string;
   outputPaths: string[];
@@ -121,18 +117,14 @@ export interface ImageOperationResult {
 }
 
 export interface ImageOperationManifest {
-  schemaVersion: 1;
+  schemaVersion: 2;
   operation: string;
-  toolchain: {
-    imageMagick: { path: string; version: string };
-    freeTexPacker: { root: string; version: string };
-    oxipng?: { path: string; version: string };
-    optionalEnhancements: OptionalEnhancements;
-  };
+  toolchain: ReturnType<typeof toolchainSummary>;
   inputs: ImageMetadata[];
-  outputs: ImageMetadata[];
+  outputs: ImageArtifact[];
   options: Record<string, unknown>;
   fidelity: Record<string, unknown>;
+  verificationLevel: 'decoded-pixels' | 'representative-pixels' | 'metadata-only';
   lossless: boolean;
 }
 
@@ -181,324 +173,10 @@ export interface OptimizePngOptions {
   level?: number;
 }
 
-export class ImageWorkshopError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ImageWorkshopError';
-  }
-}
-
 type JsonObject = Record<string, unknown>;
 
 function asObject(value: unknown): JsonObject | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : undefined;
-}
-
-async function readJson(path: string): Promise<JsonObject | undefined> {
-  try {
-    return asObject(JSON.parse(await readFile(path, 'utf8')));
-  } catch {
-    return undefined;
-  }
-}
-
-function imageToolchainRoot(options: ImageToolchainOptions): string {
-  const paths = resolveHarnessPaths(options);
-  const env = options.env ?? process.env;
-  return resolve(options.toolchainRoot ?? env.DSH_IMAGE_WORKSHOP_ROOT ?? join(paths.dshHome, DEFAULT_TOOLCHAIN_RELATIVE));
-}
-
-function manifestPathFor(options: ImageToolchainOptions, root: string): string {
-  const env = options.env ?? process.env;
-  return resolve(options.manifestPath ?? env.DSH_IMAGE_WORKSHOP_MANIFEST ?? join(root, IMAGE_MANIFEST_NAME));
-}
-
-function absoluteConfiguredPath(value: unknown, label: string): string | undefined {
-  if (typeof value !== 'string' || value.length === 0) return undefined;
-  const result = resolve(value);
-  if (!result || result !== value && !value.startsWith('\\\\') && !/^[A-Za-z]:[\\/]/.test(value) && !value.startsWith('/')) {
-    throw new ImageWorkshopError(`${label} must be an absolute path; PATH lookup is not allowed for pinned image tools.`);
-  }
-  return result;
-}
-
-function requireVersion(value: unknown, expected: string, label: string): void {
-  if (value !== expected) throw new ImageWorkshopError(`${label} is ${String(value ?? 'missing')}; expected pinned ${expected}.`);
-}
-
-function parseImageMagickVersion(output: string): string | undefined {
-  return output.match(/ImageMagick\s+(\d+\.\d+\.\d+-\d+)/i)?.[1];
-}
-
-function parseOxipngVersion(output: string): string | undefined {
-  return output.match(/oxipng\s+v?(\d+\.\d+\.\d+)/i)?.[1] ?? output.match(/\bv?(\d+\.\d+\.\d+)\b/)?.[1];
-}
-
-function normalizeSha256(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-async function sha256File(path: string): Promise<string> {
-  const hash = createHash('sha256');
-  hash.update(await readFile(path));
-  return hash.digest('hex');
-}
-
-async function commandVersion(
-  runner: CommandRunner,
-  command: string,
-  args: string[],
-  options: ImageToolchainOptions,
-  label: string
-): Promise<string> {
-  let result;
-  try {
-    result = await runner(command, args, {
-      env: withoutCredentials(options.env ?? process.env),
-      platform: options.platform ?? process.platform,
-      timeoutMs: 30_000
-    });
-  } catch (error) {
-    throw new ImageWorkshopError(`${label} could not start at ${command}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (result.exitCode !== 0) throw new ImageWorkshopError(commandFailure(command, args, result, options.env ?? process.env).message);
-  return `${result.stdout}\n${result.stderr}`;
-}
-
-async function verifyPinnedFile(path: string, label: string, expectedHash?: string): Promise<void> {
-  if (!(await isRegularFile(path))) throw new ImageWorkshopError(`${label} was not found at resolved path ${path}. Install or repair the app-owned image toolchain.`);
-  if (expectedHash) {
-    const actual = await sha256File(path);
-    if (normalizeSha256(actual) !== normalizeSha256(expectedHash)) {
-      throw new ImageWorkshopError(`${label} checksum does not match the tool manifest at ${path}.`);
-    }
-  }
-}
-
-async function helperPackageInfo(helperRoot: string): Promise<{ path: string; version: string }> {
-  const path = join(helperRoot, 'node_modules', FREE_TEX_PACKAGE, 'package.json');
-  const packageJson = await readJson(path);
-  const version = typeof packageJson?.version === 'string' ? packageJson.version : undefined;
-  requireVersion(version, FREE_TEX_PACKER_VERSION, `${FREE_TEX_PACKAGE} in ${helperRoot}`);
-  return { path, version: version! };
-}
-
-async function firstExecutable(names: string[], options: { platform: string; env: Record<string, string | undefined> }): Promise<string | undefined> {
-  for (const name of names) {
-    const found = await resolveExecutable(name, options);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-export async function detectOptionalEnhancements(options: {
-  platform?: string;
-  env?: Record<string, string | undefined>;
-  asepriteExecutable?: string;
-  texturePackerExecutable?: string;
-  photoshopExecutable?: string;
-} = {}): Promise<OptionalEnhancements> {
-  const platform = options.platform ?? process.platform;
-  const env = options.env ?? process.env;
-  const resolveConfigured = async (configured: string | undefined, names: string[]): Promise<string | undefined> => {
-    if (configured) {
-      const path = absoluteConfiguredPath(configured, 'Optional application executable');
-      return path && await isRegularFile(path) ? path : undefined;
-    }
-    return firstExecutable(names, { platform, env });
-  };
-  const [aseprite, texturePacker, photoshop] = await Promise.all([
-    resolveConfigured(options.asepriteExecutable ?? env.ASEPRITE_EXECUTABLE, platform === 'win32' ? ['aseprite.exe', 'aseprite'] : ['aseprite']),
-    resolveConfigured(options.texturePackerExecutable ?? env.TEXTUREPACKER_EXECUTABLE, platform === 'win32' ? ['TexturePacker.exe', 'TexturePacker'] : ['TexturePacker']),
-    resolveConfigured(options.photoshopExecutable ?? env.PHOTOSHOP_EXECUTABLE, platform === 'win32' ? ['Photoshop.exe', 'Photoshop'] : ['Photoshop'])
-  ]);
-  return {
-    ...(aseprite ? { aseprite } : {}),
-    ...(texturePacker ? { texturePacker } : {}),
-    ...(photoshop ? { photoshop } : {})
-  };
-}
-
-export async function resolveImageToolchain(options: ImageToolchainOptions = {}): Promise<ImageToolchain> {
-  const platform = options.platform ?? process.platform;
-  const env = options.env ?? process.env;
-  const runner = options.commandRunner ?? runCommand;
-  const toolchainRoot = imageToolchainRoot(options);
-  const manifestPath = manifestPathFor(options, toolchainRoot);
-  const manifest = await readJson(manifestPath);
-  const manifestImage = asObject(manifest?.imageMagick);
-  const manifestOxipng = asObject(manifest?.oxipng);
-  if (manifest && manifest.format !== IMAGE_WORKSHOP_MANIFEST_FORMAT) {
-    throw new ImageWorkshopError(`Image tool manifest ${manifestPath} has unsupported format ${String(manifest.format)}.`);
-  }
-
-  const configuredImage = options.imageMagickExecutable ?? env.DSH_IMAGE_MAGICK ?? manifestImage?.path;
-  const imageMagick = absoluteConfiguredPath(configuredImage, 'ImageMagick executable');
-  if (!imageMagick) throw new ImageWorkshopError(`Pinned ImageMagick ${IMAGE_MAGICK_VERSION} is not configured. Provide an app-owned tool manifest at ${manifestPath}.`);
-  await verifyPinnedFile(imageMagick, 'ImageMagick', typeof manifestImage?.sha256 === 'string' ? manifestImage.sha256 : undefined);
-  if (!/^magick(?:\.exe)?$/i.test(basename(imageMagick))) {
-    throw new ImageWorkshopError(`ImageMagick must resolve to magick or magick.exe, not ${basename(imageMagick)}; the convert alias is not accepted.`);
-  }
-  const imageVersionOutput = await commandVersion(runner, imageMagick, ['--version'], options, 'ImageMagick');
-  const parsedImageMagickVersion = parseImageMagickVersion(imageVersionOutput);
-  requireVersion(parsedImageMagickVersion, IMAGE_MAGICK_VERSION, 'ImageMagick');
-  const imageMagickVersion = parsedImageMagickVersion!;
-  if (typeof manifestImage?.version === 'string') requireVersion(manifestImage.version, IMAGE_MAGICK_VERSION, 'ImageMagick manifest pin');
-
-  const configuredHelper = options.helperRoot ?? env.DSH_IMAGE_HELPER_ROOT ?? manifest?.helperRoot;
-  const helperRoot = absoluteConfiguredPath(configuredHelper, 'Image helper root') ?? toolchainRoot;
-  const helper = await helperPackageInfo(helperRoot);
-
-  const configuredOxipng = options.oxipngExecutable ?? env.DSH_OXIPNG ?? manifestOxipng?.path;
-  let oxipng: string | undefined;
-  let oxipngVersion: string | undefined;
-  if (configuredOxipng) {
-    oxipng = absoluteConfiguredPath(configuredOxipng, 'oxipng executable');
-    if (!oxipng) throw new ImageWorkshopError('oxipng was configured but its path is empty.');
-    await verifyPinnedFile(oxipng, 'oxipng', typeof manifestOxipng?.sha256 === 'string' ? manifestOxipng.sha256 : undefined);
-    if (!/^oxipng(?:\.exe)?$/i.test(basename(oxipng))) throw new ImageWorkshopError(`oxipng must resolve to oxipng or oxipng.exe, not ${basename(oxipng)}.`);
-    if (typeof manifestOxipng?.version === 'string') requireVersion(manifestOxipng.version, OXIPNG_VERSION, 'oxipng manifest pin');
-    if (options.verifyOxipng) {
-      const oxipngOutput = await commandVersion(runner, oxipng, ['--version'], options, 'oxipng');
-      oxipngVersion = parseOxipngVersion(oxipngOutput);
-      requireVersion(oxipngVersion, OXIPNG_VERSION, 'oxipng');
-    } else if (typeof manifestOxipng?.version === 'string') {
-      oxipngVersion = manifestOxipng.version;
-    }
-  }
-
-  const optionalEnhancements = await detectOptionalEnhancements({ platform, env });
-  return {
-    toolchainRoot,
-    manifestPath,
-    imageMagick,
-    imageMagickVersion,
-    helperRoot,
-    helperPackagePath: helper.path,
-    helperPackageVersion: helper.version,
-    ...(oxipng ? { oxipng } : {}),
-    ...(oxipngVersion ? { oxipngVersion } : {}),
-    optionalEnhancements
-  };
-}
-
-export const verifyImageToolchain = resolveImageToolchain;
-
-function imageToolchainManifest(toolchain: ImageToolchain, options: ImageToolchainPreparationOptions): ImageToolchainManifest {
-  const result: ImageToolchainManifest = {
-    format: IMAGE_WORKSHOP_MANIFEST_FORMAT,
-    imageMagick: {
-      path: toolchain.imageMagick,
-      version: IMAGE_MAGICK_VERSION,
-      ...(options.imageMagickSha256 ? { sha256: options.imageMagickSha256 } : {})
-    },
-    helperRoot: toolchain.helperRoot,
-    optionalEnhancements: toolchain.optionalEnhancements
-  };
-  if (toolchain.oxipng) {
-    result.oxipng = {
-      path: toolchain.oxipng,
-      version: OXIPNG_VERSION,
-      ...(options.oxipngSha256 ? { sha256: options.oxipngSha256 } : {})
-    };
-  }
-  return result;
-}
-
-export async function writeImageToolchainManifest(toolchain: ImageToolchain, options: ImageToolchainPreparationOptions = {}): Promise<string> {
-  const manifest = imageToolchainManifest(toolchain, options);
-  await mkdir(dirname(toolchain.manifestPath), { recursive: true });
-  await writeFile(toolchain.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  return toolchain.manifestPath;
-}
-
-function helperPackageVersionAt(root: string): Promise<string | undefined> {
-  return readJson(join(root, 'node_modules', FREE_TEX_PACKAGE, 'package.json')).then((value) => typeof value?.version === 'string' ? value.version : undefined);
-}
-
-async function runHelperInstall(
-  runner: CommandRunner,
-  bun: string,
-  cwd: string,
-  env: Record<string, string | undefined>
-): Promise<void> {
-  const packageSpec = `${FREE_TEX_PACKAGE}@${FREE_TEX_PACKER_VERSION}`;
-  let result;
-  try {
-    result = await runner(bun, ['add', '--exact', '--ignore-scripts', packageSpec], { cwd, env: withoutCredentials(env), timeoutMs: 15 * 60_000 });
-  } catch (error) {
-    throw new ImageWorkshopError(`Pinned image helper installation could not start: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (result.exitCode !== 0) throw new ImageWorkshopError(commandFailure(bun, ['add', '--exact', '--ignore-scripts', packageSpec], result, env).message);
-  try {
-    result = await runner(bun, ['pm', 'trust', '--all'], { cwd, env: withoutCredentials(env), timeoutMs: 15 * 60_000 });
-  } catch (error) {
-    throw new ImageWorkshopError(`Image helper native dependency trust could not start: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (result.exitCode !== 0) throw new ImageWorkshopError(commandFailure(bun, ['pm', 'trust', '--all'], result, env).message);
-}
-
-export async function ensureImageHelperRuntime(options: ImageHelperRuntimeOptions = {}): Promise<string> {
-  const paths = resolveHarnessPaths(options);
-  const env = options.env ?? process.env;
-  const runtimeDir = resolve(options.helperRuntimeDir ?? options.helperRoot ?? join(paths.dshHome, DEFAULT_TOOLCHAIN_RELATIVE, 'runtime'));
-  if (await helperPackageVersionAt(runtimeDir) === FREE_TEX_PACKER_VERSION) return runtimeDir;
-
-  const stamp = (options.now ?? (() => new Date()))().toISOString().replace(/[-:.TZ]/g, '');
-  const staging = join(dirname(runtimeDir), `.${basename(runtimeDir)}.staging-${stamp}-${randomUUID()}`);
-  let rollbackDir: string | undefined;
-  await mkdir(staging, { recursive: true });
-  await writeFile(join(staging, 'package.json'), `${JSON.stringify({
-    name: 'dsh-rpgmaker-image-runtime',
-    private: true,
-    dependencies: { [FREE_TEX_PACKAGE]: FREE_TEX_PACKER_VERSION }
-  }, null, 2)}\n`);
-  const runner = options.commandRunner ?? runCommand;
-  const bun = options.bunExecutable ?? env.BUN_EXECUTABLE ?? 'bun';
-  try {
-    await runHelperInstall(runner, bun, staging, env);
-    const stagedVersion = await helperPackageVersionAt(staging);
-    requireVersion(stagedVersion, FREE_TEX_PACKER_VERSION, 'staged image helper');
-    await mkdir(dirname(runtimeDir), { recursive: true });
-    if (await pathExists(runtimeDir)) {
-      rollbackDir = `${runtimeDir}.rollback-${stamp}-${randomUUID()}`;
-      await rename(runtimeDir, rollbackDir);
-    }
-    try {
-      await rename(staging, runtimeDir);
-    } catch (error) {
-      if (rollbackDir && await pathExists(rollbackDir) && !(await pathExists(runtimeDir))) {
-        await rename(rollbackDir, runtimeDir);
-      }
-      throw error;
-    }
-    return runtimeDir;
-  } catch (error) {
-    await rm(staging, { recursive: true, force: true });
-    if (error instanceof ImageWorkshopError) throw error;
-    throw new ImageWorkshopError(`Pinned image helper installation failed: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-export async function prepareImageToolchain(options: ImageToolchainPreparationOptions = {}): Promise<ImageToolchainPreparation> {
-  const helperRuntimeDir = await ensureImageHelperRuntime(options);
-  const toolchainRoot = imageToolchainRoot(options);
-  const toolchain = await resolveImageToolchain({
-    ...options,
-    toolchainRoot,
-    helperRoot: helperRuntimeDir
-  });
-  await writeImageToolchainManifest(toolchain, options);
-  return { toolchain, helperRuntimeDir };
-}
-
-function toolchainSummary(toolchain: ImageToolchain): ImageOperationManifest['toolchain'] {
-  return {
-    imageMagick: { path: toolchain.imageMagick, version: toolchain.imageMagickVersion },
-    freeTexPacker: { root: toolchain.helperRoot, version: toolchain.helperPackageVersion },
-    ...(toolchain.oxipng && toolchain.oxipngVersion ? { oxipng: { path: toolchain.oxipng, version: toolchain.oxipngVersion } } : {}),
-    optionalEnhancements: toolchain.optionalEnhancements
-  };
 }
 
 function numberOption(value: number | undefined, label: string, minimum = 1): number | undefined {
@@ -516,29 +194,188 @@ function resolvedInput(path: string, label = 'Input'): string {
   return resolve(path);
 }
 
-async function assertInput(path: string): Promise<void> {
-  if (!(await isRegularFile(path))) throw new ImageWorkshopError(`Input image does not exist or is not a regular file: ${path}`);
-}
-
-async function assertOutputPaths(outputs: string[], inputs: string[]): Promise<void> {
-  const inputSet = new Set(inputs.map((value) => resolve(value)));
-  const seen = new Set<string>();
-  for (const output of outputs) {
-    const normalized = resolve(output);
-    if (inputSet.has(normalized)) throw new ImageWorkshopError(`Refusing to overwrite source image: ${normalized}`);
-    if (seen.has(normalized)) throw new ImageWorkshopError(`Output paths collide with one another: ${normalized}`);
-    seen.add(normalized);
-    if (await pathExists(normalized)) throw new ImageWorkshopError(`Refusing to overwrite existing output: ${normalized}`);
-  }
-  for (const output of outputs) await mkdir(dirname(output), { recursive: true });
-}
-
 function manifestPathForOutput(output: string): string {
   return `${output}.manifest.json`;
 }
 
-async function removeCreated(paths: string[]): Promise<void> {
-  await Promise.all(paths.map((path) => rm(path, { force: true }).catch(() => undefined)));
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash('sha256');
+  hash.update(await readFile(path));
+  return hash.digest('hex');
+}
+
+function samePath(left: string, right: string): boolean {
+  const a = resolve(left);
+  const b = resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function pathWithin(parent: string, child: string): boolean {
+  const remainder = relative(resolve(parent), resolve(child));
+  return remainder === '' || (!remainder.startsWith(`..${sep}`) && remainder !== '..');
+}
+
+async function canonicalParent(path: string, label: string): Promise<string> {
+  const parent = resolve(dirname(path));
+  await mkdir(parent, { recursive: true });
+  let canonical: string;
+  try {
+    canonical = await realpath(parent);
+  } catch (error) {
+    throw new ImageWorkshopError(`${label} parent could not be canonicalized: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  // macOS exposes /var as a system alias for /private/var. Treat that fixed
+  // system prefix as the approved temp parent, but reject user-created links
+  // below it (and reject links everywhere else).
+  const lexicalTemp = resolve(tmpdir());
+  const canonicalTemp = await realpath(lexicalTemp);
+  const expectedTempPath = pathWithin(lexicalTemp, parent)
+    ? resolve(canonicalTemp, relative(lexicalTemp, parent))
+    : parent;
+  if (!samePath(expectedTempPath, canonical)) throw new ImageWorkshopError(`${label} parent resolves through a symlink or junction; refusing a path escape: ${parent}`);
+  return canonical;
+}
+
+async function assertSafeInput(path: string): Promise<{ path: string; realPath: string }> {
+  const normalized = resolve(path);
+  let info;
+  try {
+    info = await lstat(normalized);
+  } catch {
+    throw new ImageWorkshopError(`Input image does not exist or is not a regular file: ${normalized}`);
+  }
+  if (info.isSymbolicLink() || !info.isFile()) throw new ImageWorkshopError(`Input image must be a regular non-symlink file: ${normalized}`);
+  await canonicalParent(normalized, 'Input');
+  const realPath = await realpath(normalized);
+  return { path: normalized, realPath };
+}
+
+async function assertOutputDoesNotExist(path: string, inputs: string[], label = 'Output'): Promise<void> {
+  const normalized = resolve(path);
+  await canonicalParent(normalized, label);
+  const sourceRealPaths = await Promise.all(inputs.map(async (input) => (await assertSafeInput(input)).realPath));
+  if (inputs.some((input) => samePath(resolve(input), normalized)) || sourceRealPaths.some((source) => samePath(source, normalized))) throw new ImageWorkshopError(`Refusing to overwrite source image: ${normalized}`);
+  let info;
+  try {
+    info = await lstat(normalized);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') info = undefined;
+    else throw new ImageWorkshopError(`${label} could not be checked: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (info) throw new ImageWorkshopError(`Refusing to overwrite existing output: ${normalized}`);
+}
+
+interface FileOperation {
+  finalParent: string;
+  tempDir: string;
+  finalPaths: string[];
+}
+
+async function beginFileOperation(outputs: string[], inputs: string[]): Promise<FileOperation> {
+  const finalPaths = outputs.map((path) => resolve(path));
+  if (new Set(finalPaths.map((path) => process.platform === 'win32' ? path.toLowerCase() : path)).size !== finalPaths.length) {
+    throw new ImageWorkshopError('Output paths collide with one another.');
+  }
+  const parents = await Promise.all(finalPaths.map((path) => canonicalParent(path, 'Output')));
+  if (parents.some((parent) => !samePath(parent, parents[0]))) throw new ImageWorkshopError('One image operation must use one output directory.');
+  for (const path of finalPaths) await assertOutputDoesNotExist(path, inputs, 'Output');
+  const tempDir = await mkdtemp(join(parents[0], `.dsh-image-operation-${randomUUID()}-`));
+  const tempReal = await realpath(tempDir);
+  if (!samePath(tempDir, tempReal)) {
+    await rm(tempDir, { recursive: true, force: true });
+    throw new ImageWorkshopError('Operation temporary directory resolves through a symlink or junction.');
+  }
+  return { finalParent: parents[0], tempDir, finalPaths };
+}
+
+async function beginDirectoryOperation(outputDirInput: string, inputs: string[]): Promise<FileOperation & { outputDir: string }> {
+  const outputDir = resolve(outputDirInput);
+  const parent = await canonicalParent(outputDir, 'Output directory');
+  let existing;
+  try {
+    existing = await lstat(outputDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  if (existing) throw new ImageWorkshopError(`Refusing to overwrite existing output directory: ${outputDir}`);
+  const sourceRealPaths = await Promise.all(inputs.map(async (input) => (await assertSafeInput(input)).realPath));
+  if (sourceRealPaths.some((source) => samePath(source, outputDir))) throw new ImageWorkshopError(`Output directory cannot be the source path: ${outputDir}`);
+  const tempDir = await mkdtemp(join(parent, `.${basename(outputDir)}.dsh-staging-${randomUUID()}-`));
+  const tempReal = await realpath(tempDir);
+  if (!samePath(tempDir, tempReal)) {
+    await rm(tempDir, { recursive: true, force: true });
+    throw new ImageWorkshopError('Operation temporary directory resolves through a symlink or junction.');
+  }
+  return { finalParent: parent, tempDir, finalPaths: [], outputDir };
+}
+
+async function assertOperationParent(operation: FileOperation, label: string): Promise<void> {
+  const current = await realpath(operation.finalParent);
+  if (!samePath(current, operation.finalParent)) throw new ImageWorkshopError(`${label} parent changed through a symlink or junction during the operation.`);
+}
+
+async function assertStageFile(path: string): Promise<void> {
+  const info = await lstat(path).catch(() => undefined);
+  if (!info?.isFile() || info.isSymbolicLink()) throw new ImageWorkshopError(`Operation did not produce a regular staged file: ${path}`);
+}
+
+async function commitFiles(operation: FileOperation, entries: Array<{ finalPath: string; stagedPath: string }>): Promise<void> {
+  try {
+    await assertOperationParent(operation, 'Output');
+    for (const entry of entries) {
+      await assertStageFile(entry.stagedPath);
+      await assertOutputDoesNotExist(entry.finalPath, [], 'Output');
+    }
+    // Hard-linking a verified staged file is an exclusive, no-clobber commit.
+    // It avoids a pathExists-then-write race without introducing a lock layer.
+    for (const entry of entries) {
+      try {
+        await link(entry.stagedPath, entry.finalPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new ImageWorkshopError(`Output appeared during commit; refusing to overwrite the racing path: ${entry.finalPath}`);
+        throw error;
+      }
+      await unlink(entry.stagedPath);
+    }
+    await rm(operation.tempDir, { recursive: true, force: true });
+  } catch (error) {
+    await rm(operation.tempDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function commitDirectory(operation: FileOperation & { outputDir: string }): Promise<void> {
+  try {
+    await assertOperationParent(operation, 'Output directory');
+    let existing;
+    try {
+      existing = await lstat(operation.outputDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (existing) throw new ImageWorkshopError(`Output directory appeared during commit; refusing to overwrite it: ${operation.outputDir}`);
+    try {
+      await rename(operation.tempDir, operation.outputDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST' || (error as NodeJS.ErrnoException).code === 'ENOTEMPTY') {
+        throw new ImageWorkshopError(`Output directory appeared during commit; refusing to overwrite it: ${operation.outputDir}`);
+      }
+      throw error;
+    }
+  } catch (error) {
+    await rm(operation.tempDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function removeOperation(operation: FileOperation): Promise<void> {
+  await rm(operation.tempDir, { recursive: true, force: true }).catch(() => undefined);
+}
+
+interface PixelGrid {
+  width: number;
+  height: number;
+  pixels: string[];
 }
 
 function parseInfo(text: string, path: string): { width: number; height: number; format: string; channels: string; opaque: boolean } {
@@ -553,12 +390,6 @@ function parseInfo(text: string, path: string): { width: number; height: number;
     throw new ImageWorkshopError(`ImageMagick returned malformed metadata for ${path}.`);
   }
   return { width, height, format, channels, opaque: /^true$/i.test(opaqueValue) };
-}
-
-interface PixelGrid {
-  width: number;
-  height: number;
-  pixels: string[];
 }
 
 function parsePixelGrid(text: string, path: string): PixelGrid {
@@ -587,31 +418,20 @@ function alphaBounds(grid: PixelGrid): { left: number; top: number; right: numbe
   let top = grid.height;
   let right = -1;
   let bottom = -1;
-  for (let y = 0; y < grid.height; y += 1) {
-    for (let x = 0; x < grid.width; x += 1) {
-      if (alphaValue(grid.pixels[y * grid.width + x]) > 0) {
-        left = Math.min(left, x);
-        top = Math.min(top, y);
-        right = Math.max(right, x);
-        bottom = Math.max(bottom, y);
-      }
+  for (let y = 0; y < grid.height; y += 1) for (let x = 0; x < grid.width; x += 1) {
+    if (alphaValue(grid.pixels[y * grid.width + x]) > 0) {
+      left = Math.min(left, x);
+      top = Math.min(top, y);
+      right = Math.max(right, x);
+      bottom = Math.max(bottom, y);
     }
   }
   return right < 0 ? undefined : { left, top, right, bottom };
 }
 
-function assertSameGrid(actual: PixelGrid, expected: PixelGrid, label: string): void {
-  if (actual.width !== expected.width || actual.height !== expected.height) throw new ImageWorkshopError(`${label} fidelity check failed: dimensions differ.`);
-  for (let index = 0; index < actual.pixels.length; index += 1) {
-    if (actual.pixels[index] !== expected.pixels[index]) throw new ImageWorkshopError(`${label} fidelity check failed at pixel ${index}.`);
-  }
-}
-
 function cropGrid(source: PixelGrid, left: number, top: number, width: number, height: number): PixelGrid {
   const pixels: string[] = [];
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) pixels.push(source.pixels[(top + y) * source.width + left + x]);
-  }
+  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) pixels.push(source.pixels[(top + y) * source.width + left + x]);
   return { width, height, pixels };
 }
 
@@ -619,18 +439,21 @@ function placeGrid(source: PixelGrid, width: number, height: number, gravity: No
   const pixels = new Array<string>(width * height).fill('00000000');
   const horizontalCenter = Math.floor((width - source.width) / 2);
   const verticalCenter = Math.floor((height - source.height) / 2);
-  const left = gravity.endsWith('east') || gravity === 'east' || gravity === 'northeast' || gravity === 'southeast'
-    ? width - source.width
-    : gravity.endsWith('west') || gravity === 'west' || gravity === 'northwest' || gravity === 'southwest'
-      ? 0
-      : horizontalCenter;
-  const top = gravity.startsWith('south') || gravity === 'south' || gravity === 'southeast' || gravity === 'southwest'
-    ? height - source.height
-    : gravity.startsWith('north') || gravity === 'north' || gravity === 'northeast' || gravity === 'northwest'
-      ? 0
-      : verticalCenter;
+  const left = gravity.endsWith('east') || gravity === 'east' ? width - source.width : gravity.endsWith('west') || gravity === 'west' ? 0 : horizontalCenter;
+  const top = gravity.startsWith('south') || gravity === 'south' ? height - source.height : gravity.startsWith('north') || gravity === 'north' ? 0 : verticalCenter;
   for (let y = 0; y < source.height; y += 1) for (let x = 0; x < source.width; x += 1) pixels[(top + y) * width + left + x] = source.pixels[y * source.width + x];
   return { width, height, pixels };
+}
+
+function assertSameGrid(actual: PixelGrid, expected: PixelGrid, label: string): void {
+  if (actual.width !== expected.width || actual.height !== expected.height) throw new ImageWorkshopError(`${label} fidelity check failed: dimensions differ.`);
+  for (let index = 0; index < actual.pixels.length; index += 1) if (actual.pixels[index] !== expected.pixels[index]) throw new ImageWorkshopError(`${label} fidelity check failed at pixel ${index}.`);
+}
+
+function resizeGrid(source: PixelGrid, scale: number): PixelGrid {
+  const pixels: string[] = [];
+  for (let y = 0; y < source.height; y += 1) for (let sy = 0; sy < scale; sy += 1) for (let x = 0; x < source.width; x += 1) for (let sx = 0; sx < scale; sx += 1) pixels.push(source.pixels[y * source.width + x]);
+  return { width: source.width * scale, height: source.height * scale, pixels };
 }
 
 function assembleGrid(inputs: PixelGrid[], columns: number): PixelGrid {
@@ -638,49 +461,27 @@ function assembleGrid(inputs: PixelGrid[], columns: number): PixelGrid {
   const cellHeight = inputs[0].height;
   const rows = inputs.length / columns;
   const pixels: string[] = [];
-  for (let row = 0; row < rows; row += 1) {
-    for (let y = 0; y < cellHeight; y += 1) {
-      for (let column = 0; column < columns; column += 1) {
-        const source = inputs[row * columns + column];
-        pixels.push(...source.pixels.slice(y * cellWidth, (y + 1) * cellWidth));
-      }
-    }
+  for (let row = 0; row < rows; row += 1) for (let y = 0; y < cellHeight; y += 1) for (let column = 0; column < columns; column += 1) {
+    const source = inputs[row * columns + column];
+    pixels.push(...source.pixels.slice(y * cellWidth, (y + 1) * cellWidth));
   }
   return { width: cellWidth * columns, height: cellHeight * rows, pixels };
-}
-
-function resizeGrid(source: PixelGrid, scale: number): PixelGrid {
-  const pixels: string[] = [];
-  for (let y = 0; y < source.height; y += 1) {
-    for (let sy = 0; sy < scale; sy += 1) {
-      for (let x = 0; x < source.width; x += 1) {
-        for (let sx = 0; sx < scale; sx += 1) pixels.push(source.pixels[y * source.width + x]);
-      }
-    }
-  }
-  return { width: source.width * scale, height: source.height * scale, pixels };
 }
 
 function fixedGridFrames(width: number, height: number, cellWidth: number, cellHeight: number): Array<{ index: number; x: number; y: number; width: number; height: number }> {
   const frames: Array<{ index: number; x: number; y: number; width: number; height: number }> = [];
   let index = 0;
-  for (let y = 0; y < height; y += cellHeight) {
-    for (let x = 0; x < width; x += cellWidth) frames.push({ index: index++, x, y, width: cellWidth, height: cellHeight });
-  }
+  for (let y = 0; y < height; y += cellHeight) for (let x = 0; x < width; x += cellWidth) frames.push({ index: index++, x, y, width: cellWidth, height: cellHeight });
   return frames;
 }
 
-async function inspectWith(
-  toolchain: ImageToolchain,
-  pathInput: string,
-  dependencies: ImageWorkshopDependencies
-): Promise<ImageMetadata> {
-  const path = resolve(pathInput);
-  await assertInput(path);
+async function inspectWith(toolchain: ImageToolchain, input: string, dependencies: ImageWorkshopDependencies): Promise<ImageMetadata> {
+  const safe = await assertSafeInput(input);
   const runner = dependencies.commandRunner ?? runCommand;
   const env = dependencies.env ?? process.env;
-  let result;
+  const path = safe.path;
   const args = [...RESOURCE_ARGS, path, '-format', '%w|%h|%m|%[channels]|%[opaque]', 'info:'];
+  let result;
   try {
     result = await runner(toolchain.imageMagick, args, {
       env: withoutCredentials(env),
@@ -690,12 +491,13 @@ async function inspectWith(
   } catch (error) {
     throw new ImageWorkshopError(`ImageMagick inspect failed for ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (result.exitCode !== 0) throw new ImageWorkshopError(commandFailure(toolchain.imageMagick, args, result, env).message);
+  if (result.exitCode !== 0) throw new ImageWorkshopError(`ImageMagick inspect failed: ${commandFailure(toolchain.imageMagick, args, result, env).message}`);
   const info = parseInfo(result.stdout, path);
-  const file = await stat(path);
   const maxPixels = dependencies.maxPixels ?? DEFAULT_MAX_PIXELS;
   if (info.width * info.height > maxPixels) throw new ImageWorkshopError(`Image ${path} is ${info.width}x${info.height}; resource limit is ${maxPixels} pixels.`);
+  const file = await stat(path);
   return {
+    kind: 'image',
     path,
     width: info.width,
     height: info.height,
@@ -708,6 +510,31 @@ async function inspectWith(
   };
 }
 
+function finalImageMetadata(metadata: ImageMetadata, path: string): ImageMetadata {
+  return { ...metadata, path, kind: 'image' };
+}
+
+async function jsonMetadata(path: string, finalPath: string): Promise<FileArtifactMetadata> {
+  const file = await stat(path);
+  return { kind: 'json', path: finalPath, format: 'JSON', bytes: file.size, sha256: await sha256File(path) };
+}
+
+async function writeManifestInStage(path: string, manifest: ImageOperationManifest): Promise<void> {
+  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' });
+}
+
+async function readJsonFile(path: string): Promise<JsonObject> {
+  let value: unknown;
+  try {
+    value = JSON.parse(await readFile(path, 'utf8'));
+  } catch (error) {
+    throw new ImageWorkshopError(`Atlas JSON could not be parsed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const object = asObject(value);
+  if (!object) throw new ImageWorkshopError('Atlas JSON must be an object.');
+  return object;
+}
+
 export class ImageWorkshop {
   constructor(
     readonly toolchain: ImageToolchain,
@@ -715,7 +542,7 @@ export class ImageWorkshop {
   ) {}
 
   async inspect(input: string): Promise<ImageMetadata> {
-    return inspectWith(this.toolchain, input, this.dependencies);
+    return inspectWith(this.toolchain, resolvedInput(input), this.dependencies);
   }
 
   private async magick(operation: string, args: string[]): Promise<void> {
@@ -755,28 +582,31 @@ export class ImageWorkshop {
   }
 
   private async finish(
-    operation: string,
+    operation: FileOperation,
+    name: string,
     inputs: ImageMetadata[],
-    outputs: string[],
+    stagedOutputs: Array<{ finalPath: string; stagedPath: string; metadata: ImageArtifact }>,
     options: Record<string, unknown>,
     fidelity: Record<string, unknown>,
+    verificationLevel: ImageOperationManifest['verificationLevel'],
     lossless: boolean
   ): Promise<ImageOperationResult> {
-    const outputMetadata = await Promise.all(outputs.map((path) => this.inspect(path)));
-    const manifestPath = manifestPathForOutput(outputs[0]);
-    await assertOutputPaths([manifestPath], inputs.map((input) => input.path));
+    const manifestPath = manifestPathForOutput(stagedOutputs[0].finalPath);
+    const manifestStage = join(operation.tempDir, basename(manifestPath));
     const manifest: ImageOperationManifest = {
-      schemaVersion: 1,
-      operation,
+      schemaVersion: 2,
+      operation: name,
       toolchain: toolchainSummary(this.toolchain),
       inputs,
-      outputs: outputMetadata,
+      outputs: stagedOutputs.map((entry) => entry.metadata),
       options,
       fidelity,
+      verificationLevel,
       lossless
     };
-    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-    return { operation, outputPaths: outputs, manifestPath, manifest };
+    await writeManifestInStage(manifestStage, manifest);
+    await commitFiles(operation, [...stagedOutputs.map((entry) => ({ finalPath: entry.finalPath, stagedPath: entry.stagedPath })), { finalPath: manifestPath, stagedPath: manifestStage }]);
+    return { operation: name, outputPaths: stagedOutputs.map((entry) => entry.finalPath), manifestPath, manifest };
   }
 
   async resizePixel(options: ResizePixelOptions): Promise<ImageOperationResult> {
@@ -791,34 +621,25 @@ export class ImageWorkshop {
       if (width === undefined || height === undefined) throw new ImageWorkshopError('Pixel resize requires scale or both width and height.');
       const widthScale = width / inputInfo.width;
       const heightScale = height / inputInfo.height;
-      if (!Number.isInteger(widthScale) || widthScale !== heightScale || widthScale < 1) {
-        throw new ImageWorkshopError(`Pixel-safe resize requires one integer scale; requested ${width}x${height} from ${inputInfo.width}x${inputInfo.height}.`);
-      }
+      if (!Number.isInteger(widthScale) || widthScale !== heightScale || widthScale < 1) throw new ImageWorkshopError(`Pixel-safe resize requires one integer scale; requested ${width}x${height} from ${inputInfo.width}x${inputInfo.height}.`);
       scale = widthScale;
     }
     const expectedWidth = inputInfo.width * scale;
     const expectedHeight = inputInfo.height * scale;
     const maxPixels = this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS;
     if (expectedWidth * expectedHeight > maxPixels) throw new ImageWorkshopError(`Pixel resize output would exceed the ${maxPixels}-pixel resource limit.`);
-    if (options.width !== undefined || options.height !== undefined) {
-      if (options.width !== undefined && options.width !== expectedWidth || options.height !== undefined && options.height !== expectedHeight) {
-        throw new ImageWorkshopError('Pixel resize width/height do not match the integer scale.');
-      }
-    }
-    const manifestPath = manifestPathForOutput(output);
-    await assertOutputPaths([output, manifestPath], [input]);
-    const created = [output, manifestPath];
+    if ((options.width !== undefined && options.width !== expectedWidth) || (options.height !== undefined && options.height !== expectedHeight)) throw new ImageWorkshopError('Pixel resize width/height do not match the integer scale.');
+    const operation = await beginFileOperation([output, manifestPathForOutput(output)], [input]);
+    const staged = join(operation.tempDir, basename(output));
     try {
-      await this.magick('pixel resize', [input, ...alphaOption(inputInfo.hasAlpha), '-filter', 'point', '-resize', `${inputInfo.width * scale}x${inputInfo.height * scale}!`, ...PNG_DETERMINISM_ARGS, output]);
-      const outputInfo = await this.inspect(output);
-      if (outputInfo.width !== inputInfo.width * scale || outputInfo.height !== inputInfo.height * scale) throw new ImageWorkshopError('Pixel resize output dimensions did not match the requested integer scale.');
+      await this.magick('pixel resize', [input, ...alphaOption(inputInfo.hasAlpha), '-filter', 'point', '-resize', `${expectedWidth}x${expectedHeight}!`, ...PNG_DETERMINISM_ARGS, staged]);
+      const outputInfo = await this.inspect(staged);
+      if (outputInfo.width !== expectedWidth || outputInfo.height !== expectedHeight) throw new ImageWorkshopError('Pixel resize output dimensions did not match the requested integer scale.');
       if (outputInfo.hasAlpha !== inputInfo.hasAlpha) throw new ImageWorkshopError('Pixel resize changed the source alpha channel.');
-      const expected = resizeGrid(sourceGrid, scale);
-      const actual = await this.pixels(output);
-      assertSameGrid(actual, expected, 'Pixel resize');
-      return await this.finish('resize-pixel', [inputInfo], [output], { scale, filter: 'point', sourceOverwrite: false }, { dimensions: true, alphaPreserved: outputInfo.hasAlpha === inputInfo.hasAlpha, nearestNeighbor: true, pixelsMatch: true }, true);
+      assertSameGrid(await this.pixels(staged), resizeGrid(sourceGrid, scale), 'Pixel resize');
+      return await this.finish(operation, 'resize-pixel', [inputInfo], [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { scale, filter: 'point', sourceOverwrite: false }, { dimensions: true, alphaPreserved: true, nearestNeighbor: true, pixelsMatch: true }, 'decoded-pixels', true);
     } catch (error) {
-      await removeCreated(created);
+      await removeOperation(operation);
       throw error;
     }
   }
@@ -832,35 +653,32 @@ export class ImageWorkshop {
     const width = numberOption(options.width, 'Canvas width');
     const height = numberOption(options.height, 'Canvas height');
     if ((width === undefined) !== (height === undefined)) throw new ImageWorkshopError('Canvas width and height must be supplied together.');
-    const bounds = trim ? alphaBounds(sourceGrid) : undefined;
+    const bounds = trim && inputInfo.hasAlpha ? alphaBounds(sourceGrid) : undefined;
+    const effectiveTrim = trim && inputInfo.hasAlpha && bounds !== undefined;
     const trimmedWidth = bounds ? bounds.right - bounds.left + 1 : inputInfo.width;
     const trimmedHeight = bounds ? bounds.bottom - bounds.top + 1 : inputInfo.height;
     if (width !== undefined && (width < trimmedWidth || height! < trimmedHeight)) throw new ImageWorkshopError(`Transparent padding canvas ${width}x${height} is smaller than the ${trimmedWidth}x${trimmedHeight} trimmed image.`);
-    if (width !== undefined && width * height! > (this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS)) throw new ImageWorkshopError(`Trim/pad output would exceed the ${(this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS)}-pixel resource limit.`);
-    const manifestPath = manifestPathForOutput(output);
-    await assertOutputPaths([output, manifestPath], [input]);
-    const created = [output, manifestPath];
+    const maxPixels = this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS;
+    if (width !== undefined && width * height! > maxPixels) throw new ImageWorkshopError(`Trim/pad output would exceed the ${maxPixels}-pixel resource limit.`);
+    const operation = await beginFileOperation([output, manifestPathForOutput(output)], [input]);
+    const staged = join(operation.tempDir, basename(output));
+    const outputHasAlpha = width !== undefined || inputInfo.hasAlpha;
     try {
-      const args = [input, ...alphaOption(inputInfo.hasAlpha)];
-      if (trim) args.push('-trim', '+repage');
+      const args = [input, ...alphaOption(outputHasAlpha)];
+      if (effectiveTrim) args.push('-trim', '+repage');
       if (width !== undefined) args.push('-background', 'none', '-gravity', options.gravity ?? 'center', '-extent', `${width}x${height}`);
-      args.push(...PNG_DETERMINISM_ARGS, output);
+      args.push(...PNG_DETERMINISM_ARGS, staged);
       await this.magick('trim/pad', args);
-      const outputInfo = await this.inspect(output);
+      const outputInfo = await this.inspect(staged);
       if (width !== undefined && (outputInfo.width !== width || outputInfo.height !== height)) throw new ImageWorkshopError('Trim/pad output dimensions did not match the requested transparent canvas.');
-      if (outputInfo.hasAlpha !== inputInfo.hasAlpha) throw new ImageWorkshopError('Trim/pad changed the source alpha channel.');
-      const outputGrid = await this.pixels(output);
-      const trimmedGrid = bounds ? cropGrid(sourceGrid, bounds.left, bounds.top, trimmedWidth, trimmedHeight) : sourceGrid;
-      const expectedGrid = width !== undefined ? placeGrid(trimmedGrid, width, height!, options.gravity ?? 'center') : trimmedGrid;
-      assertSameGrid(outputGrid, expectedGrid, 'Trim/pad');
-      const transparentPadding = width !== undefined && outputGrid.pixels.some((pixel, index) => {
-        const x = index % outputGrid.width;
-        const y = Math.floor(index / outputGrid.width);
-        return (x === 0 || y === 0 || x === outputGrid.width - 1 || y === outputGrid.height - 1) && alphaValue(pixel) === 0;
-      });
-      return await this.finish('trim-pad', [inputInfo], [output], { trim, canvas: width !== undefined ? { width, height } : undefined, gravity: options.gravity ?? 'center', sourceOverwrite: false }, { dimensions: true, alphaPreserved: outputInfo.hasAlpha === inputInfo.hasAlpha, sourceAlphaBounds: bounds ?? null, trimmedSize: { width: trimmedWidth, height: trimmedHeight }, transparentPadding }, true);
+      if (outputInfo.hasAlpha !== outputHasAlpha) throw new ImageWorkshopError('Trim/pad output alpha semantics did not match the requested operation.');
+      const expectedTrimmed = bounds ? cropGrid(sourceGrid, bounds.left, bounds.top, trimmedWidth, trimmedHeight) : sourceGrid;
+      const expectedGrid = width !== undefined ? placeGrid(expectedTrimmed, width, height!, options.gravity ?? 'center') : expectedTrimmed;
+      assertSameGrid(await this.pixels(staged), expectedGrid, 'Trim/pad');
+      const transparentPadding = width !== undefined && (outputHasAlpha && (width > trimmedWidth || height! > trimmedHeight));
+      return await this.finish(operation, 'trim-pad', [inputInfo], [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { trim, canvas: width !== undefined ? { width, height } : undefined, gravity: options.gravity ?? 'center', sourceOverwrite: false, fullyTransparentTrim: trim && inputInfo.hasAlpha && bounds === undefined ? 'preserve-source-canvas' : undefined }, { dimensions: true, alphaPreserved: true, alphaChannelAddedForPadding: !inputInfo.hasAlpha && width !== undefined, sourceAlphaBounds: bounds ?? null, trimmedSize: { width: trimmedWidth, height: trimmedHeight }, transparentPadding }, 'decoded-pixels', true);
     } catch (error) {
-      await removeCreated(created);
+      await removeOperation(operation);
       throw error;
     }
   }
@@ -872,36 +690,42 @@ export class ImageWorkshop {
     const cellHeight = numberOption(options.cellHeight, 'Cell height');
     if (cellWidth === undefined || cellHeight === undefined) throw new ImageWorkshopError('Sheet slicing requires cell width and height.');
     const inputInfo = await this.inspect(input);
-    if (inputInfo.width % cellWidth! !== 0 || inputInfo.height % cellHeight! !== 0) throw new ImageWorkshopError(`Sheet dimensions ${inputInfo.width}x${inputInfo.height} are not divisible by cell ${cellWidth}x${cellHeight}.`);
-    const frames = fixedGridFrames(inputInfo.width, inputInfo.height, cellWidth!, cellHeight!);
+    if (inputInfo.width % cellWidth !== 0 || inputInfo.height % cellHeight !== 0) throw new ImageWorkshopError(`Sheet dimensions ${inputInfo.width}x${inputInfo.height} are not divisible by cell ${cellWidth}x${cellHeight}.`);
+    const frames = fixedGridFrames(inputInfo.width, inputInfo.height, cellWidth, cellHeight);
     if (frames.length > 4096) throw new ImageWorkshopError('Sheet slicing is bounded to 4096 frames.');
+    const maxPixels = this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS;
+    if (inputInfo.width * inputInfo.height > maxPixels) throw new ImageWorkshopError(`Sheet slicing input exceeds the ${maxPixels}-pixel resource limit.`);
+    const operation = await beginDirectoryOperation(outputDir, [input]);
     const outputs = frames.map((frame) => join(outputDir, `frame-${String(frame.index).padStart(4, '0')}.png`));
+    const stagedOutputs = frames.map((frame) => join(operation.tempDir, `frame-${String(frame.index).padStart(4, '0')}.png`));
     const manifestPath = join(outputDir, 'manifest.json');
-    await assertOutputPaths([...outputs, manifestPath], [input]);
-    const created = [...outputs, manifestPath];
     try {
-      await this.magick('sheet slicing', [input, ...alphaOption(inputInfo.hasAlpha), '-crop', `${cellWidth}x${cellHeight}`, '+repage', ...PNG_DETERMINISM_ARGS, join(outputDir, 'frame-%04d.png')]);
+      await this.magick('sheet slicing', [input, ...alphaOption(inputInfo.hasAlpha), '-crop', `${cellWidth}x${cellHeight}`, '+repage', ...PNG_DETERMINISM_ARGS, join(operation.tempDir, 'frame-%04d.png')]);
       const sourceGrid = await this.pixels(input);
+      const metadata: ImageMetadata[] = [];
       for (const frame of frames) {
-        if (!(await isRegularFile(outputs[frame.index]))) throw new ImageWorkshopError(`Sheet slicing did not produce expected frame ${outputs[frame.index]}.`);
-        const frameInfo = await this.inspect(outputs[frame.index]);
+        const stagedPath = stagedOutputs[frame.index];
+        const frameInfo = await this.inspect(stagedPath);
         if (frameInfo.width !== cellWidth || frameInfo.height !== cellHeight || frameInfo.hasAlpha !== inputInfo.hasAlpha) throw new ImageWorkshopError(`Sheet frame ${frame.index} failed dimensions or alpha verification.`);
-        assertSameGrid(await this.pixels(outputs[frame.index]), cropGrid(sourceGrid, frame.x, frame.y, frame.width, frame.height), `Sheet frame ${frame.index}`);
+        assertSameGrid(await this.pixels(stagedPath), cropGrid(sourceGrid, frame.x, frame.y, frame.width, frame.height), `Sheet frame ${frame.index}`);
+        metadata.push(finalImageMetadata(frameInfo, outputs[frame.index]));
       }
       const manifest: ImageOperationManifest = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         operation: 'sheet-slice',
         toolchain: toolchainSummary(this.toolchain),
         inputs: [inputInfo],
-        outputs: await Promise.all(outputs.map((path) => this.inspect(path))),
+        outputs: metadata,
         options: { cellWidth, cellHeight, order: 'row-major', sourceOverwrite: false },
         fidelity: { dimensions: true, alphaPreserved: true, frames: frames.map((frame) => ({ index: frame.index, x: frame.x, y: frame.y, width: frame.width, height: frame.height })), pixelsMatch: true },
+        verificationLevel: 'decoded-pixels',
         lossless: true
       };
-      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      await writeManifestInStage(join(operation.tempDir, 'manifest.json'), manifest);
+      await commitDirectory(operation);
       return { operation: 'sheet-slice', outputPaths: outputs, manifestPath, manifest };
     } catch (error) {
-      await removeCreated(created);
+      await removeOperation(operation);
       throw error;
     }
   }
@@ -912,34 +736,34 @@ export class ImageWorkshop {
     const inputs = options.inputs.map((path) => resolvedInput(path));
     const output = resolvedInput(options.output, 'Output');
     const columns = numberOption(options.columns, 'Columns');
-    if (columns === undefined) throw new ImageWorkshopError('Sheet assembly requires columns.');
-    if (inputs.length % columns !== 0) throw new ImageWorkshopError(`Sheet assembly requires an input count divisible by columns (${columns}).`);
+    if (columns === undefined || inputs.length % columns !== 0) throw new ImageWorkshopError(`Sheet assembly requires an input count divisible by columns (${columns ?? 0}).`);
     const inputInfo = await Promise.all(inputs.map((path) => this.inspect(path)));
+    const aggregate = inputInfo.reduce((sum, info) => sum + info.width * info.height, 0);
+    const maxPixels = this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS;
+    if (aggregate > maxPixels) throw new ImageWorkshopError(`Sheet assembly inputs exceed the aggregate ${maxPixels}-pixel resource limit.`);
     const assembledWidth = inputInfo[0].width * columns;
     const assembledHeight = inputInfo[0].height * (inputs.length / columns);
-    if (assembledWidth * assembledHeight > (this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS)) throw new ImageWorkshopError(`Sheet assembly output would exceed the ${(this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS)}-pixel resource limit.`);
+    if (assembledWidth * assembledHeight > maxPixels) throw new ImageWorkshopError(`Sheet assembly output would exceed the ${maxPixels}-pixel resource limit.`);
     if (inputInfo.some((info) => info.width !== inputInfo[0].width || info.height !== inputInfo[0].height || info.hasAlpha !== inputInfo[0].hasAlpha)) throw new ImageWorkshopError('Sheet assembly inputs must have matching dimensions and alpha mode.');
-    const manifestPath = manifestPathForOutput(output);
-    await assertOutputPaths([output, manifestPath], inputs);
-    const created = [output, manifestPath];
-    const temporary = await mkdtemp(join(tmpdir(), 'dsh-image-assemble-'));
+    const operation = await beginFileOperation([output, manifestPathForOutput(output)], inputs);
+    const staged = join(operation.tempDir, basename(output));
+    const rows = join(operation.tempDir, 'rows');
+    await mkdir(rows, { recursive: true });
     try {
       const rowPaths: string[] = [];
-      for (let row = 0; row < inputs.length / columns!; row += 1) {
-        const rowPath = join(temporary, `row-${String(row).padStart(4, '0')}.png`);
+      for (let row = 0; row < inputs.length / columns; row += 1) {
+        const rowPath = join(rows, `row-${String(row).padStart(4, '0')}.png`);
         rowPaths.push(rowPath);
-        await this.magick('sheet row assembly', [...inputs.slice(row * columns!, (row + 1) * columns!), ...alphaOption(inputInfo[0].hasAlpha), '+append', ...PNG_DETERMINISM_ARGS, rowPath]);
+        await this.magick('sheet row assembly', [...inputs.slice(row * columns, (row + 1) * columns), ...alphaOption(inputInfo[0].hasAlpha), '+append', ...PNG_DETERMINISM_ARGS, rowPath]);
       }
-      await this.magick('sheet assembly', [...rowPaths, ...alphaOption(inputInfo[0].hasAlpha), '-append', ...PNG_DETERMINISM_ARGS, output]);
-      const outputInfo = await this.inspect(output);
+      await this.magick('sheet assembly', [...rowPaths, ...alphaOption(inputInfo[0].hasAlpha), '-append', ...PNG_DETERMINISM_ARGS, staged]);
+      const outputInfo = await this.inspect(staged);
       const sourceGrids = await Promise.all(inputs.map((path) => this.pixels(path)));
-      assertSameGrid(await this.pixels(output), assembleGrid(sourceGrids, columns!), 'Sheet assembly');
-      return await this.finish('sheet-assemble', inputInfo, [output], { columns, order: 'row-major', sourceOverwrite: false }, { dimensions: true, alphaPreserved: outputInfo.hasAlpha === inputInfo[0].hasAlpha, pixelsMatch: true }, true);
+      assertSameGrid(await this.pixels(staged), assembleGrid(sourceGrids, columns), 'Sheet assembly');
+      return await this.finish(operation, 'sheet-assemble', inputInfo, [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { columns, order: 'row-major', sourceOverwrite: false }, { dimensions: true, alphaPreserved: true, pixelsMatch: true }, 'decoded-pixels', true);
     } catch (error) {
-      await removeCreated(created);
+      await removeOperation(operation);
       throw error;
-    } finally {
-      await rm(temporary, { recursive: true, force: true });
     }
   }
 
@@ -953,21 +777,31 @@ export class ImageWorkshop {
     if (maxSize === undefined) throw new ImageWorkshopError('Atlas packing requires a maximum size.');
     const padding = numberOption(options.padding ?? 0, 'Padding', 0)!;
     const extrusion = numberOption(options.extrusion ?? 0, 'Extrusion', 0)!;
-    if (padding > 64 || extrusion > 64 || maxSize! > 8192) throw new ImageWorkshopError('Atlas padding, extrusion, or maximum size exceeds the bounded resource policy.');
+    const maxPixels = this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS;
+    if (padding > 64 || extrusion > 64 || maxSize > 8192) throw new ImageWorkshopError('Atlas padding, extrusion, or maximum size exceeds the bounded resource policy.');
+    if (maxSize * maxSize > maxPixels) throw new ImageWorkshopError(`Atlas maximum output ${maxSize}x${maxSize} exceeds the ${maxPixels}-pixel resource limit.`);
     const inputInfo = await Promise.all(inputs.map((path) => this.inspect(path)));
+    const aggregateInputPixels = inputInfo.reduce((sum, info) => sum + info.width * info.height, 0);
+    if (aggregateInputPixels > maxPixels) throw new ImageWorkshopError(`Atlas inputs exceed the aggregate ${maxPixels}-pixel resource limit.`);
+    const sourceGrids = await Promise.all(inputs.map((path) => this.pixels(path)));
     const names = inputs.map((path) => basename(path));
-    if (new Set(names).size !== names.length) throw new ImageWorkshopError('Atlas inputs must have unique file names so the JSON manifest can identify every source exactly once.');
+    const nameKeys = names.map((name) => this.dependencies.platform === 'win32' ? name.toLowerCase() : name);
+    if (new Set(nameKeys).size !== names.length) throw new ImageWorkshopError('Atlas inputs must have unique file names so the JSON manifest can identify every source exactly once.');
     const atlasJson = join(dirname(output), `${basename(output, extname(output))}.json`);
     const manifestPath = manifestPathForOutput(output);
-    await assertOutputPaths([output, atlasJson, manifestPath], inputs);
-    const created = [output, atlasJson, manifestPath];
+    const operation = await beginFileOperation([output, atlasJson, manifestPath], inputs);
+    const stagedPng = join(operation.tempDir, basename(output));
+    const stagedJson = join(operation.tempDir, basename(atlasJson));
     try {
-      const helperRequire = createRequire(join(this.toolchain.helperRoot, 'package.json'));
-      type PackAsync = (files: Array<{ path: string; contents: Buffer }>, config: Record<string, unknown>) => Promise<Array<{ name: string; buffer: Buffer }>>;
-      const moduleValue = helperRequire(FREE_TEX_PACKAGE) as { packAsync?: PackAsync; default?: { packAsync?: PackAsync } };
-      const packAsync = moduleValue.packAsync ?? moduleValue.default?.packAsync;
+      let packAsync = this.dependencies.atlasPacker;
+      if (!packAsync) {
+        const helperRequire = createRequire(join(this.toolchain.helperRoot, 'package.json'));
+        const moduleValue = helperRequire(FREE_TEX_PACKAGE) as { packAsync?: AtlasPackAsync; default?: { packAsync?: AtlasPackAsync } };
+        packAsync = moduleValue.packAsync ?? moduleValue.default?.packAsync;
+      }
       if (!packAsync) throw new ImageWorkshopError(`Pinned ${FREE_TEX_PACKAGE}@${FREE_TEX_PACKER_VERSION} does not expose packAsync.`);
-      const files = await packAsync(await Promise.all(inputs.map(async (path) => ({ path: basename(path), contents: await readFile(path) }))), {
+      const packFiles = await Promise.all(inputs.map(async (path) => ({ path: basename(path), contents: await readFile(path) })));
+      const packPromise = packAsync(packFiles, {
         textureName: basename(output, extname(output)),
         width: maxSize,
         height: maxSize,
@@ -982,19 +816,31 @@ export class ImageWorkshop {
         exporter: 'JsonHash',
         textureFormat: 'png'
       });
+      const deadline = this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      let files: Array<{ name: string; buffer: Buffer }>;
+      try {
+        files = await Promise.race([
+          packPromise,
+          new Promise<never>((_, reject) => { deadlineTimer = setTimeout(() => reject(new ImageWorkshopError(`Atlas packing exceeded the ${deadline}ms operation deadline.`)), deadline); })
+        ]);
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
+      }
       const pngFile = files.find((file) => /\.png$/i.test(file.name));
       const jsonFile = files.find((file) => /\.json$/i.test(file.name));
       if (!pngFile || !jsonFile) throw new ImageWorkshopError('Atlas helper did not return both PNG and JSON outputs.');
-      await writeFile(output, pngFile.buffer);
-      await writeFile(atlasJson, jsonFile.buffer);
-      const atlasInfo = await this.inspect(output);
-      if (atlasInfo.width > maxSize! || atlasInfo.height > maxSize!) throw new ImageWorkshopError(`Atlas output ${atlasInfo.width}x${atlasInfo.height} exceeds the ${maxSize}x${maxSize} limit.`);
-      const parsed = asObject(JSON.parse(jsonFile.buffer.toString('utf8')));
-      const frameObject = asObject(parsed?.frames);
+      await writeFile(stagedPng, pngFile.buffer, { flag: 'wx' });
+      await writeFile(stagedJson, jsonFile.buffer, { flag: 'wx' });
+      const atlasInfo = await this.inspect(stagedPng);
+      if (atlasInfo.width > maxSize || atlasInfo.height > maxSize || atlasInfo.width * atlasInfo.height > maxPixels) throw new ImageWorkshopError(`Atlas output ${atlasInfo.width}x${atlasInfo.height} exceeds the configured resource limit.`);
+      const atlasGrid = await this.pixels(stagedPng);
+      const parsed = await readJsonFile(stagedJson);
+      const frameObject = asObject(parsed.frames);
       if (!frameObject) throw new ImageWorkshopError('Atlas helper returned JSON without a frames object.');
-      const frameRecords: Array<Record<string, unknown>> = [];
       if (Object.keys(frameObject).length !== names.length) throw new ImageWorkshopError('Atlas JSON contains a frame count different from the requested input count.');
-      for (const name of names) {
+      const rectangles: Array<{ name: string; x: number; y: number; width: number; height: number; rotated: boolean; trimmed: boolean }> = [];
+      for (const [index, name] of names.entries()) {
         const record = asObject(frameObject[name]);
         const frame = asObject(record?.frame);
         if (!record || !frame) throw new ImageWorkshopError(`Atlas JSON is missing exactly one frame for ${name}.`);
@@ -1002,24 +848,36 @@ export class ImageWorkshop {
         const y = Number(frame.y);
         const width = Number(frame.w);
         const height = Number(frame.h);
+        const rotated = record.rotated === true;
+        const trimmed = record.trimmed === true;
         if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > atlasInfo.width || y + height > atlasInfo.height) throw new ImageWorkshopError(`Atlas frame ${name} is outside the output bounds.`);
-        if (options.fixedGrid && (record.rotated === true || record.trimmed === true)) throw new ImageWorkshopError(`Fixed-grid atlas frame ${name} was rotated or trimmed.`);
-        frameRecords.push({ name, x, y, width, height, rotated: record.rotated === true, trimmed: record.trimmed === true });
+        if (rotated) throw new ImageWorkshopError(`Atlas frame ${name} was rotated despite allowRotation=false.`);
+        if (options.fixedGrid && trimmed) throw new ImageWorkshopError(`Fixed-grid atlas frame ${name} was trimmed.`);
+        const source = sourceGrids[index];
+        const sourceSize = asObject(record.sourceSize);
+        const spriteSourceSize = asObject(record.spriteSourceSize);
+        if (Number(sourceSize?.w) !== source.width || Number(sourceSize?.h) !== source.height || !spriteSourceSize) throw new ImageWorkshopError(`Atlas frame ${name} has incorrect source-size metadata.`);
+        const sx = Number(spriteSourceSize.x);
+        const sy = Number(spriteSourceSize.y);
+        const sw = Number(spriteSourceSize.w);
+        const sh = Number(spriteSourceSize.h);
+        if (![sx, sy, sw, sh].every(Number.isInteger) || sx < 0 || sy < 0 || sw <= 0 || sh <= 0 || sx + sw > source.width || sy + sh > source.height || sw !== width || sh !== height) throw new ImageWorkshopError(`Atlas frame ${name} has invalid trim metadata.`);
+        const expected = cropGrid(source, sx, sy, sw, sh);
+        const actual = cropGrid(atlasGrid, x, y, width, height);
+        const samples = [[0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1], [Math.floor(width / 2), Math.floor(height / 2)]];
+        for (const [px, py] of samples) if (actual.pixels[py * actual.width + px] !== expected.pixels[py * expected.width + px]) throw new ImageWorkshopError(`Atlas frame ${name} representative pixel verification failed.`);
+        rectangles.push({ name, x, y, width, height, rotated, trimmed });
+        for (const previous of rectangles.slice(0, index)) {
+          if (x < previous.x + previous.width && x + width > previous.x && y < previous.y + previous.height && y + height > previous.y) throw new ImageWorkshopError(`Atlas frame ${name} overlaps ${previous.name}.`);
+        }
       }
-      const manifest: ImageOperationManifest = {
-        schemaVersion: 1,
-        operation: 'atlas-pack',
-        toolchain: toolchainSummary(this.toolchain),
-        inputs: inputInfo,
-        outputs: [{ ...atlasInfo }],
-        options: { maxSize, padding, extrusion, fixedGrid: options.fixedGrid ?? false, allowRotation: false, allowTrim: options.fixedGrid ? false : true, sourceOverwrite: false },
-        fidelity: { dimensions: true, alphaPreserved: atlasInfo.hasAlpha, sourceNamesExactlyOnce: frameRecords.length === names.length, frames: frameRecords },
-        lossless: true
-      };
-      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-      return { operation: 'atlas-pack', outputPaths: [output, atlasJson], manifestPath, manifest };
+      const jsonArtifact = await jsonMetadata(stagedJson, atlasJson);
+      return await this.finish(operation, 'atlas-pack', inputInfo, [
+        { finalPath: output, stagedPath: stagedPng, metadata: finalImageMetadata(atlasInfo, output) },
+        { finalPath: atlasJson, stagedPath: stagedJson, metadata: jsonArtifact }
+      ], { maxSize, padding, extrusion, fixedGrid: options.fixedGrid ?? false, allowRotation: false, allowTrim: options.fixedGrid ? false : true, sourceOverwrite: false }, { dimensions: true, sourceNamesExactlyOnce: rectangles.length === names.length, nonOverlapping: true, representativePixelsMatch: true, frames: rectangles, preview: { generated: false, reason: 'Phase 4 records artifact metadata and representative decoded pixels; it does not generate a contact-sheet preview.' } }, 'representative-pixels', false);
     } catch (error) {
-      await removeCreated(created);
+      await removeOperation(operation);
       if (error instanceof ImageWorkshopError) throw error;
       throw new ImageWorkshopError(`Atlas packing failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1034,30 +892,25 @@ export class ImageWorkshop {
     const sourcePixels = await this.pixels(input);
     const level = numberOption(options.level ?? 4, 'oxipng optimization level', 0)!;
     if (level > 6) throw new ImageWorkshopError('oxipng optimization level must be between 0 and 6.');
-    const manifestPath = manifestPathForOutput(output);
-    await assertOutputPaths([output, manifestPath], [input]);
-    const created = [output, manifestPath];
+    const operation = await beginFileOperation([output, manifestPathForOutput(output)], [input]);
+    const staged = join(operation.tempDir, basename(output));
     try {
       const runner = this.dependencies.commandRunner ?? runCommand;
       const env = this.dependencies.env ?? process.env;
-      const args = ['-o', String(level), '--strip', 'safe', '--out', output, input];
+      const args = ['-o', String(level), '--strip', 'safe', '--out', staged, input];
       let result;
       try {
-        result = await runner(this.toolchain.oxipng, args, {
-          env: withoutCredentials(env),
-          platform: this.dependencies.platform ?? process.platform,
-          timeoutMs: this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS
-        });
+        result = await runner(this.toolchain.oxipng, args, { env: withoutCredentials(env), platform: this.dependencies.platform ?? process.platform, timeoutMs: this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS });
       } catch (error) {
         throw new ImageWorkshopError(`oxipng optimization could not start: ${error instanceof Error ? error.message : String(error)}`);
       }
       if (result.exitCode !== 0) throw new ImageWorkshopError(`oxipng optimization failed: ${commandFailure(this.toolchain.oxipng, args, result, env).message}`);
-      const outputInfo = await this.inspect(output);
+      const outputInfo = await this.inspect(staged);
       if (outputInfo.width !== inputInfo.width || outputInfo.height !== inputInfo.height || outputInfo.hasAlpha !== inputInfo.hasAlpha) throw new ImageWorkshopError('oxipng changed image dimensions or alpha mode.');
-      assertSameGrid(await this.pixels(output), sourcePixels, 'oxipng decoded-pixel');
-      return await this.finish('optimize-png', [inputInfo], [output], { level, optimizer: 'oxipng', explicit: true, sourceOverwrite: false }, { dimensions: true, alphaPreserved: true, decodedPixelsEqual: true }, true);
+      assertSameGrid(await this.pixels(staged), sourcePixels, 'oxipng decoded-pixel');
+      return await this.finish(operation, 'optimize-png', [inputInfo], [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { level, optimizer: 'oxipng', explicit: true, sourceOverwrite: false }, { dimensions: true, alphaPreserved: true, decodedPixelsEqual: true }, 'decoded-pixels', true);
     } catch (error) {
-      await removeCreated(created);
+      await removeOperation(operation);
       throw error;
     }
   }
@@ -1068,9 +921,5 @@ export function createImageWorkshop(toolchain: ImageToolchain, dependencies: Ima
 }
 
 export function defaultImageToolchainRoot(dshHome?: string): string {
-  return resolve(dshHome ?? resolveHarnessPaths().dshHome, DEFAULT_TOOLCHAIN_RELATIVE);
-}
-
-export function toolchainManifestForRoot(root: string): string {
-  return join(resolve(root), IMAGE_MANIFEST_NAME);
+  return resolve(dshHome ?? resolveHarnessPaths().dshHome, join('rpgmaker-mv', 'image-workshop'));
 }

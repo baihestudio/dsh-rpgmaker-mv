@@ -68,10 +68,14 @@ function helpText(): string {
     '  --runtime-dir <path>      Override the app-owned runtime tree',
     '  --dsh-executable <path>   Use an explicit DSH executable',
     '  --preset <id>              Agent preset (rpgmaker, playtest-debug, or asset-workshop)',
-    '  --image-magick <path>     Use the resolved pinned ImageMagick executable',
+    '  --image-magick <path>     Use the resolved pinned ImageMagick executable (requires SHA-256)',
+    '  --image-magick-sha256 <hex> Expected SHA-256 for an explicit ImageMagick override',
+    '  --image-magick-url <url>  Exact pinned ImageMagick release URL',
     '  --image-toolchain-root <path>  Use the app-owned image toolchain directory',
     '  --image-helper-runtime <path> Use the app-owned atlas helper runtime',
-    '  --oxipng <path>            Enable the optional pinned oxipng optimizer',
+    '  --oxipng <path>            Enable the optional pinned oxipng optimizer (requires SHA-256)',
+    '  --oxipng-sha256 <hex>     Expected SHA-256 for an explicit oxipng override',
+    '  --oxipng-url <url>        Exact pinned oxipng release URL',
     '  --bun-executable <path>   Use an explicit Bun executable',
     '  --pwsh-executable <path>  Use an explicit PowerShell executable',
     '  --json                    Render doctor output as JSON',
@@ -100,9 +104,13 @@ function baseOptions(parsed: ParsedArgs, dependencies: CliDependencies): Record<
     dshHome: option(parsed.values, 'dsh-home'),
     runtimeDir: option(parsed.values, 'runtime-dir'),
     imageMagickExecutable: option(parsed.values, 'image-magick'),
+    imageMagickSha256: option(parsed.values, 'image-magick-sha256'),
+    imageMagickUrl: option(parsed.values, 'image-magick-url'),
     imageToolchainRoot: option(parsed.values, 'image-toolchain-root'),
     imageHelperRuntimeDir: option(parsed.values, 'image-helper-runtime'),
     oxipngExecutable: option(parsed.values, 'oxipng'),
+    oxipngSha256: option(parsed.values, 'oxipng-sha256'),
+    oxipngUrl: option(parsed.values, 'oxipng-url'),
     commandRunner: dependencies.commandRunner
   };
 }
@@ -143,9 +151,12 @@ async function runImageCommand(parsed: ParsedArgs, dependencies: CliDependencies
     toolchainRoot: option(parsed.values, 'toolchain-root'),
     manifestPath: option(parsed.values, 'manifest'),
     imageMagickExecutable: option(parsed.values, 'image-magick'),
+    imageMagickSha256: option(parsed.values, 'image-magick-sha256'),
+    imageMagickUrl: option(parsed.values, 'image-magick-url'),
     helperRoot: option(parsed.values, 'helper-root'),
     oxipngExecutable: option(parsed.values, 'oxipng'),
-    verifyOxipng: operation === 'optimize-png',
+    oxipngSha256: option(parsed.values, 'oxipng-sha256'),
+    oxipngUrl: option(parsed.values, 'oxipng-url'),
     commandRunner: dependencies.commandRunner
   };
   const toolchain = await resolveImageToolchain(toolchainOptions);

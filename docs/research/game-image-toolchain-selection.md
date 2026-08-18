@@ -142,15 +142,8 @@ The installed macOS probe was 7.1.2-11, which is evidence of behavior only; it i
 
 ### Base installation
 
-1. **ImageMagick:** obtain the official Windows installer/portable archive or macOS package from [ImageMagick downloads](https://imagemagick.org/script/download.php), record the exact asset URL and SHA-256 in the DSH tool manifest, and verify before installation. On Windows the bootstrap uses `Get-FileHash`; on macOS it uses `shasum -a 256`. Do not use an unversioned `convert` alias. Preflight must invoke the manifest's `magick` path and require the pinned `7.1.2-29` (or fail with an upgrade message).
-2. **Atlas helper:** install inside the versioned DSH skill environment, not globally:
-
-   ```sh
-   npm install --save-exact free-tex-packer-core@0.3.9
-   npm ci --ignore-scripts --no-audit --no-fund
-   ```
-
-   Commit the resulting lockfile when the implementation is authored. The helper is pure JS from the package's perspective and uses the existing DSH Node runtime on both operating systems.
+1. **ImageMagick:** obtain the official Windows installer/portable archive or macOS package from [ImageMagick downloads](https://imagemagick.org/script/download.php), record the exact asset URL, archive SHA-256, archived executable member, and installed executable SHA-256 in the app-owned DSH tool manifest, and verify before installation. On Windows the bootstrap uses `Get-FileHash`; on macOS it uses `shasum -a 256`. Do not use an unversioned `convert` alias. Preflight must invoke the manifest's `magick` path and require the pinned `7.1.2-29` (or fail with an upgrade message). Explicit overrides carry their expected executable checksum or fail.
+2. **Atlas helper:** install inside the versioned app-owned DSH skill runtime, not globally, with Bun. Use an exact `free-tex-packer-core@0.3.9` dependency, run the helper trust step, and verify both the Bun lock hash and the package's pinned npm integrity before use. The repository runtime does not duplicate the helper dependency. The helper is pure JS from the package's perspective and uses the existing DSH Node runtime on both operating systems.
 3. **Optional oxipng:** download the `v10.2.0` artifact from [official releases](https://github.com/oxipng/oxipng/releases/tag/v10.2.0), verify the architecture-specific SHA-256 recorded in the manifest, and expose it only as `optimize_png`.
 4. **Optional Aseprite/TexturePacker/Photoshop:** detect the user-installed app/executable; never silently download or redistribute it. Record the detected version and license-dependent capability in the preflight report.
 
@@ -161,7 +154,7 @@ A package-manager convenience path may be offered, but it is not the reproducibi
 - Invoke executables by resolved absolute path from the manifest; do not trust the ambient `PATH`.
 - Pass user paths as argument-array elements, never through a shell-generated command string.
 - Restrict reads/writes to the approved project/work directories and a temporary directory owned by the current job.
-- Use unique output directories, reject collisions, and never overwrite source assets without explicit confirmation.
+- Give each operation one unique sibling staging directory, reject an existing output directory/collision, canonicalize real source/output/temp parents, and commit only after verification. Use an atomic directory rename for directory outputs and an exclusive no-clobber file commit for file outputs; never overwrite source assets or a racing output.
 - Set resource/time limits where the host runner supports them; ImageMagick has its own [resource-limit options](https://imagemagick.org/script/command-line-options.php#resource).
 - Return non-zero exits and stderr as structured failures. A successful process is not enough: inspect the output.
 
@@ -200,11 +193,11 @@ Every mutating operation returns:
 - tool versions and the resolved executable path;
 - input/output dimensions, color model, alpha mode, format, and file sizes;
 - for sheets/atlases, every frame rectangle, order, rotation/trim flags, padding, and extrusion;
-- source/output hashes and whether the operation was lossless or intentionally lossy;
-- a visual preview/contact sheet path, or a clear reason preview generation failed;
+- source/output hashes and a truthful verification level; atlas results must not claim universal losslessness when only representative pixels were checked;
+- a visual preview/contact sheet path, or a clear reason preview generation failed; atlas manifests enumerate both PNG and JSON artifacts;
 - warnings for ICC profiles, metadata removal, matte colors, indexed alpha, WebP incompatibility, and any fallback.
 
-The skill must generate/check a checkerboard preview for alpha work and compare hard-edge pixel samples for pixel-art resize. For atlas work it must parse its own JSON and verify that every source name occurs exactly once, rectangles are in bounds, and fixed-grid jobs retained the requested cell dimensions. For PNG optimization it must compare decoded pixels/dimensions before and after, not just file hashes.
+The skill must generate/check a checkerboard preview for alpha work and compare hard-edge pixel samples for pixel-art resize. For atlas work it must parse its own JSON, verify every source name occurs exactly once, rectangles are in bounds and non-overlapping, fixed-grid jobs retain requested cell dimensions, and representative decoded source-to-atlas samples match. It must enforce aggregate input/output limits and the existing operation deadline. For PNG optimization it must compare decoded pixels/dimensions before and after, not just file hashes.
 
 ## Licensing and rejected alternatives
 
