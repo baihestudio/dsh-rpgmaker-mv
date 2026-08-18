@@ -268,6 +268,58 @@ describe('app-owned image tool plugin installation', () => {
     }
   });
 
+  test('repairs a stale copied package by removing it before the plugin manager re-materializes', async () => {
+    const root = await temp('plugin-stale-copy');
+    try {
+      const programRoot = join(root, 'program');
+      const dshHome = join(root, 'dsh-home');
+      const runtimeDir = join(programRoot, 'runtime', 'dsh');
+      const pnpm = join(root, 'pnpm.exe');
+      const bundleDir = join(programRoot, IMAGE_WORKSHOP_BUNDLE_RELATIVE);
+      await mkdir(bundleDir, { recursive: true });
+      await copyBundle(bundleDir);
+      await mkdir(runtimeDir, { recursive: true });
+      await writeFile(pnpm, 'fixture');
+      const dsh = join(runtimeDir, 'dsh.exe');
+      await writeFile(dsh, 'fixture');
+      const options = { platform: 'win32', dshHome, programRoot, runtimeDir, dshExecutable: dsh, pnpmExecutable: pnpm } as const;
+
+      // Exact canonical profile path with an otherwise-valid file: dependency,
+      // but old content so the pinned release hash no longer matches.
+      const profile = await writeInstalledProfile(dshHome, `file:${bundleDir}`);
+      const installedDir = join(profile, 'node_modules', IMAGE_WORKSHOP_PLUGIN_PACKAGE);
+      await copyBundle(installedDir);
+      const staleEntry = join(installedDir, 'lib', 'index.js');
+      await writeFile(staleEntry, `${await readFile(staleEntry, 'utf8')}\n`);
+      const stale = await verifyImageWorkshopPlugin({ ...options, bundleDir });
+      expect(stale.valid).toBe(false);
+      expect(stale.errors.join(' ')).toMatch(/release hash/);
+
+      // Because the file: path/version are unchanged, pnpm would reuse the stale
+      // copy; the repair must remove it before the manager runs so the current
+      // bundle is materialized. The runner asserts that and then links the bundle.
+      let removedBeforeManager = false;
+      let pluginCalls = 0;
+      const runner = async (command: string, args: string[]) => {
+        expect(command).toBe(dsh);
+        if (args[0] === 'plugin') {
+          pluginCalls += 1;
+          try { await stat(installedDir); removedBeforeManager = false; } catch { removedBeforeManager = true; }
+          await writeInstalledImagePlugin(dshHome, bundleDir);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        throw new Error(`unexpected runner call: ${args.join(' ')}`);
+      };
+      const repaired = await prepareImageWorkshopPlugin({ ...options, commandRunner: runner });
+      expect(repaired.valid).toBe(true);
+      expect(repaired.packageDir).toBe(await realpath(bundleDir));
+      expect(pluginCalls).toBe(1);
+      expect(removedBeforeManager).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('rejects a tampered bundle, a non-owned path, and a globally mounted layer', async () => {
     const root = await temp('plugin-verify');
     try {

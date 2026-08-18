@@ -315,6 +315,12 @@ export async function prepareImageWorkshopPlugin(options: ImageWorkshopPluginOpt
   const profileDir = profileDirFor(paths, profile);
   const snapshot = await snapshotImageWorkshopProfile(paths, profileDir);
   try {
+    // DSH/pnpm reuses a file: dependency whose path and version are unchanged,
+    // so a stale copied profile package (old content/hash) would be kept and
+    // post-add verification would fail. The snapshot above already owns this
+    // exact entry for rollback; remove it so the plugin manager must
+    // materialize the current local bundle from the owned source.
+    await rm(profilePackageDir(profileDir), { recursive: true, force: true });
     await linkImageWorkshopPlugin(options, paths, target, platform, env);
     const installed = await verifyImageWorkshopPlugin({ ...options, bundleDir: target });
     if (!installed.valid) throw new Error(`Image tool plugin installation completed but verification failed: ${installed.errors.join('; ')}`);
