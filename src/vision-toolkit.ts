@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { findDshExecutable } from './bootstrap';
 import { resolveHarnessPaths, pathDelimiter, type HarnessPaths, type PathOptions } from './config';
@@ -40,6 +41,22 @@ const PNPM_PACKAGE = 'pnpm';
 const PNPM_VERSION = '10.15.1';
 const PNPM_RUNTIME_RELATIVE = join('runtime', 'pnpm');
 
+export interface VisionToolkitActivation {
+  valid: boolean;
+  errors: string[];
+  settingsReady: boolean;
+  attachmentAdmissionReady: boolean;
+  tools: string[];
+}
+
+export interface VisionToolkitActivationContext {
+  profile: string;
+  profileDir: string;
+  runtimeDir: string;
+  dshHome: string;
+  expectedTools: readonly string[];
+}
+
 export interface VisionToolkitOptions extends PathOptions {
   dshExecutable?: string;
   pnpmExecutable?: string;
@@ -49,6 +66,10 @@ export interface VisionToolkitOptions extends PathOptions {
   profile?: string;
   prepareRuntime?: boolean;
   runtimeWarmupTimeoutMs?: number;
+  activationTimeoutMs?: number;
+  activationCheck?: (context: VisionToolkitActivationContext) => Promise<VisionToolkitActivation>;
+  spawnProcess?: typeof spawn;
+  terminateProcessTree?: (child: ChildProcess, options: { cwd?: string; env?: Record<string, string | undefined>; platform?: string }) => Promise<void>;
 }
 
 export interface VisionToolkitVerification {
@@ -57,9 +78,9 @@ export interface VisionToolkitVerification {
   profile: string;
   profileDir: string;
   manifestPath: string;
-  packageDir?: string;
-  packageVersion?: string;
-  profileDependency?: string;
+  packageDir: string | undefined;
+  packageVersion: string | undefined;
+  profileDependency: string | undefined;
   bundleOccurrences: number;
   runtimeCacheDir: string;
   managedRuntimeReady: boolean;
@@ -131,23 +152,70 @@ function runtimeCacheDir(paths: HarnessPaths): string {
   return join(paths.dshHome, 'cache', 'dsh-vision-toolkit');
 }
 
-async function managedRuntimeReady(cacheDir: string, platform: string = process.platform): Promise<boolean> {
+type PythonVersion = [number, number, number]
+
+interface ManagedRuntimeCandidate {
+  interpreter: string;
+  markerVersion: PythonVersion;
+}
+
+function parsePythonVersion(text: string): PythonVersion | undefined {
+  const match = text.match(/(?:Python\s+)?(\d+)\.(\d+)(?:\.(\d+))?/i);
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)] : undefined;
+}
+
+function supportsVisionPython(version: PythonVersion | undefined): boolean {
+  return Boolean(version && (version[0] > 3 || (version[0] === 3 && version[1] >= 11)));
+}
+
+async function findManagedRuntime(cacheDir: string, platform: string): Promise<ManagedRuntimeCandidate | undefined> {
   const pythonRoot = join(cacheDir, 'python');
   let entries;
   try {
     entries = await readdir(pythonRoot, { withFileTypes: true });
   } catch {
-    return false;
+    return undefined;
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const runtimeRoot = join(pythonRoot, entry.name);
     const marker = await readJson(join(runtimeRoot, 'runtime.json'));
-    if (marker?.schemaVersion !== 1 || typeof marker.upstreamCommit !== 'string' || typeof marker.upstreamContentSha256 !== 'string' || typeof marker.requirementsSha256 !== 'string' || typeof marker.pythonVersion !== 'string') continue;
+    const markerVersion = typeof marker?.pythonVersion === 'string' ? parsePythonVersion(marker.pythonVersion) : undefined;
+    if (marker?.schemaVersion !== 1 || typeof marker.upstreamCommit !== 'string' || typeof marker.upstreamContentSha256 !== 'string' || typeof marker.requirementsSha256 !== 'string' || !supportsVisionPython(markerVersion)) continue;
     const interpreter = platform === 'win32' ? join(runtimeRoot, 'Scripts', 'python.exe') : join(runtimeRoot, 'bin', 'python');
-    if (await exists(interpreter)) return true;
+    if (await exists(interpreter)) return { interpreter, markerVersion: markerVersion! };
   }
-  return false;
+  return undefined;
+}
+
+async function managedRuntimeMarkerReady(cacheDir: string, platform: string): Promise<boolean> {
+  return Boolean(await findManagedRuntime(cacheDir, platform));
+}
+
+async function managedRuntimeReady(
+  cacheDir: string,
+  platform: string = process.platform,
+  commandRunner: CommandRunner = runCommand,
+  env: Record<string, string | undefined> = process.env
+): Promise<boolean> {
+  const candidate = await findManagedRuntime(cacheDir, platform);
+  if (!candidate) return false;
+  try {
+    const result = await commandRunner(candidate.interpreter, ['--version'], {
+      env: pluginEnvironment(env),
+      platform,
+      timeoutMs: 30_000
+    });
+    return result.exitCode === 0 && supportsVisionPython(parsePythonVersion(`${result.stdout}\n${result.stderr}`));
+  } catch {
+    return false;
+  }
+}
+
+function hasExpectedVisionTools(tools: readonly string[]): boolean {
+  return tools.length === VISION_TOOL_NAMES.length
+    && new Set(tools).size === VISION_TOOL_NAMES.length
+    && VISION_TOOL_NAMES.every((name) => tools.includes(name));
 }
 
 function baseProvider() {
@@ -224,7 +292,7 @@ async function warmVisionToolkitRuntime(options: VisionToolkitOptions, paths: Ha
   const invocationResult = prepareProcessInvocation(invocation.command, args, platform, processEnv);
   let child: ChildProcess;
   try {
-    child = spawn(invocationResult.command, invocationResult.args, {
+    child = (options.spawnProcess ?? spawn)(invocationResult.command, invocationResult.args, {
       cwd: paths.dshHome,
       env: processEnv,
       shell: false,
@@ -235,29 +303,42 @@ async function warmVisionToolkitRuntime(options: VisionToolkitOptions, paths: Ha
   } catch (error) {
     throw new Error(`Vision Toolkit runtime preparation could not start: ${error instanceof Error ? error.message : String(error)}`);
   }
+  const outputLimit = 16 * 1024;
   let output = '';
+  const appendOutput = (chunk: string): void => {
+    output += chunk;
+    if (output.length > outputLimit) output = output.slice(-outputLimit);
+  };
   child.stdout?.setEncoding('utf8');
   child.stderr?.setEncoding('utf8');
-  child.stdout?.on('data', (chunk: string) => { output += chunk; });
-  child.stderr?.on('data', (chunk: string) => { output += chunk; });
+  child.stdout?.on('data', appendOutput);
+  child.stderr?.on('data', appendOutput);
   const timeoutMs = options.runtimeWarmupTimeoutMs ?? 15 * 60_000;
   const deadline = Date.now() + timeoutMs;
+  let failure: Error | undefined;
   try {
     while (Date.now() < deadline) {
-      if (await managedRuntimeReady(runtimeCacheDir(paths), platform)) return;
+      if (await managedRuntimeMarkerReady(runtimeCacheDir(paths), platform)) break;
       if (child.exitCode !== null || child.signalCode !== null) {
-        throw new Error(`Vision Toolkit Web boot exited before its managed runtime was ready (code ${child.exitCode ?? 'signal'}).${output.trim() ? ` ${output.trim().slice(-2000)}` : ''}`);
+        failure = new Error(`Vision Toolkit Web boot exited before its managed runtime was ready (code ${child.exitCode ?? 'signal'}).${output.trim() ? ` ${output.trim().slice(-2000)}` : ''}`);
+        break;
       }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
     }
-    throw new Error(`Vision Toolkit managed runtime preparation timed out after ${timeoutMs} ms.${output.trim() ? ` ${output.trim().slice(-2000)}` : ''}`);
-  } finally {
-    if (child.exitCode === null && child.signalCode === null) {
-      await terminateProcessTree(child, { cwd: paths.dshHome, env: processEnv, platform }).catch((error) => {
-        throw new Error(`Vision Toolkit runtime process could not be terminated cleanly: ${error instanceof Error ? error.message : String(error)}`);
-      });
+    if (!failure && !(await managedRuntimeMarkerReady(runtimeCacheDir(paths), platform))) {
+      failure = new Error(`Vision Toolkit managed runtime preparation timed out after ${timeoutMs} ms.${output.trim() ? ` ${output.trim().slice(-2000)}` : ''}`);
+    }
+  } catch (error) {
+    failure = error instanceof Error ? error : new Error(String(error));
+  }
+  if (child.exitCode === null && child.signalCode === null) {
+    try {
+      await (options.terminateProcessTree ?? terminateProcessTree)(child, { cwd: paths.dshHome, env: processEnv, platform });
+    } catch (cleanupError) {
+      if (!failure) failure = cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError));
     }
   }
+  if (failure) throw failure;
 }
 
 async function preparePnpmRuntime(options: VisionToolkitOptions, paths: HarnessPaths): Promise<PnpmRuntime> {
@@ -308,6 +389,110 @@ async function preparePnpmRuntime(options: VisionToolkitOptions, paths: HarnessP
   return { executable, env: prependPath(env, dirname(executable), platform) };
 }
 
+interface ProfileSnapshotEntry {
+  source: string;
+  backup: string;
+  existed: boolean;
+}
+
+interface ProfileSnapshot {
+  root: string;
+  entries: ProfileSnapshotEntry[];
+}
+
+async function snapshotProfileState(paths: HarnessPaths, profileDir: string): Promise<ProfileSnapshot> {
+  const root = await mkdtemp(join(paths.dshHome, '.vision-toolkit-profile-rollback-'));
+  const sources = [
+    join(profileDir, 'package.json'),
+    join(profileDir, 'pnpm-lock.yaml'),
+    join(profileDir, 'cordis.patch.yml'),
+    profilePackageDir(profileDir)
+  ];
+  const entries: ProfileSnapshotEntry[] = [];
+  try {
+    for (const [index, source] of sources.entries()) {
+      const existed = await exists(source);
+      const backup = join(root, String(index));
+      if (existed) await cp(source, backup, { recursive: true, force: false, errorOnExist: true });
+      entries.push({ source, backup, existed });
+    }
+    return { root, entries };
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function restoreProfileState(snapshot: ProfileSnapshot): Promise<void> {
+  for (const entry of snapshot.entries) {
+    await rm(entry.source, { recursive: true, force: true });
+    if (entry.existed) {
+      await mkdir(dirname(entry.source), { recursive: true });
+      await cp(entry.backup, entry.source, { recursive: true, force: false, errorOnExist: true });
+    }
+  }
+}
+
+async function findProfileBoot(runtimeDir: string): Promise<{ profileFile: string; environmentModule: string }> {
+  const dshLib = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib');
+  const profileFile = (await readdir(dshLib)).find((file) => file.startsWith('profile-boot-') && file.endsWith('.js'));
+  if (!profileFile) throw new Error('Compiled DSH profile boot module was not found; cannot verify Vision Toolkit activation.');
+  const environmentModule = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-launch-environment', 'lib', 'index.js');
+  if (!(await exists(environmentModule))) throw new Error('Pinned DSH launch-environment module was not found; cannot verify Vision Toolkit activation.');
+  return { profileFile: join(dshLib, profileFile), environmentModule };
+}
+
+async function runVisionToolkitActivationProbe(options: VisionToolkitOptions, paths: HarnessPaths): Promise<VisionToolkitActivation> {
+  const platform = options.platform ?? process.platform;
+  const env = pluginEnvironment(options.env ?? process.env);
+  const node = options.env?.NODE_EXECUTABLE ?? env.NODE_EXECUTABLE ?? await resolveExecutable('node', { platform, env })
+    ?? options.env?.BUN_EXECUTABLE ?? env.BUN_EXECUTABLE ?? await resolveExecutable('bun', { platform, env });
+  if (!node) throw new Error('Node.js or Bun was not found; cannot verify Vision Toolkit activation.');
+  const boot = await findProfileBoot(paths.runtimeDir);
+  const probe = fileURLToPath(new URL('../scripts/vision-toolkit-profile-probe.mjs', import.meta.url));
+  const processEnv = {
+    ...env,
+    DSH_HOME: paths.dshHome,
+    PROFILE_FILE: boot.profileFile,
+    ENVIRONMENT_MODULE: boot.environmentModule,
+    VISION_TOOLKIT_CHECK_PRESETS: '0'
+  };
+  const runner = options.commandRunner ?? runCommand;
+  const result = await runner(node, [probe], {
+    cwd: paths.dshHome,
+    env: processEnv,
+    platform,
+    timeoutMs: options.activationTimeoutMs ?? 120_000
+  });
+  if (result.exitCode !== 0) throw new Error(`Vision Toolkit activation probe failed: ${redactSensitive(result.stderr || result.stdout, env)}`.trim());
+  const line = `${result.stdout}\n${result.stderr}`.split(/\r?\n/).map((value) => value.trim()).find((value) => value.startsWith('{'));
+  if (!line) throw new Error('Vision Toolkit activation probe returned no structured result.');
+  const parsed = JSON.parse(line) as Partial<VisionToolkitActivation>;
+  const tools = Array.isArray(parsed.tools) && parsed.tools.every((value): value is string => typeof value === 'string') ? parsed.tools : [];
+  const errors = Array.isArray(parsed.errors) ? parsed.errors.filter((value): value is string => typeof value === 'string') : [];
+  return {
+    valid: parsed.valid === true && parsed.settingsReady === true && parsed.attachmentAdmissionReady === true && hasExpectedVisionTools(tools),
+    errors,
+    settingsReady: parsed.settingsReady === true,
+    attachmentAdmissionReady: parsed.attachmentAdmissionReady === true,
+    tools
+  };
+}
+
+export async function checkVisionToolkitActivation(options: VisionToolkitOptions = {}): Promise<VisionToolkitActivation> {
+  const paths = resolveHarnessPaths(options);
+  const profile = options.profile ?? VISION_TOOLKIT_PROFILE;
+  const context: VisionToolkitActivationContext = {
+    profile,
+    profileDir: profileDirFor(paths, profile),
+    runtimeDir: paths.runtimeDir,
+    dshHome: paths.dshHome,
+    expectedTools: VISION_TOOL_NAMES
+  };
+  if (options.activationCheck) return options.activationCheck(context);
+  return runVisionToolkitActivationProbe(options, paths);
+}
+
 /** Verify the installed DSH profile layer without booting or calling the remote provider. */
 export async function verifyVisionToolkit(options: VisionToolkitOptions = {}): Promise<VisionToolkitVerification> {
   const paths = resolveHarnessPaths(options);
@@ -342,12 +527,12 @@ export async function verifyVisionToolkit(options: VisionToolkitOptions = {}): P
     profile,
     profileDir,
     manifestPath,
-    ...(packageVersion === VISION_TOOLKIT_VERSION ? { packageDir } : {}),
-    ...(packageVersion ? { packageVersion } : {}),
-    ...(typeof dependency === 'string' ? { profileDependency: dependency } : {}),
+    packageDir: packageVersion === VISION_TOOLKIT_VERSION ? packageDir : undefined,
+    packageVersion,
+    profileDependency: typeof dependency === 'string' ? dependency : undefined,
     bundleOccurrences,
     runtimeCacheDir: cacheDir,
-    managedRuntimeReady: await managedRuntimeReady(cacheDir, options.platform ?? process.platform),
+    managedRuntimeReady: await managedRuntimeReady(cacheDir, options.platform ?? process.platform, options.commandRunner ?? runCommand, options.env ?? process.env),
     provider: baseProvider()
   };
 }
@@ -359,40 +544,55 @@ export async function prepareVisionToolkit(options: VisionToolkitOptions = {}): 
   const env = pluginEnvironment(options.env ?? process.env);
   await mkdir(paths.dshHome, { recursive: true });
   const current = await verifyVisionToolkit(options);
-  if (current.valid) {
-    if (!current.managedRuntimeReady && options.prepareRuntime !== false) {
+  const complete = async (verification: VisionToolkitVerification): Promise<VisionToolkitVerification> => {
+    if (!verification.valid) throw new Error(`Vision Toolkit installation completed but verification failed: ${verification.errors.join('; ')}`);
+    if (!verification.managedRuntimeReady && options.prepareRuntime !== false) {
       await warmVisionToolkitRuntime(options, paths);
-      return verifyVisionToolkit(options);
+      verification = await verifyVisionToolkit(options);
+      if (!verification.managedRuntimeReady) throw new Error(`Vision Toolkit managed Python runtime failed verification under ${verification.runtimeCacheDir}.`);
     }
-    return current;
-  }
+    const activation = await checkVisionToolkitActivation(options);
+    if (!activation.valid) throw new Error(`Vision Toolkit activation verification failed: ${activation.errors.join('; ') || 'settings, attachment admission, or required schemas were not verified'}`);
+    return verification;
+  };
+  if (current.valid) return complete(current);
+
   const pnpm = await preparePnpmRuntime(options, paths);
   const dsh = options.dshExecutable ?? env.DSH_EXECUTABLE ?? await findDshExecutable(paths.runtimeDir, platform);
   if (!dsh) throw new Error('Pinned DSH executable was not found; cannot install Vision Toolkit through the standard DSH plugin manager.');
-  const runner = options.commandRunner ?? runCommand;
   const profile = options.profile ?? VISION_TOOLKIT_PROFILE;
+  const profileDir = profileDirFor(paths, profile);
+  const snapshot = await snapshotProfileState(paths, profileDir);
+  const runner = options.commandRunner ?? runCommand;
   const args = ['plugin', '--profile', profile, 'add', '--save-exact', '--ignore-scripts', `${VISION_TOOLKIT_PACKAGE}@${VISION_TOOLKIT_VERSION}`];
   const invocation = await resolveDshInvocation(dsh, options, env);
   const commandArgs = [...invocation.prefix, ...args];
-  let result;
   try {
-    result = await runner(invocation.command, commandArgs, {
-      cwd: paths.dshHome,
-      env: pnpm.env,
-      platform,
-      timeoutMs: 15 * 60_000
-    });
+    let result;
+    try {
+      result = await runner(invocation.command, commandArgs, {
+        cwd: paths.dshHome,
+        env: pnpm.env,
+        platform,
+        timeoutMs: 15 * 60_000
+      });
+    } catch (error) {
+      throw new Error(redactSensitive(`Vision Toolkit plugin manager could not start: ${error instanceof Error ? error.message : String(error)}`, env));
+    }
+    if (result.exitCode !== 0) throw new Error(redactSensitive(commandFailure(invocation.command, commandArgs, result, env).message, env));
+    const installed = await verifyVisionToolkit(options);
+    return await complete(installed);
   } catch (error) {
-    throw new Error(redactSensitive(`Vision Toolkit plugin manager could not start: ${error instanceof Error ? error.message : String(error)}`, env));
+    const original = error instanceof Error ? error : new Error(String(error));
+    try {
+      await restoreProfileState(snapshot);
+    } catch (restoreError) {
+      throw new Error(`${original.message}; Vision Toolkit profile rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
+    }
+    throw original;
+  } finally {
+    await rm(snapshot.root, { recursive: true, force: true });
   }
-  if (result.exitCode !== 0) throw new Error(redactSensitive(commandFailure(invocation.command, commandArgs, result, env).message, env));
-  const installed = await verifyVisionToolkit(options);
-  if (!installed.valid) throw new Error(`Vision Toolkit installation completed but verification failed: ${installed.errors.join('; ')}`);
-  if (!installed.managedRuntimeReady && options.prepareRuntime !== false) {
-    await warmVisionToolkitRuntime(options, paths);
-    return verifyVisionToolkit(options);
-  }
-  return installed;
 }
 
 export function visionToolkitDisclosure(): string {

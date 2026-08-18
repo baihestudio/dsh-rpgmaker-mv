@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
+import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { PassThrough } from 'node:stream';
 
 import {
   prepareVisionToolkit,
@@ -11,9 +13,19 @@ import {
   VISION_TOOLKIT_PACKAGE,
   VISION_TOOLKIT_VERSION
 } from '../src/vision-toolkit';
+import { visionToolkitActivationFixture } from './fixtures/vision-toolkit';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
+}
+
+function fakeChild(): EventEmitter & { exitCode: number | null; signalCode: NodeJS.Signals | null; stdout: PassThrough; stderr: PassThrough } {
+  const child = new EventEmitter() as EventEmitter & { exitCode: number | null; signalCode: NodeJS.Signals | null; stdout: PassThrough; stderr: PassThrough };
+  child.exitCode = null;
+  child.signalCode = null;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  return child;
 }
 
 async function writeInstalledProfile(dshHome: string): Promise<void> {
@@ -75,6 +87,7 @@ describe('Vision Toolkit profile integration', () => {
         dshExecutable: dsh,
         pnpmExecutable: pnpm,
         prepareRuntime: false,
+        activationCheck: async () => visionToolkitActivationFixture(),
         commandRunner
       });
       expect(first.valid).toBe(true);
@@ -91,6 +104,7 @@ describe('Vision Toolkit profile integration', () => {
         dshExecutable: dsh,
         pnpmExecutable: pnpm,
         prepareRuntime: false,
+        activationCheck: async () => visionToolkitActivationFixture(),
         commandRunner
       });
       expect(second.valid).toBe(true);
@@ -133,10 +147,103 @@ describe('Vision Toolkit profile integration', () => {
         dshExecutable: dsh,
         npmExecutable: npm,
         prepareRuntime: false,
+        activationCheck: async () => visionToolkitActivationFixture(),
         env: { PATH: '' },
         commandRunner
       });
       expect(result.valid).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('executes the managed Python and rejects an unsupported marker version', async () => {
+    const root = await temp('vision-toolkit-python');
+    try {
+      const dshHome = join(root, 'dsh-home');
+      const runtime = join(dshHome, 'cache', 'dsh-vision-toolkit', 'python', '3.13');
+      await writeInstalledProfile(dshHome);
+      await mkdir(join(runtime, 'Scripts'), { recursive: true });
+      await writeFile(join(runtime, 'runtime.json'), JSON.stringify({ schemaVersion: 1, upstreamCommit: 'commit', upstreamContentSha256: 'a'.repeat(64), requirementsSha256: 'b'.repeat(64), pythonVersion: '3.13.15' }));
+      const interpreter = join(runtime, 'Scripts', 'python.exe');
+      await writeFile(interpreter, 'fixture');
+      const calls: string[] = [];
+      const result = await verifyVisionToolkit({
+        platform: 'win32',
+        dshHome,
+        programRoot: join(root, 'program'),
+        runtimeDir: join(root, 'runtime'),
+        commandRunner: async (command) => {
+          calls.push(command);
+          return { exitCode: 0, stdout: 'Python 3.13.15\\n', stderr: '' };
+        }
+      });
+      expect(result.managedRuntimeReady).toBe(true);
+      expect(calls).toEqual([interpreter]);
+
+      await writeFile(join(runtime, 'runtime.json'), JSON.stringify({ schemaVersion: 1, upstreamCommit: 'commit', upstreamContentSha256: 'a'.repeat(64), requirementsSha256: 'b'.repeat(64), pythonVersion: '3.10.0' }));
+      expect((await verifyVisionToolkit({ platform: 'win32', dshHome, programRoot: join(root, 'program'), runtimeDir: join(root, 'runtime'), commandRunner: async () => ({ exitCode: 0, stdout: 'Python 3.13.15\\n', stderr: '' }) })).managedRuntimeReady).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('restores the profile when activation verification fails', async () => {
+    const root = await temp('vision-toolkit-activation-rollback');
+    try {
+      const dshHome = join(root, 'dsh-home');
+      const programRoot = join(root, 'program');
+      const dsh = join(root, 'dsh.exe');
+      const pnpm = join(root, 'pnpm.exe');
+      await mkdir(programRoot, { recursive: true });
+      const profile = join(dshHome, 'profiles', 'web');
+      await mkdir(profile, { recursive: true });
+      await writeFile(join(profile, 'package.json'), JSON.stringify({ name: 'user-profile', dependencies: { 'user-plugin': '1.0.0' } }));
+      await writeFile(join(profile, 'pnpm-lock.yaml'), 'user lock\n');
+      await writeFile(dsh, 'fixture');
+      await writeFile(pnpm, 'fixture');
+      await expect(prepareVisionToolkit({
+        platform: 'win32',
+        dshHome,
+        programRoot,
+        runtimeDir: join(programRoot, 'runtime', 'dsh'),
+        dshExecutable: dsh,
+        pnpmExecutable: pnpm,
+        prepareRuntime: false,
+        activationCheck: async () => ({ valid: false, errors: ['fixture activation failure'], settingsReady: false, attachmentAdmissionReady: false, tools: [] }),
+        commandRunner: async () => {
+          await writeInstalledProfile(dshHome);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+      })).rejects.toThrow(/fixture activation failure/);
+      expect(await Bun.file(join(profile, 'package.json')).text()).toContain('user-plugin');
+      expect(await Bun.file(join(profile, 'pnpm-lock.yaml')).text()).toBe('user lock\n');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('preserves the warmup failure when process cleanup also fails', async () => {
+    const root = await temp('vision-toolkit-warmup-cleanup');
+    try {
+      const dshHome = join(root, 'dsh-home');
+      const programRoot = join(root, 'program');
+      const dsh = join(root, 'dsh.exe');
+      await writeInstalledProfile(dshHome);
+      await mkdir(programRoot, { recursive: true });
+      await writeFile(dsh, 'fixture');
+      const child = fakeChild();
+      await expect(prepareVisionToolkit({
+        platform: 'win32',
+        dshHome,
+        programRoot,
+        runtimeDir: join(programRoot, 'runtime', 'dsh'),
+        dshExecutable: dsh,
+        runtimeWarmupTimeoutMs: 1,
+        spawnProcess: (() => child) as never,
+        terminateProcessTree: async () => { throw new Error('cleanup failure'); },
+        activationCheck: async () => visionToolkitActivationFixture()
+      })).rejects.toThrow(/timed out/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

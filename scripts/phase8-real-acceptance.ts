@@ -62,8 +62,8 @@ try {
   if (probe.exitCode !== 0) throw new Error(`Vision Toolkit DSH compatibility probe failed: ${probe.stderr || probe.stdout}`);
   const line = probe.stdout.split(/\r?\n/).map((value) => value.trim()).find((value) => value.startsWith('{"ok"'));
   if (!line) throw new Error(`Vision Toolkit compatibility probe returned no structured result: ${probe.stdout}`);
-  const result = JSON.parse(line) as { ok?: boolean; activated?: Array<{ presetId: string; tools: string[] }> };
-  if (result.ok !== true || result.activated?.length !== 4) throw new Error(`Vision Toolkit compatibility probe returned an incomplete result: ${JSON.stringify(result)}`);
+  const result = JSON.parse(line) as { ok?: boolean; attachmentAdmissionReady?: boolean; activated?: Array<{ presetId: string; tools: string[] }> };
+  if (result.ok !== true || result.attachmentAdmissionReady !== true || result.activated?.length !== 4) throw new Error(`Vision Toolkit compatibility probe returned an incomplete result: ${JSON.stringify(result)}`);
   const final = await verifyVisionToolkit({ platform: process.platform, env: safeEnvironment, dshHome, runtimeDir: runtime });
   console.log(JSON.stringify({ ok: true, package: final.packageVersion, bundleLayers: final.bundleOccurrences, managedRuntimeReady: final.managedRuntimeReady, activatedPresets: result.activated.map((entry) => entry.presetId), remoteProviderCalled: false }));
 } finally {
