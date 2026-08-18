@@ -183,6 +183,9 @@ export function createImageTrimPadTool() {
       const output = await resolveWorkspacePath(workspace, args.output, { label: 'Output', forOutput: true })
       if (!(await pathExists(input))) throw new Error(`image_trim_pad input does not exist in the workspace: ${args.input}`)
       if ((args.width === undefined) !== (args.height === undefined)) throw new Error('image_trim_pad requires width and height together when padding a canvas.')
+      if (args.gravity !== undefined && (args.width === undefined || args.height === undefined)) {
+        throw new Error('image_trim_pad gravity requires width and height to place the trimmed image on a padded canvas.')
+      }
       if (args.gravity !== undefined && !GRAVITIES.includes(args.gravity)) throw new Error(`image_trim_pad gravity must be one of: ${GRAVITIES.join(', ')}.`)
       if (await pathExists(output)) {
         throw new Error(`image_trim_pad output already exists: ${args.output}. Choose a new path; the source is never overwritten.`)

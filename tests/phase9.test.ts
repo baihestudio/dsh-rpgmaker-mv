@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -19,7 +21,7 @@ import { buildReleaseZip, inspectReleaseZip } from '../src/release-gate';
 import { validateRelativePath, resolveWorkspacePath } from '../bundle/dsh-image-workshop/lib/workspace.js';
 import { createImageInspectTool, createImageResizePixelTool, createImageTrimPadTool, createImageSheetSliceTool, createImageSheetAssembleTool, createImageAtlasPackTool, createImageOptimizePngTool } from '../bundle/dsh-image-workshop/lib/tools.js';
 import * as imageWorkshopPlugin from '../bundle/dsh-image-workshop/lib/index.js';
-import { clearWorkshopRunner, setWorkshopRunner } from '../bundle/dsh-image-workshop/lib/workshop-client.js';
+import { clearChildSpawner, clearTreeTerminator, clearWorkshopRunner, invokeImageOperation, setChildSpawner, setTreeTerminator, setWorkshopRunner } from '../bundle/dsh-image-workshop/lib/workshop-client.js';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -198,6 +200,7 @@ describe('image tool adapter seam', () => {
         expect(calls[0].args).toEqual(['trim-pad', '--input', join(workspace, 'hero.png'), '--output', join(workspace, 'padded2.png')]);
 
         await expect(tool.execute({ input: 'hero.png', output: 'x.png', width: 64 }, agentExec(workspace))).rejects.toThrow(/together/);
+        await expect(tool.execute({ input: 'hero.png', output: 'x.png', gravity: 'north' }, agentExec(workspace))).rejects.toThrow(/requires width and height/);
         await expect(tool.execute({ input: 'hero.png', output: 'x.png', gravity: 'sideways' }, agentExec(workspace))).rejects.toThrow(/gravity/);
         await writeFile(join(workspace, 'exists.png'), 'x');
         await expect(tool.execute({ input: 'hero.png', output: 'exists.png' }, agentExec(workspace))).rejects.toThrow(/already exists/);
@@ -387,6 +390,98 @@ describe('image tool adapter seam', () => {
         clearWorkshopRunner();
       }
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('parses a canonical manifest larger than 16 KiB through the real subprocess seam', async () => {
+    const root = await temp('adapter-large-manifest');
+    try {
+      clearWorkshopRunner();
+      clearChildSpawner();
+      const fixture = join(root, 'big-cli.mjs');
+      await writeFile(fixture, [
+        'const frames = Array.from({ length: 400 }, (_, i) => ({',
+        "  path: `img/frame-${String(i + 1).padStart(4, '0')}.png`,",
+        '  width: 48,',
+        '  height: 48,',
+        "  format: 'PNG',",
+        "  channels: 'srgba 4.0',",
+        '  hasAlpha: true,',
+        '  opaque: false,',
+        '  bytes: 512 + i,',
+        "  sha256: 'a'.repeat(64)",
+        '}));',
+        "console.log(JSON.stringify({ schemaVersion: 2, operation: 'sheet-slice', toolchain: {}, inputs: [], outputs: frames, options: {}, fidelity: { frames: [] }, verificationLevel: 'decoded-pixels', lossless: true }, null, 2));",
+        ''
+      ].join('\n'));
+      const env = { ...process.env, DSH_IMAGE_WORKSHOP_CLI: fixture, BUN_EXECUTABLE: process.execPath };
+      const result = await invokeImageOperation('sheet-slice', ['--input', 'x', '--output-dir', 'y', '--cell-width', '48', '--cell-height', '48'], env);
+      expect(result.operation).toBe('sheet-slice');
+      expect(Array.isArray(result.outputs)).toBe(true);
+      expect(result.outputs).toHaveLength(400);
+      expect((result.outputs as Array<{ path: string }>)[399].path).toBe('img/frame-0400.png');
+    } finally {
+      clearWorkshopRunner();
+      clearChildSpawner();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects output that exceeds the bounded manifest ceiling instead of truncating', async () => {
+    const root = await temp('adapter-manifest-overflow');
+    try {
+      clearWorkshopRunner();
+      clearChildSpawner();
+      const fixture = join(root, 'huge-cli.mjs');
+      await writeFile(fixture, "console.log(JSON.stringify({ blob: 'x'.repeat(4 * 1024 * 1024 + 1024) }));\n");
+      const env = { ...process.env, DSH_IMAGE_WORKSHOP_CLI: fixture, BUN_EXECUTABLE: process.execPath };
+      await expect(invokeImageOperation('inspect', ['--input', 'x'], env)).rejects.toThrow(/bounded manifest limit/);
+    } finally {
+      clearWorkshopRunner();
+      clearChildSpawner();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('terminates the subprocess tree when the operation is cancelled', async () => {
+    const root = await temp('adapter-tree-terminate');
+    try {
+      clearWorkshopRunner();
+      clearChildSpawner();
+      clearTreeTerminator();
+      const child = new EventEmitter() as EventEmitter & {
+        pid?: number;
+        exitCode: number | null;
+        signalCode: string | null;
+        kill: (signal?: string) => boolean;
+        stdout: PassThrough;
+        stderr: PassThrough;
+      };
+      child.pid = 4242;
+      child.exitCode = null;
+      child.signalCode = null;
+      child.kill = () => true;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      let spawnOptions: Record<string, unknown> | undefined;
+      setChildSpawner((_bun, _args, options) => { spawnOptions = options; return child; });
+      const terminated: unknown[] = [];
+      setTreeTerminator((candidate) => { terminated.push(candidate); });
+      const controller = new AbortController();
+      const env = { ...process.env, DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' };
+      const promise = invokeImageOperation('resize-pixel', ['--input', 'a', '--output', 'b'], env, controller.signal);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+      expect(spawnOptions).toBeDefined();
+      expect(spawnOptions!.detached).toBe(process.platform !== 'win32');
+      controller.abort();
+      expect(terminated).toContain(child);
+      child.emit('close', null);
+      await expect(promise).rejects.toThrow(/cancelled/);
+    } finally {
+      clearWorkshopRunner();
+      clearChildSpawner();
+      clearTreeTerminator();
       await rm(root, { recursive: true, force: true });
     }
   });

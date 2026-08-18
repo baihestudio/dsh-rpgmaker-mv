@@ -24,8 +24,7 @@ All model-facing paths are project-relative and fenced to the Agent's
 immutable workspace directory. Absolute paths, traversal escapes, symlink or
 junction escapes, missing inputs, and outputs outside the workspace are
 rejected before any subprocess starts. Source files are never overwritten and
-pre-existing outputs are rejected. A cancelled tool call aborts the CLI child
-process.
+pre-existing outputs are rejected. A cancelled tool call terminates the CLI subprocess tree (taskkill /T on Windows, process-group termination on POSIX), and large canonical manifests are parsed in full up to a bounded ceiling with explicit overflow rejection rather than silent truncation.
 
 The plugin performs no build on the user's machine, fetches nothing from npm,
 and has no runtime dependencies. It is not published.
