@@ -332,6 +332,33 @@ describe('Windows release gate foundations', () => {
     }
   });
 
+  test('first-install post-swap failure reports no prior tree and preserves diagnostics', async () => {
+    const root = await temp('phase7-first-install-failure');
+    try {
+      const { env } = await prerequisiteBin(root);
+      const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const mutable = join(root, 'mutable');
+      await expect(installWindowsRelease({
+        platform: 'win32',
+        env,
+        releaseRoot: process.cwd(),
+        programRoot: program,
+        mutableRoot: mutable,
+        dshHome: join(mutable, 'state'),
+        commandRunner: prerequisiteRunner(),
+        consent: true,
+        writeInstallMetadata: async () => { throw new Error('first install metadata failure'); }
+      })).rejects.toThrow(/no prior program tree existed; the install path is inactive/i);
+      expect(await Bun.file(program).exists()).toBe(false);
+      const entries = await readdir(dirname(program));
+      const failed = entries.find((entry) => entry.startsWith(`${basename(program)}.failed-`));
+      expect(failed).toBeDefined();
+      expect(await Bun.file(join(dirname(program), failed!, 'Install.cmd')).exists()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('uninstall removes only program files/cache by default and purges state only explicitly', async () => {
     const root = await temp('phase7-uninstall');
     try {

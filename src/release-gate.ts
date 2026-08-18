@@ -240,7 +240,10 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
       if (recoveryError) {
         throw new ReleaseGateError(`Release install failed after the program swap and recovery is degraded: ${detail}. Failed new tree: ${failedRoot ?? paths.programRoot}; prior tree: ${oldMoved ? rollbackRoot : 'none'}; recovery error: ${recoveryError}. Do not delete these paths until recovery is resolved.`);
       }
-      throw new ReleaseGateError(`Release install failed after the program swap; the prior program tree was restored at ${paths.programRoot}. Failed new tree preserved at ${failedRoot ?? 'none'} for diagnostic or explicit recovery: ${detail}`);
+      const recovery = oldMoved
+        ? `the prior program tree was restored at ${paths.programRoot}`
+        : `no prior program tree existed; the install path is inactive`;
+      throw new ReleaseGateError(`Release install failed after the program swap; ${recovery}. Failed new tree preserved at ${failedRoot ?? 'none'} for diagnostic or explicit recovery: ${detail}`);
     }
     await rm(shortcutBackup, { force: true });
     return { releaseRoot, paths, prerequisites, bootstrap, shortcutPath, ...(oldMoved ? { rollbackRoot } : {}) };
