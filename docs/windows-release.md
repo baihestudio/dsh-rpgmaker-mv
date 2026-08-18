@@ -42,7 +42,7 @@ From the installed program root:
 ./doctor.ps1
 ```
 
-Doctor reports the resolved Node/npm, Bun, PowerShell, Git, Coreutils, DSH runtime, RPG Maker MCP runtime, complete image toolchain, credential metadata, and mutable-layout facts without reading credential values. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
+Doctor reports the resolved Node/npm, Bun, PowerShell, Git, Coreutils, DSH runtime, RPG Maker MCP runtime, complete image toolchain, pinned build packager, credential metadata, and mutable-layout facts without reading credential values. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
 
 ## Uninstall
 

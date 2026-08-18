@@ -10,6 +10,7 @@ import { prepareImageToolchain } from './image-workshop';
 import { withoutCredentials, runCommand, type CommandRunner } from './process';
 import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
 import { prepareRpgMakerMcpRuntime } from './rpgmaker';
+import { prepareRpgmPackerRuntime } from './release';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
@@ -131,7 +132,7 @@ function installMetadata(paths: HarnessPaths, prerequisites: WindowsPrerequisite
 }
 
 async function carryForwardVerifiedDependencies(previousProgramRoot: string, nextProgramRoot: string): Promise<void> {
-  for (const relativePath of [join('tools'), join('runtime', 'mcp')]) {
+  for (const relativePath of [join('tools', 'image-workshop', 'native-tools'), join('runtime', 'mcp'), join('runtime', 'rpgmpacker-runtime')]) {
     const source = join(previousProgramRoot, relativePath);
     const destination = join(nextProgramRoot, relativePath);
     if (await exists(source) && !(await exists(destination))) {
@@ -244,6 +245,16 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           commandRunner: context.commandRunner,
           installOxipng: true
         });
+        await prepareRpgmPackerRuntime({
+          platform,
+          env: context.env,
+          dshHome: context.paths.dshHome,
+          runtimeDir: context.paths.runtimeDir,
+          programRoot: context.paths.programRoot,
+          mutableRoot: context.paths.mutableRoot,
+          bunExecutable: context.bunExecutable,
+          commandRunner: context.commandRunner
+        }, platform, context.env);
       });
       await prepareAgentDependencies({ paths, env: installedEnv, bunExecutable, commandRunner: options.commandRunner });
       const metadataPath = join(paths.programRoot, 'install.json');

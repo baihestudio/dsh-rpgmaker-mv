@@ -369,7 +369,11 @@ async function runRequired(runner: CommandRunner, command: string, args: string[
   if (result.exitCode !== 0) throw new ReleaseError(commandFailure(command, args, result, env).message);
 }
 
-async function ensureRpgmPackerRuntime(options: BuildReleaseOptions, platform: string, env: Record<string, string | undefined>): Promise<RpgmPackerRuntime> {
+export async function prepareRpgmPackerRuntime(
+  options: Pick<BuildReleaseOptions, 'platform' | 'env' | 'dshHome' | 'runtimeDir' | 'programRoot' | 'mutableRoot' | 'releaseRuntimeDir' | 'bunExecutable' | 'jsExecutable' | 'commandRunner'>,
+  platform: string,
+  env: Record<string, string | undefined>
+): Promise<RpgmPackerRuntime> {
   const paths = resolveHarnessPaths(options);
   const runtimeDir = resolve(options.releaseRuntimeDir ?? join(paths.programRoot, 'runtime', RELEASE_RUNTIME_NAME));
   const current = await verifyRpgmPackerRuntime(runtimeDir);
@@ -767,7 +771,7 @@ export async function buildRelease(options: BuildReleaseOptions): Promise<BuildR
   const runner = options.commandRunner ?? runCommand;
   let committed = false;
   try {
-    const runtime = await ensureRpgmPackerRuntime(options, platform, env);
+    const runtime = await prepareRpgmPackerRuntime(options, platform, env);
     const args = packagingArgs(runtime, project.projectPath, operation.staging, installation.path, targets);
     let result;
     try {

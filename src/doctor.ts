@@ -9,6 +9,7 @@ import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
 import { resolveImageToolchain } from './image-workshop';
 import { verifyMcpRuntime } from './rpgmaker';
+import { verifyRpgmPackerRuntime } from './release';
 
 export interface DoctorOptions extends PathOptions {
   commandRunner?: CommandRunner;
@@ -18,7 +19,7 @@ export interface DoctorOptions extends PathOptions {
   gitExecutable?: string;
   nodeExecutable?: string;
   npmExecutable?: string;
-  verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; image: DoctorCheck }>;
+  verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; image: DoctorCheck; packager: DoctorCheck }>;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
 }
@@ -252,13 +253,16 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
       } catch (error) {
         image = check('image-toolchain', 'Image asset toolchain', false, `The app-owned image toolchain is not verified: ${error instanceof Error ? error.message : String(error)}`);
       }
+      const packagerRuntime = join(context.paths.programRoot, 'runtime', 'rpgmpacker-runtime');
+      const packager = await verifyRpgmPackerRuntime(packagerRuntime);
       return {
         mcp: check('rpgmaker-mcp', 'RPG Maker MV MCP runtime', mcp.valid, mcp.valid ? `Pinned RPG Maker MV MCP ${mcp.packageVersion} is verified` : mcp.errors.join('; '), mcp.executable ?? mcpRuntime),
-        image
+        image,
+        packager: check('rpgmpacker', 'RPG Maker build packager', packager.valid, packager.valid ? `Pinned rpgmpacker ${packager.version} is verified` : packager.errors.join('; '), packager.script ?? packagerRuntime)
       };
     });
     const agentDependencies = await verifyAgentDependencies({ platform, env: commandEnv, paths, commandRunner: runner });
-    checks.push(agentDependencies.mcp, agentDependencies.image);
+    checks.push(agentDependencies.mcp, agentDependencies.image, agentDependencies.packager);
 
     const layoutPaths = [paths.mutableRoot, paths.dshHome, paths.logsDir, paths.cacheDir];
     const layoutValues = await Promise.all(layoutPaths.map(async (path) => (await stat(path).catch(() => undefined))?.isDirectory() ?? false));

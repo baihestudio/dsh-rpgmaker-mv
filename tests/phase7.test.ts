@@ -185,7 +185,8 @@ describe('Windows release gate foundations', () => {
         platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, commandRunner: prerequisiteRunner(),
         verifyAgentDependencies: async () => ({
           mcp: { id: 'rpgmaker-mcp', label: 'RPG Maker MV MCP runtime', ok: true, detail: 'fixture MCP verified' },
-          image: { id: 'image-toolchain', label: 'Image asset toolchain', ok: true, detail: 'fixture image tools verified' }
+          image: { id: 'image-toolchain', label: 'Image asset toolchain', ok: true, detail: 'fixture image tools verified' },
+          packager: { id: 'rpgmpacker', label: 'RPG Maker build packager', ok: true, detail: 'fixture packager verified' }
         })
       });
       expect(report.ok).toBe(true);
@@ -314,9 +315,9 @@ describe('Windows release gate foundations', () => {
         const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
         const mutable = join(root, 'mutable');
         const state = join(mutable, 'state');
-        await mkdir(join(program, 'tools'), { recursive: true });
+        await mkdir(join(program, 'tools', 'image-workshop', 'native-tools'), { recursive: true });
         await writeFile(join(program, 'old-tree.txt'), `prior ${failure}\n`);
-        await writeFile(join(program, 'tools', 'preserved-tool.txt'), 'verified dependency fixture\n');
+        await writeFile(join(program, 'tools', 'image-workshop', 'native-tools', 'preserved-tool.txt'), 'verified dependency fixture\n');
         const baseRunner = prerequisiteRunner();
         const commandRunner = failure === 'bootstrap'
           ? async (command: string, args: string[], options: { cwd?: string }) => args[0] === 'add'
@@ -342,7 +343,7 @@ describe('Windows release gate foundations', () => {
         const failed = entries.find((entry) => entry.startsWith(`${basename(program)}.failed-`));
         expect(failed).toBeDefined();
         expect(await Bun.file(join(dirname(program), failed!, 'Install.cmd')).exists()).toBe(true);
-        expect(await readFile(join(dirname(program), failed!, 'tools', 'preserved-tool.txt'), 'utf8')).toBe('verified dependency fixture\n');
+        expect(await readFile(join(dirname(program), failed!, 'tools', 'image-workshop', 'native-tools', 'preserved-tool.txt'), 'utf8')).toBe('verified dependency fixture\n');
         expect(await Bun.file(join(program, 'install.json')).exists()).toBe(false);
       } finally {
         await rm(root, { recursive: true, force: true });
