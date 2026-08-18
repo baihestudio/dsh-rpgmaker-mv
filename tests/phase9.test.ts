@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
@@ -290,6 +290,67 @@ describe('app-owned image tool plugin installation', () => {
       const outside = await verifyImageWorkshopPlugin({ platform: 'win32', dshHome, programRoot, bundleDir: external });
       expect(outside.ownedPath).toBe(false);
       expect(outside.valid).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('accepts a copied install at the canonical profile path with a matching hash', async () => {
+    const root = await temp('plugin-copied');
+    try {
+      const programRoot = join(root, 'program');
+      const dshHome = join(root, 'dsh-home');
+      const bundleDir = join(programRoot, IMAGE_WORKSHOP_BUNDLE_RELATIVE);
+      await mkdir(bundleDir, { recursive: true });
+      await copyBundle(bundleDir);
+      const profile = join(dshHome, 'profiles', 'web');
+      const installedDir = join(profile, 'node_modules', IMAGE_WORKSHOP_PLUGIN_PACKAGE);
+      await mkdir(dirname(installedDir), { recursive: true });
+      // Real DSH rc.7 packs a file: dependency into the profile node_modules
+      // as a plain directory copy rather than a symlink. Use a relative spec
+      // to cover resolution against the profile directory.
+      await cp(bundleDir, installedDir, { recursive: true });
+      const manifest: Record<string, unknown> = {
+        name: 'dsh-profile-web', private: true, version: '0.1.0',
+        dependencies: { [IMAGE_WORKSHOP_PLUGIN_PACKAGE]: `file:${relative(profile, bundleDir)}` }
+      };
+      await writeFile(join(profile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      await writeFile(join(profile, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\nimporters:\n  .:\n    dependencies:\n      __placeholder__:\n        specifier: "0.0.0"\n        version: 0.0.0\n');
+      const verification = await verifyImageWorkshopPlugin({ platform: 'win32', dshHome, programRoot, bundleDir });
+      expect(verification.valid).toBe(true);
+      expect(verification.packageDir).toBe(await realpath(installedDir));
+      expect(verification.profileDependency).toBe(`file:${relative(profile, bundleDir)}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a dependency spec that does not resolve to the app-owned bundle', async () => {
+    const root = await temp('plugin-misdirected-dep');
+    try {
+      const programRoot = join(root, 'program');
+      const dshHome = join(root, 'dsh-home');
+      const bundleDir = join(programRoot, IMAGE_WORKSHOP_BUNDLE_RELATIVE);
+      await mkdir(bundleDir, { recursive: true });
+      await copyBundle(bundleDir);
+      // A valid copy at the canonical profile path, but the profile dependency
+      // points at a different (still file:) location, so the install is not the
+      // app-owned bundle and must be rejected so repair can relink it.
+      const elsewhere = join(root, 'elsewhere');
+      await copyBundle(elsewhere);
+      const profile = join(dshHome, 'profiles', 'web');
+      const installedDir = join(profile, 'node_modules', IMAGE_WORKSHOP_PLUGIN_PACKAGE);
+      await mkdir(dirname(installedDir), { recursive: true });
+      await cp(bundleDir, installedDir, { recursive: true });
+      const manifest: Record<string, unknown> = {
+        name: 'dsh-profile-web', private: true, version: '0.1.0',
+        dependencies: { [IMAGE_WORKSHOP_PLUGIN_PACKAGE]: `file:${elsewhere}` }
+      };
+      await writeFile(join(profile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      await writeFile(join(profile, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\nimporters:\n  .:\n    dependencies:\n      __placeholder__:\n        specifier: "0.0.0"\n        version: 0.0.0\n');
+      const verification = await verifyImageWorkshopPlugin({ platform: 'win32', dshHome, programRoot, bundleDir });
+      expect(verification.valid).toBe(false);
+      expect(verification.errors.join(' ')).toMatch(/does not resolve to the app-owned local bundle/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

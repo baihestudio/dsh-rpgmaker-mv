@@ -104,6 +104,20 @@ function profilePackageDir(profileDir: string): string {
   return join(profileDir, 'node_modules', IMAGE_WORKSHOP_PLUGIN_PACKAGE);
 }
 
+function pathKey(path: string, platform: string): string {
+  return platform === 'win32' ? path.toLowerCase() : path;
+}
+
+function sameCanonicalPath(a: string, b: string, platform: string): boolean {
+  return pathKey(a, platform) === pathKey(b, platform);
+}
+
+function isWithinCanonicalPath(child: string, parent: string, platform: string): boolean {
+  const keyChild = pathKey(child, platform);
+  const keyParent = pathKey(parent, platform);
+  return keyChild === keyParent || keyChild.startsWith(`${keyParent}${sep}`);
+}
+
 interface ImageWorkshopProfileSnapshotEntry {
   source: string;
   backup: string;
@@ -156,6 +170,7 @@ async function restoreImageWorkshopProfile(snapshot: ImageWorkshopProfileSnapsho
 
 export async function verifyImageWorkshopPlugin(options: ImageWorkshopPluginOptions = {}): Promise<ImageWorkshopPluginVerification> {
   const paths = resolveHarnessPaths(options);
+  const platform = options.platform ?? process.platform;
   const bundleDir = resolve(options.bundleDir ?? imageWorkshopBundleDirFor(paths));
   const errors: string[] = [];
   const manifest = await readJson(join(bundleDir, 'package.json'));
@@ -187,6 +202,16 @@ export async function verifyImageWorkshopPlugin(options: ImageWorkshopPluginOpti
     errors.push(`profile dependency ${IMAGE_WORKSHOP_PLUGIN_PACKAGE} is not installed in the ${profile} profile`);
   } else if (!/^(file:|link:)/i.test(profileDependency)) {
     errors.push(`profile dependency ${IMAGE_WORKSHOP_PLUGIN_PACKAGE} is not pinned to the app-owned local bundle (file:/link:); a bare or npm specifier could resolve from the public registry`);
+  } else {
+    // A file:/link: spec alone proves nothing; resolve it against the profile
+    // directory (covering Windows absolute paths and relative package specs)
+    // and require it to be the exact app-owned source bundle.
+    const spec = profileDependency.replace(/^(file|link):/i, '');
+    const targetReal = await realpath(resolve(profileDir, spec)).catch(() => undefined);
+    const bundleRealForDependency = await realpath(bundleDir).catch(() => bundleDir);
+    if (!targetReal || !sameCanonicalPath(targetReal, bundleRealForDependency, platform)) {
+      errors.push(`profile dependency ${IMAGE_WORKSHOP_PLUGIN_PACKAGE} does not resolve to the app-owned local bundle (got ${profileDependency})`);
+    }
   }
   if (bundleOccurrences !== 0) errors.push(`profile contains ${bundleOccurrences} global ${IMAGE_WORKSHOP_PLUGIN_PACKAGE} bundle layers; the image tools must be Agent-scoped through the asset-workshop composition, never mounted globally`);
 
@@ -200,11 +225,21 @@ export async function verifyImageWorkshopPlugin(options: ImageWorkshopPluginOpti
   if (!(await exists(installedDir))) {
     errors.push(`installed profile package ${IMAGE_WORKSHOP_PLUGIN_PACKAGE} was not found under the ${profile} profile`);
   } else {
-    const installedReal = await realpath(installedDir).catch(() => undefined);
     const ownedReal = await realpath(paths.programRoot).catch(() => paths.programRoot);
-    installedResolved = installedReal;
-    if (!installedReal || !(installedReal === ownedReal || installedReal.startsWith(`${ownedReal}${sep}`))) {
-      errors.push(`installed profile package does not resolve to the app-owned program root (got ${installedReal ?? 'unresolvable'})`);
+    const installedReal = await realpath(installedDir).catch(() => undefined);
+    installedResolved = installedReal ?? installedDir;
+    // DSH rc.7 installs a file: dependency in one of two supported forms:
+    // (a) a link resolving to the exact app-owned bundle, or (b) an ordinary
+    // exact-hash package copy at the canonical profile node_modules path.
+    // A broken or misdirected link (resolving elsewhere) is rejected and
+    // repaired instead of being accepted as valid.
+    const canonicalProfile = await realpath(profileDir).catch(() => profileDir);
+    const canonicalInstalled = join(canonicalProfile, 'node_modules', IMAGE_WORKSHOP_PLUGIN_PACKAGE);
+    const linkedToOwned = installedReal !== undefined
+      && (sameCanonicalPath(installedReal, ownedReal, platform) || isWithinCanonicalPath(installedReal, ownedReal, platform));
+    const canonicalCopy = installedReal !== undefined && sameCanonicalPath(installedReal, canonicalInstalled, platform);
+    if (!linkedToOwned && !canonicalCopy) {
+      errors.push(`installed profile package does not resolve to the app-owned program root or the canonical profile copy (got ${installedReal ?? 'unresolvable'})`);
     }
     const installedManifest = await readJson(join(installedReal ?? installedDir, 'package.json'));
     const installedName = typeof installedManifest?.name === 'string' ? installedManifest.name : undefined;
