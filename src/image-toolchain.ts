@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { isRegularFile } from './files';
 import { resolveExecutable } from './executable';
 import { commandFailure, runCommand, withoutCredentials, type CommandRunner } from './process';
-import { pinnedImageRelease, pinnedOxipngRelease } from './image-releases';
+import { pinnedImageRelease, pinnedOxipngRelease, type ImageReleasePin } from './image-releases';
 
 export const IMAGE_MAGICK_VERSION = '7.1.2-29';
 export const FREE_TEX_PACKER_VERSION = '0.3.9';
@@ -18,6 +18,9 @@ const FREE_TEX_PACKAGE = 'free-tex-packer-core';
 const FREE_TEX_LOCK_INTEGRITY = 'sha512-Ah4FuRZc57oVLOtkyUjGB9YAjF0ot3T6ccvXw/lvhkndneHwbfkrNT8yz9E7kFak26DPsWJhXS6JjYEsCJkiFA==';
 const DEFAULT_TOOLCHAIN_RELATIVE = join('rpgmaker-mv', 'image-workshop');
 const IMAGE_MANIFEST_NAME = 'toolchain.json';
+const NATIVE_TOOLS_DIRECTORY = 'native-tools';
+const IMAGE_MAGICK_INSTALL_DIRECTORY = 'image-magick';
+const OXIPNG_INSTALL_DIRECTORY = 'oxipng';
 
 export interface OptionalEnhancements {
   aseprite?: string;
@@ -72,6 +75,18 @@ export interface ImageToolchain {
   optionalEnhancements: OptionalEnhancements;
 }
 
+export interface ImageArchiveOperationOptions {
+  platform: string;
+  env: Record<string, string | undefined>;
+  executableName: string;
+  version: string;
+  kind: 'ImageMagick' | 'oxipng';
+}
+
+export type ImageArchiveDownloader = (url: string, destination: string, options: ImageArchiveOperationOptions) => Promise<void>;
+export type ImageArchiveExtractor = (archive: string, destination: string, options: ImageArchiveOperationOptions) => Promise<void>;
+export type ImageToolRenamePath = (from: string, to: string) => Promise<void>;
+
 export interface ImageToolchainOptions extends PathOptions {
   toolchainRoot?: string;
   manifestPath?: string;
@@ -82,6 +97,15 @@ export interface ImageToolchainOptions extends PathOptions {
   oxipngExecutable?: string;
   oxipngSha256?: string;
   oxipngUrl?: string;
+  installOxipng?: boolean;
+  /** Test-owned release seam; production uses the checked-in release pins. */
+  imageMagickRelease?: ImageReleasePin;
+  /** Test-owned release seam; production uses the checked-in release pins. */
+  oxipngRelease?: ImageReleasePin;
+  downloadArchive?: ImageArchiveDownloader;
+  extractArchive?: ImageArchiveExtractor;
+  archiveExtractorExecutable?: string;
+  renamePath?: ImageToolRenamePath;
   commandRunner?: CommandRunner;
 }
 
@@ -226,6 +250,222 @@ async function verifyPinnedFile(path: string, label: string, expectedHash: strin
   }
 }
 
+async function assertNoSymlinkPath(root: string, path: string, label: string): Promise<void> {
+  const resolvedRoot = resolve(root);
+  const resolvedPath = resolve(path);
+  if (!isWithin(resolvedRoot, resolvedPath)) throw new ImageWorkshopError(`${label} escaped the harness-owned staging directory: ${resolvedPath}.`);
+  const parts = relative(resolvedRoot, resolvedPath).split(sep).filter(Boolean);
+  let current = resolvedRoot;
+  for (const part of parts) {
+    current = join(current, part);
+    const info = await lstat(current).catch(() => undefined);
+    if (info?.isSymbolicLink()) throw new ImageWorkshopError(`${label} contains a symbolic link or junction: ${current}.`);
+  }
+}
+
+async function optionalLstat(path: string): Promise<Awaited<ReturnType<typeof lstat>> | undefined> {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+function samePathIdentity(left: Awaited<ReturnType<typeof lstat>>, right: Awaited<ReturnType<typeof lstat>>): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
+}
+
+async function defaultDownloadArchive(url: string, destination: string): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    throw new ImageWorkshopError(`Pinned image tool download could not start: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!response.ok) throw new ImageWorkshopError(`Pinned image tool download failed with HTTP ${response.status}.`);
+  try {
+    await writeFile(destination, Buffer.from(await response.arrayBuffer()), { flag: 'wx' });
+  } catch (error) {
+    throw new ImageWorkshopError(`Pinned image tool archive could not be staged: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function defaultExtractArchive(
+  archive: string,
+  destination: string,
+  operation: ImageArchiveOperationOptions,
+  options: ImageToolchainOptions
+): Promise<void> {
+  const runner = options.commandRunner ?? runCommand;
+  const env = withoutCredentials(operation.env);
+  const extractor = options.archiveExtractorExecutable ?? operation.env.DSH_ARCHIVE_EXTRACTOR ?? 'tar';
+  const args = ['-xf', archive, '-C', destination];
+  let result;
+  try {
+    result = await runner(extractor, args, {
+      cwd: destination,
+      env,
+      platform: operation.platform,
+      timeoutMs: 15 * 60_000
+    });
+  } catch (error) {
+    throw new ImageWorkshopError(`${operation.kind} archive extraction could not start: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (result.exitCode !== 0) throw new ImageWorkshopError(`${operation.kind} archive extraction failed: ${commandFailure(extractor, args, result, operation.env).message}`);
+}
+
+async function findExtractedExecutable(root: string, executableName: string, label: string): Promise<string> {
+  const matches: string[] = [];
+  const walk = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const candidate = join(directory, entry.name);
+      const info = await lstat(candidate);
+      if (info.isSymbolicLink()) throw new ImageWorkshopError(`${label} archive contained a symbolic link: ${candidate}.`);
+      if (info.isDirectory()) {
+        await walk(candidate);
+      } else if (info.isFile() && entry.name.toLowerCase() === executableName.toLowerCase()) {
+        matches.push(candidate);
+      }
+    }
+  };
+  await walk(root);
+  if (matches.length !== 1) throw new ImageWorkshopError(`${label} archive must contain exactly one ${executableName}; found ${matches.length}.`);
+  return matches[0];
+}
+
+function nativeInstallDirectory(toolchainRoot: string, kind: 'imageMagick' | 'oxipng'): string {
+  return join(toolchainRoot, NATIVE_TOOLS_DIRECTORY, kind === 'imageMagick' ? IMAGE_MAGICK_INSTALL_DIRECTORY : OXIPNG_INSTALL_DIRECTORY);
+}
+
+function releaseFor(options: ImageToolchainOptions, platform: string, kind: 'imageMagick' | 'oxipng'): ImageReleasePin | undefined {
+  if (kind === 'imageMagick' && options.imageMagickRelease) return options.imageMagickRelease;
+  if (kind === 'oxipng' && options.oxipngRelease) return options.oxipngRelease;
+  return kind === 'imageMagick'
+    ? pinnedImageRelease(platform) ?? (platform === 'win32' ? pinnedImageRelease(platform, 'x64') : undefined)
+    : pinnedOxipngRelease(platform) ?? (platform === 'win32' ? pinnedOxipngRelease(platform, 'x64') : undefined);
+}
+
+async function validInstalledNativeExecutable(
+  root: string,
+  executable: string,
+  expectedVersion: string,
+  expectedHash: string,
+  options: ImageToolchainOptions,
+  label: string
+): Promise<boolean> {
+  try {
+    await assertNoSymlinkPath(root, executable, label);
+    await verifyPinnedFile(executable, label, expectedHash);
+    const output = await commandVersion(options.commandRunner ?? runCommand, executable, ['--version'], options, label);
+    requireVersion(label === 'oxipng' ? parseOxipngVersion(output) : parseImageMagickVersion(output), expectedVersion, label);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function installPinnedNativeTool(
+  options: ImageToolchainOptions,
+  toolchainRoot: string,
+  kind: 'imageMagick' | 'oxipng',
+  release: ImageReleasePin
+): Promise<string> {
+  const expectedVersion = kind === 'imageMagick' ? IMAGE_MAGICK_VERSION : OXIPNG_VERSION;
+  const label = kind === 'imageMagick' ? 'ImageMagick' : 'oxipng';
+  const activeRoot = nativeInstallDirectory(toolchainRoot, kind);
+  const parent = dirname(activeRoot);
+  const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const runner = options.commandRunner ?? runCommand;
+  const renameForInstall = options.renamePath ?? rename;
+  const expectedExecutableHash = requireSha256(release.executableSha256, `${label} executable SHA-256`);
+  const expectedArchiveHash = requireSha256(release.archiveSha256, `${label} archive SHA-256`);
+  const executableName = requireString(release.executableName, `${label} archived executable member`);
+  validateUrl(release.url, expectedVersion, `${label} URL`);
+
+  await mkdir(parent, { recursive: true });
+  const existingRoot = await optionalLstat(activeRoot);
+  if (existingRoot?.isSymbolicLink()) throw new ImageWorkshopError(`${label} install directory is a symbolic link or junction; refusing to replace it: ${activeRoot}.`);
+  let existingCandidate = join(activeRoot, executableName);
+  if (existingRoot?.isDirectory()) {
+    if (!(await optionalLstat(existingCandidate))?.isFile()) {
+      existingCandidate = await findExtractedExecutable(activeRoot, executableName, label).catch(() => '');
+    }
+    if (existingCandidate && await validInstalledNativeExecutable(activeRoot, existingCandidate, expectedVersion, expectedExecutableHash, options, label)) return existingCandidate;
+  }
+
+  const initialIdentity = existingRoot;
+  const downloadDirectory = await mkdtemp(join(toolchainRoot, `.${kind}.download-`));
+  const staging = await mkdtemp(join(parent, `.${basename(activeRoot)}.staging-`));
+  const archiveName = basename(new URL(release.url).pathname) || `${kind}.archive`;
+  const archive = join(downloadDirectory, archiveName);
+  let stagingOwned = true;
+  let rollback: string | undefined;
+  try {
+    const operation = { platform, env, executableName, version: expectedVersion, kind: label as 'ImageMagick' | 'oxipng' };
+    const downloader = options.downloadArchive ?? defaultDownloadArchive;
+    await downloader(release.url, archive, operation);
+    await verifyPinnedFile(archive, `${label} archive`, expectedArchiveHash);
+    const extractor = options.extractArchive ?? ((archivePath, destination, extractionOptions) => defaultExtractArchive(archivePath, destination, extractionOptions, options));
+    await extractor(archive, staging, operation);
+    const stagedExecutable = await findExtractedExecutable(staging, executableName, label);
+    await assertNoSymlinkPath(staging, stagedExecutable, label);
+    await verifyPinnedFile(stagedExecutable, label, expectedExecutableHash);
+    const stagedVersionOutput = await commandVersion(runner, stagedExecutable, ['--version'], options, label);
+    requireVersion(kind === 'imageMagick' ? parseImageMagickVersion(stagedVersionOutput) : parseOxipngVersion(stagedVersionOutput), expectedVersion, label);
+
+    const currentRoot = await optionalLstat(activeRoot);
+    if (initialIdentity) {
+      if (!currentRoot || !samePathIdentity(initialIdentity, currentRoot)) throw new ImageWorkshopError(`${label} install directory changed during preparation; refusing to overwrite a racing path: ${activeRoot}.`);
+    } else if (currentRoot) {
+      throw new ImageWorkshopError(`${label} install directory appeared during preparation; refusing to overwrite a racing path: ${activeRoot}.`);
+    }
+
+    if (currentRoot) {
+      rollback = join(parent, `.${basename(activeRoot)}.rollback-${randomUUID()}`);
+      await renameForInstall(activeRoot, rollback);
+    }
+    try {
+      await renameForInstall(staging, activeRoot);
+      stagingOwned = false;
+    } catch (error) {
+      if (rollback) await renameForInstall(rollback, activeRoot).catch((restoreError) => {
+        throw new ImageWorkshopError(`${label} atomic swap failed and the prior install could not be restored: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
+      });
+      throw new ImageWorkshopError(`${label} atomic swap failed; the prior install was preserved: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    const relativeExecutable = relative(staging, stagedExecutable);
+    const installedExecutable = join(activeRoot, relativeExecutable);
+    try {
+      await assertNoSymlinkPath(activeRoot, installedExecutable, label);
+      await verifyPinnedFile(installedExecutable, label, expectedExecutableHash);
+      const installedVersionOutput = await commandVersion(runner, installedExecutable, ['--version'], options, label);
+      requireVersion(kind === 'imageMagick' ? parseImageMagickVersion(installedVersionOutput) : parseOxipngVersion(installedVersionOutput), expectedVersion, label);
+    } catch (error) {
+      const failedRoot = join(parent, `.${basename(activeRoot)}.failed-${randomUUID()}`);
+      await renameForInstall(activeRoot, failedRoot).catch(() => undefined);
+      if (rollback) {
+        await renameForInstall(rollback, activeRoot).catch((restoreError) => {
+          throw new ImageWorkshopError(`${label} post-swap verification failed and the prior install could not be restored: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
+        });
+      }
+      await rm(failedRoot, { recursive: true, force: true });
+      throw new ImageWorkshopError(`${label} post-swap verification failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (rollback) await rm(rollback, { recursive: true, force: true });
+    return installedExecutable;
+  } catch (error) {
+    if (stagingOwned) await rm(staging, { recursive: true, force: true });
+    if (error instanceof ImageWorkshopError) throw error;
+    throw new ImageWorkshopError(`${label} installation failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    await rm(downloadDirectory, { recursive: true, force: true });
+  }
+}
+
 function parseBunLock(content: string): JsonObject | undefined {
   try {
     return asObject(JSON.parse(content));
@@ -342,7 +582,7 @@ export async function resolveImageToolchain(options: ImageToolchainOptions = {})
     }
   }
 
-  const release = pinnedImageRelease(platform) ?? (platform === 'win32' ? pinnedImageRelease(platform, 'x64') : undefined);
+  const release = releaseFor(options, platform, 'imageMagick');
   const manifestImage = manifest ? nativeManifestValue(manifest.imageMagick, 'ImageMagick', IMAGE_MAGICK_VERSION, release) : undefined;
   const configuredImage = options.imageMagickExecutable ?? env.DSH_IMAGE_MAGICK ?? manifestImage?.path;
   const imageMagick = absoluteConfiguredPath(configuredImage, 'ImageMagick executable');
@@ -383,7 +623,8 @@ export async function resolveImageToolchain(options: ImageToolchainOptions = {})
     }
   }
 
-  const configuredOxipng = options.oxipngExecutable ?? env.DSH_OXIPNG ?? (asObject(manifest?.oxipng)?.path as string | undefined);
+  const explicitlyConfiguredOxipng = options.oxipngExecutable ?? env.DSH_OXIPNG;
+  const configuredOxipng = explicitlyConfiguredOxipng ?? (options.installOxipng ? (asObject(manifest?.oxipng)?.path as string | undefined) : undefined);
   let oxipng: string | undefined;
   let oxipngVersion: string | undefined;
   let oxipngSha256: string | undefined;
@@ -391,11 +632,12 @@ export async function resolveImageToolchain(options: ImageToolchainOptions = {})
   let oxipngArchiveSha256: string | undefined;
   let oxipngArchiveMember: string | undefined;
   if (configuredOxipng) {
-    const releaseOxipng = pinnedOxipngRelease(platform) ?? (platform === 'win32' ? pinnedOxipngRelease(platform, 'x64') : undefined);
-    const manifestOxipng = manifest ? nativeManifestValue(manifest.oxipng, 'oxipng', OXIPNG_VERSION, releaseOxipng) : undefined;
+    const releaseOxipng = releaseFor(options, platform, 'oxipng');
+    const manifestOxipngValue = asObject(manifest?.oxipng);
+    const manifestOxipng = manifestOxipngValue ? nativeManifestValue(manifestOxipngValue, 'oxipng', OXIPNG_VERSION, releaseOxipng) : undefined;
     oxipng = absoluteConfiguredPath(configuredOxipng, 'oxipng executable');
     if (!oxipng) throw new ImageWorkshopError('oxipng was configured but its path is empty.');
-    const explicitOxipng = Boolean(options.oxipngExecutable ?? env.DSH_OXIPNG);
+    const explicitOxipng = Boolean(explicitlyConfiguredOxipng);
     oxipngSha256 = requireSha256(options.oxipngSha256 ?? env.DSH_OXIPNG_SHA256 ?? manifestOxipng?.sha256 ?? (explicitOxipng ? undefined : releaseOxipng?.executableSha256), 'oxipng executable SHA-256');
     oxipngUrl = validateUrl(options.oxipngUrl ?? env.DSH_OXIPNG_URL ?? manifestOxipng?.url ?? releaseOxipng?.url, OXIPNG_VERSION, 'oxipng URL');
     oxipngArchiveSha256 = requireSha256(manifestOxipng?.archiveSha256 ?? releaseOxipng?.archiveSha256, 'oxipng archive SHA-256');
@@ -569,12 +811,36 @@ export async function ensureImageHelperRuntime(options: ImageHelperRuntimeOption
 }
 
 export async function prepareImageToolchain(options: ImageToolchainPreparationOptions = {}): Promise<ImageToolchainPreparation> {
-  const helperRuntimeDir = await ensureImageHelperRuntime(options);
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
   const toolchainRoot = imageToolchainRoot(options);
+  const imageRelease = releaseFor(options, platform, 'imageMagick');
+  const configuredImageMagick = options.imageMagickExecutable ?? env.DSH_IMAGE_MAGICK;
+  let imageMagick = configuredImageMagick;
+  if (!configuredImageMagick && platform === 'win32') {
+    if (!imageRelease) throw new ImageWorkshopError(`Pinned ImageMagick ${IMAGE_MAGICK_VERSION} has no release asset for ${platform}-${process.arch}.`);
+    imageMagick = await installPinnedNativeTool(options, toolchainRoot, 'imageMagick', imageRelease);
+  }
+
+  const explicitlyConfiguredOxipng = options.oxipngExecutable ?? env.DSH_OXIPNG;
+  const installOxipng = options.installOxipng === true || env.DSH_INSTALL_OXIPNG === '1' || env.DSH_INSTALL_OXIPNG === 'true';
+  const oxipngRelease = releaseFor(options, platform, 'oxipng');
+  let oxipng = explicitlyConfiguredOxipng;
+  if (installOxipng && !explicitlyConfiguredOxipng) {
+    if (!oxipngRelease) throw new ImageWorkshopError(`Pinned oxipng ${OXIPNG_VERSION} has no release asset for ${platform}-${process.arch}.`);
+    oxipng = await installPinnedNativeTool(options, toolchainRoot, 'oxipng', oxipngRelease);
+  }
+
+  const helperRuntimeDir = await ensureImageHelperRuntime(options);
   const toolchain = await resolveImageToolchain({
     ...options,
     toolchainRoot,
-    helperRoot: helperRuntimeDir
+    helperRoot: helperRuntimeDir,
+    ...(imageMagick ? { imageMagickExecutable: imageMagick } : {}),
+    ...(imageMagick && imageRelease ? { imageMagickSha256: options.imageMagickSha256 ?? env.DSH_IMAGE_MAGICK_SHA256 ?? imageRelease.executableSha256, imageMagickUrl: options.imageMagickUrl ?? env.DSH_IMAGE_MAGICK_URL ?? imageRelease.url } : {}),
+    ...(oxipng ? { oxipngExecutable: oxipng } : {}),
+    ...(oxipng && oxipngRelease ? { oxipngSha256: options.oxipngSha256 ?? env.DSH_OXIPNG_SHA256 ?? oxipngRelease.executableSha256, oxipngUrl: options.oxipngUrl ?? env.DSH_OXIPNG_URL ?? oxipngRelease.url } : {}),
+    ...(installOxipng ? { installOxipng: true } : {})
   });
   await writeImageToolchainManifest(toolchain);
   return { toolchain, helperRuntimeDir };

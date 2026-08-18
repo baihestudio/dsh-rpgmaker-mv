@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
-import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
@@ -19,7 +19,11 @@ import {
   toolchainSummary,
   verifyImageToolchain,
   writeImageToolchainManifest,
+  type ImageArchiveDownloader,
+  type ImageArchiveExtractor,
+  type ImageArchiveOperationOptions,
   type ImageHelperRuntimeOptions,
+  type ImageToolRenamePath,
   type ImageToolchain,
   type ImageToolchainManifest,
   type ImageToolchainOptions,
@@ -48,7 +52,11 @@ export {
   writeImageToolchainManifest
 };
 export type {
+  ImageArchiveDownloader,
+  ImageArchiveExtractor,
+  ImageArchiveOperationOptions,
   ImageHelperRuntimeOptions,
+  ImageToolRenamePath,
   ImageToolchain,
   ImageToolchainManifest,
   ImageToolchainOptions,
@@ -196,6 +204,18 @@ function resolvedInput(path: string, label = 'Input'): string {
 
 function manifestPathForOutput(output: string): string {
   return `${output}.manifest.json`;
+}
+
+function atlasOutputPaths(outputDir: string): { outputDir: string; textureName: string; png: string; json: string; manifest: string } {
+  const directory = resolve(outputDir);
+  const textureName = basename(directory).replace(/\.png$/i, '') || 'atlas';
+  return {
+    outputDir: directory,
+    textureName,
+    png: join(directory, `${textureName}.png`),
+    json: join(directory, `${textureName}.json`),
+    manifest: join(directory, 'manifest.json')
+  };
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -771,8 +791,7 @@ export class ImageWorkshop {
     if (options.inputs.length === 0) throw new ImageWorkshopError('Atlas packing requires at least one input.');
     if (options.inputs.length > 256) throw new ImageWorkshopError('Atlas packing is bounded to 256 input images.');
     const inputs = options.inputs.map((path) => resolvedInput(path));
-    const output = resolvedInput(options.output, 'Output');
-    if (!/\.png$/i.test(output)) throw new ImageWorkshopError('Atlas output must be a PNG so RPG Maker MV retains alpha fidelity.');
+    const outputPaths = atlasOutputPaths(options.output);
     const maxSize = numberOption(options.maxSize, 'Maximum atlas size');
     if (maxSize === undefined) throw new ImageWorkshopError('Atlas packing requires a maximum size.');
     const padding = numberOption(options.padding ?? 0, 'Padding', 0)!;
@@ -787,11 +806,10 @@ export class ImageWorkshop {
     const names = inputs.map((path) => basename(path));
     const nameKeys = names.map((name) => this.dependencies.platform === 'win32' ? name.toLowerCase() : name);
     if (new Set(nameKeys).size !== names.length) throw new ImageWorkshopError('Atlas inputs must have unique file names so the JSON manifest can identify every source exactly once.');
-    const atlasJson = join(dirname(output), `${basename(output, extname(output))}.json`);
-    const manifestPath = manifestPathForOutput(output);
-    const operation = await beginFileOperation([output, atlasJson, manifestPath], inputs);
-    const stagedPng = join(operation.tempDir, basename(output));
-    const stagedJson = join(operation.tempDir, basename(atlasJson));
+    const operation = await beginDirectoryOperation(outputPaths.outputDir, inputs);
+    const stagedPng = join(operation.tempDir, basename(outputPaths.png));
+    const stagedJson = join(operation.tempDir, basename(outputPaths.json));
+    const stagedManifest = join(operation.tempDir, basename(outputPaths.manifest));
     try {
       let packAsync = this.dependencies.atlasPacker;
       if (!packAsync) {
@@ -802,7 +820,7 @@ export class ImageWorkshop {
       if (!packAsync) throw new ImageWorkshopError(`Pinned ${FREE_TEX_PACKAGE}@${FREE_TEX_PACKER_VERSION} does not expose packAsync.`);
       const packFiles = await Promise.all(inputs.map(async (path) => ({ path: basename(path), contents: await readFile(path) })));
       const packPromise = packAsync(packFiles, {
-        textureName: basename(output, extname(output)),
+        textureName: outputPaths.textureName,
         width: maxSize,
         height: maxSize,
         padding,
@@ -852,16 +870,20 @@ export class ImageWorkshop {
         const trimmed = record.trimmed === true;
         if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > atlasInfo.width || y + height > atlasInfo.height) throw new ImageWorkshopError(`Atlas frame ${name} is outside the output bounds.`);
         if (rotated) throw new ImageWorkshopError(`Atlas frame ${name} was rotated despite allowRotation=false.`);
-        if (options.fixedGrid && trimmed) throw new ImageWorkshopError(`Fixed-grid atlas frame ${name} was trimmed.`);
+        if (options.fixedGrid && record.rotated !== false) throw new ImageWorkshopError(`Fixed-grid atlas frame ${name} is not explicitly unrotated.`);
+        if (options.fixedGrid && record.trimmed !== false) throw new ImageWorkshopError(`Fixed-grid atlas frame ${name} is not explicitly untrimmed.`);
         const source = sourceGrids[index];
         const sourceSize = asObject(record.sourceSize);
         const spriteSourceSize = asObject(record.spriteSourceSize);
-        if (Number(sourceSize?.w) !== source.width || Number(sourceSize?.h) !== source.height || !spriteSourceSize) throw new ImageWorkshopError(`Atlas frame ${name} has incorrect source-size metadata.`);
+        const sourceWidth = Number(sourceSize?.w);
+        const sourceHeight = Number(sourceSize?.h);
+        if (!Number.isInteger(sourceWidth) || !Number.isInteger(sourceHeight) || sourceWidth !== source.width || sourceHeight !== source.height || !spriteSourceSize) throw new ImageWorkshopError(`Atlas frame ${name} has incorrect source-size metadata.`);
         const sx = Number(spriteSourceSize.x);
         const sy = Number(spriteSourceSize.y);
         const sw = Number(spriteSourceSize.w);
         const sh = Number(spriteSourceSize.h);
         if (![sx, sy, sw, sh].every(Number.isInteger) || sx < 0 || sy < 0 || sw <= 0 || sh <= 0 || sx + sw > source.width || sy + sh > source.height || sw !== width || sh !== height) throw new ImageWorkshopError(`Atlas frame ${name} has invalid trim metadata.`);
+        if (options.fixedGrid && (sx !== 0 || sy !== 0 || sw !== source.width || sh !== source.height || width !== source.width || height !== source.height)) throw new ImageWorkshopError(`Fixed-grid atlas frame ${name} does not cover the complete source image.`);
         const expected = cropGrid(source, sx, sy, sw, sh);
         const actual = cropGrid(atlasGrid, x, y, width, height);
         const samples = [[0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1], [Math.floor(width / 2), Math.floor(height / 2)]];
@@ -871,11 +893,23 @@ export class ImageWorkshop {
           if (x < previous.x + previous.width && x + width > previous.x && y < previous.y + previous.height && y + height > previous.y) throw new ImageWorkshopError(`Atlas frame ${name} overlaps ${previous.name}.`);
         }
       }
-      const jsonArtifact = await jsonMetadata(stagedJson, atlasJson);
-      return await this.finish(operation, 'atlas-pack', inputInfo, [
-        { finalPath: output, stagedPath: stagedPng, metadata: finalImageMetadata(atlasInfo, output) },
-        { finalPath: atlasJson, stagedPath: stagedJson, metadata: jsonArtifact }
-      ], { maxSize, padding, extrusion, fixedGrid: options.fixedGrid ?? false, allowRotation: false, allowTrim: options.fixedGrid ? false : true, sourceOverwrite: false }, { dimensions: true, sourceNamesExactlyOnce: rectangles.length === names.length, nonOverlapping: true, representativePixelsMatch: true, frames: rectangles, preview: { generated: false, reason: 'Phase 4 records artifact metadata and representative decoded pixels; it does not generate a contact-sheet preview.' } }, 'representative-pixels', false);
+      const jsonArtifact = await jsonMetadata(stagedJson, outputPaths.json);
+      const manifest: ImageOperationManifest = {
+        schemaVersion: 2,
+        operation: 'atlas-pack',
+        toolchain: toolchainSummary(this.toolchain),
+        inputs: inputInfo,
+        outputs: [finalImageMetadata(atlasInfo, outputPaths.png), jsonArtifact],
+        options: { outputDirectory: true, maxSize, padding, extrusion, fixedGrid: options.fixedGrid ?? false, allowRotation: false, allowTrim: options.fixedGrid ? false : true, sourceOverwrite: false },
+        fidelity: { dimensions: true, sourceNamesExactlyOnce: rectangles.length === names.length, nonOverlapping: true, representativePixelsMatch: true, frames: rectangles, preview: { generated: false, reason: 'Phase 4 records artifact metadata and representative decoded pixels; it does not generate a contact-sheet preview.' } },
+        verificationLevel: 'representative-pixels',
+        lossless: false
+      };
+      await writeManifestInStage(stagedManifest, manifest);
+      for (const stagedArtifact of [stagedPng, stagedJson, stagedManifest]) await assertStageFile(stagedArtifact);
+      await readJsonFile(stagedManifest);
+      await commitDirectory(operation);
+      return { operation: 'atlas-pack', outputPaths: [outputPaths.png, outputPaths.json], manifestPath: outputPaths.manifest, manifest };
     } catch (error) {
       await removeOperation(operation);
       if (error instanceof ImageWorkshopError) throw error;

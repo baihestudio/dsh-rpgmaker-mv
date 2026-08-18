@@ -8,12 +8,14 @@ import { runCli } from '../src/cli';
 import {
   createImageWorkshop,
   ensureImageHelperRuntime,
+  prepareImageToolchain,
   resolveImageToolchain,
   writeImageToolchainManifest,
   type AtlasPackAsync,
   type ImageToolchain
 } from '../src/image-workshop';
 import { prepareRpgMakerDeployment } from '../src/rpgmaker';
+import type { ImageReleasePin } from '../src/image-releases';
 import type { CommandOptions, CommandResult } from '../src/process';
 
 const FIXTURE_ROOT = resolve('tests/fixtures/asset-workshop');
@@ -22,6 +24,7 @@ const SHEET = join(FIXTURE_ROOT, 'two-frame-sheet.png');
 const ICON = join(FIXTURE_ROOT, 'transparent-icon.png');
 const CYAN = join(FIXTURE_ROOT, 'atlas-cyan.png');
 const ORANGE = join(FIXTURE_ROOT, 'atlas-orange.png');
+const CORRUPT_FIXED_GRID = join(FIXTURE_ROOT, 'corrupt-fixed-grid.json');
 const NONE = '00000000';
 const RED = 'FF0000FF';
 const BLUE = '0000FFFF';
@@ -93,6 +96,16 @@ function alphaBounds(source: Grid): { left: number; top: number; right: number; 
 
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function fakeRelease(executableName: string, archive: string, executable: string): ImageReleasePin {
+  return {
+    version: executableName === 'magick.exe' ? '7.1.2-29' : '10.2.0',
+    url: `https://example.invalid/${executableName}-${executableName === 'magick.exe' ? '7.1.2-29' : '10.2.0'}.${executableName === 'magick.exe' ? '7z' : 'zip'}`,
+    archiveSha256: hash(archive),
+    executableName,
+    executableSha256: hash(executable)
+  };
 }
 
 async function temp(prefix: string): Promise<string> {
@@ -311,8 +324,8 @@ describe('Asset Workshop trust and safe outputs', () => {
       await mkdir(dirname(image), { recursive: true });
       await writeFile(image, 'fixture executable');
       const fake = new FakeImageTools();
-      await expect(resolveImageToolchain({ platform: 'win32', env: { PATH: '' }, imageMagickExecutable: image, helperRoot: helper, commandRunner: fake.run.bind(fake) })).rejects.toThrow(/SHA-256/i);
-      const resolved = await resolveImageToolchain({ platform: 'win32', env: { PATH: '' }, imageMagickExecutable: image, imageMagickSha256: hash('fixture executable'), helperRoot: helper, commandRunner: fake.run.bind(fake) });
+      await expect(resolveImageToolchain({ platform: 'win32', env: { PATH: '', DSH_HOME: root }, dshHome: root, toolchainRoot: join(root, 'toolchain'), imageMagickExecutable: image, helperRoot: helper, commandRunner: fake.run.bind(fake) })).rejects.toThrow(/SHA-256/i);
+      const resolved = await resolveImageToolchain({ platform: 'win32', env: { PATH: '', DSH_HOME: root }, dshHome: root, toolchainRoot: join(root, 'toolchain'), imageMagickExecutable: image, imageMagickSha256: hash('fixture executable'), helperRoot: helper, commandRunner: fake.run.bind(fake) });
       expect(resolved.imageMagickVersion).toBe('7.1.2-29');
       const manifestPath = join(root, 'toolchain', 'toolchain.json');
       const manifestToolchain = { ...resolved, toolchainRoot: join(root, 'toolchain'), manifestPath };
@@ -323,15 +336,95 @@ describe('Asset Workshop trust and safe outputs', () => {
       expect(manifest.imageMagick.sha256).toBe(hash('fixture executable'));
       expect(manifest.helper.integrity).toContain('sha512-');
       await writeFile(join(root, 'oxipng.exe'), 'fixture oxipng');
-      const optional = await resolveImageToolchain({ platform: 'win32', env: { PATH: '' }, imageMagickExecutable: image, imageMagickSha256: hash('fixture executable'), helperRoot: helper, oxipngExecutable: join(root, 'oxipng.exe'), oxipngSha256: hash('fixture oxipng'), commandRunner: fake.run.bind(fake) });
+      const optional = await resolveImageToolchain({ platform: 'win32', env: { PATH: '', DSH_HOME: root }, dshHome: root, toolchainRoot: join(root, 'toolchain'), imageMagickExecutable: image, imageMagickSha256: hash('fixture executable'), helperRoot: helper, oxipngExecutable: join(root, 'oxipng.exe'), oxipngSha256: hash('fixture oxipng'), commandRunner: fake.run.bind(fake) });
       expect(optional.oxipngVersion).toBe('10.2.0');
       expect(fake.calls.filter((call) => call.command.endsWith('oxipng.exe') && call.args[0] === '--version')).toHaveLength(1);
       await writeFile(image, 'tampered');
-      await expect(resolveImageToolchain({ platform: 'win32', env: { PATH: '' }, imageMagickExecutable: image, imageMagickSha256: hash('fixture executable'), helperRoot: helper, commandRunner: fake.run.bind(fake) })).rejects.toThrow(/checksum/i);
+      await expect(resolveImageToolchain({ platform: 'win32', env: { PATH: '', DSH_HOME: root }, dshHome: root, toolchainRoot: join(root, 'toolchain'), imageMagickExecutable: image, imageMagickSha256: hash('fixture executable'), helperRoot: helper, commandRunner: fake.run.bind(fake) })).rejects.toThrow(/checksum/i);
       const helperInstallRoot = join(root, 'installed-helper');
       await ensureImageHelperRuntime({ helperRuntimeDir: helperInstallRoot, dshHome: root, env: { PATH: '' }, commandRunner: fake.run.bind(fake) });
       const siblings = await readdir(dirname(helperInstallRoot));
       expect(siblings.some((name) => name.includes('.staging-') || name.includes('.rollback-'))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('installs pinned native tools on a clean Windows asset preparation without a hand-written executable manifest', async () => {
+    const root = await temp('phase4-native-install');
+    try {
+      const imageRelease = fakeRelease('magick.exe', 'image archive', 'image executable');
+      const oxipngRelease = fakeRelease('oxipng.exe', 'oxipng archive', 'oxipng executable');
+      const fake = new FakeImageTools();
+      const downloads: string[] = [];
+      const extractions: string[] = [];
+      const downloadArchive = async (url: string, destination: string): Promise<void> => {
+        downloads.push(url);
+        await writeFile(destination, url.includes('oxipng') ? 'oxipng archive' : 'image archive');
+      };
+      const extractArchive = async (_archive: string, destination: string, operation: { executableName: string }): Promise<void> => {
+        extractions.push(operation.executableName);
+        await writeFile(join(destination, operation.executableName), operation.executableName === 'oxipng.exe' ? 'oxipng executable' : 'image executable');
+      };
+      const options = {
+        platform: 'win32',
+        env: { PATH: '' },
+        dshHome: root,
+        toolchainRoot: join(root, 'toolchain'),
+        helperRuntimeDir: join(root, 'helper-runtime'),
+        imageMagickRelease: imageRelease,
+        oxipngRelease,
+        commandRunner: fake.run.bind(fake),
+        downloadArchive,
+        extractArchive
+      };
+      const prepared = await prepareImageToolchain(options);
+      expect(prepared.toolchain.imageMagick).toContain(join('native-tools', 'image-magick', 'magick.exe'));
+      expect(prepared.toolchain.oxipng).toBeUndefined();
+      expect(downloads).toEqual([imageRelease.url]);
+      expect(extractions).toEqual(['magick.exe']);
+      const generatedManifest = JSON.parse(await readFile(prepared.toolchain.manifestPath, 'utf8'));
+      expect(generatedManifest.imageMagick.path).toBe(prepared.toolchain.imageMagick);
+      expect(generatedManifest.imageMagick.archiveSha256).toBe(imageRelease.archiveSha256);
+      expect(await Bun.file(prepared.toolchain.imageMagick).exists()).toBe(true);
+      expect((await readdir(join(root, 'toolchain', 'native-tools'))).filter((name) => name.includes('staging') || name.includes('rollback')).length).toBe(0);
+
+      const noOptional = await prepareImageToolchain(options);
+      expect(noOptional.toolchain.oxipng).toBeUndefined();
+      expect(downloads).toEqual([imageRelease.url]);
+      const withOptional = await prepareImageToolchain({ ...options, installOxipng: true });
+      expect(withOptional.toolchain.oxipng).toContain(join('native-tools', 'oxipng', 'oxipng.exe'));
+      expect(downloads).toEqual([imageRelease.url, oxipngRelease.url]);
+      expect(extractions).toEqual(['magick.exe', 'oxipng.exe']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a downloaded archive before extraction and leaves the active native tool untouched', async () => {
+    const root = await temp('phase4-native-failure');
+    try {
+      const imageRelease = fakeRelease('magick.exe', 'expected archive', 'new executable');
+      const toolchainRoot = join(root, 'toolchain');
+      const active = join(toolchainRoot, 'native-tools', 'image-magick');
+      await mkdir(active, { recursive: true });
+      await writeFile(join(active, 'magick.exe'), 'old executable');
+      let extracted = false;
+      const fake = new FakeImageTools();
+      await expect(prepareImageToolchain({
+        platform: 'win32',
+        env: { PATH: '' },
+        dshHome: root,
+        toolchainRoot,
+        helperRuntimeDir: join(root, 'helper-runtime'),
+        imageMagickRelease: imageRelease,
+        commandRunner: fake.run.bind(fake),
+        downloadArchive: async (_url, destination) => { await writeFile(destination, 'wrong archive'); },
+        extractArchive: async () => { extracted = true; }
+      })).rejects.toThrow(/archive checksum/i);
+      expect(extracted).toBe(false);
+      expect(await readFile(join(active, 'magick.exe'), 'utf8')).toBe('old executable');
+      expect((await readdir(join(toolchainRoot, 'native-tools'))).filter((name) => name.includes('staging') || name.includes('rollback')).length).toBe(0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -401,8 +494,10 @@ describe('Asset Workshop image correctness and atlas bounds', () => {
       fake.grids.set(resolve(frames.outputPaths[1]), grid(4, 4, Array(16).fill(YELLOW)));
       const assembled = await workshop.sheetAssemble({ inputs: frames.outputPaths, output: join(root, 'assembled.png'), columns: 2 });
       expect(assembled.manifest.fidelity).toMatchObject({ pixelsMatch: true });
-      const atlas = await workshop.atlasPack({ inputs: [CYAN, ORANGE], output: join(root, 'atlas.png'), maxSize: 8, padding: 1, extrusion: 1, fixedGrid: true });
-      expect(atlas.outputPaths).toEqual([join(root, 'atlas.png'), join(root, 'atlas.json')]);
+      const atlasDirectory = join(root, 'atlas');
+      const atlas = await workshop.atlasPack({ inputs: [CYAN, ORANGE], output: atlasDirectory, maxSize: 8, padding: 1, extrusion: 1, fixedGrid: true });
+      expect(atlas.outputPaths).toEqual([join(atlasDirectory, 'atlas.png'), join(atlasDirectory, 'atlas.json')]);
+      expect(atlas.manifestPath).toBe(join(atlasDirectory, 'manifest.json'));
       expect(atlas.manifest.outputs).toHaveLength(2);
       expect(atlas.manifest.verificationLevel).toBe('representative-pixels');
       expect(atlas.manifest.lossless).toBe(false);
@@ -412,6 +507,58 @@ describe('Asset Workshop image correctness and atlas bounds', () => {
       const optimizer = createImageWorkshop(toolchain(root, image, helper, fake, oxipng), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake) });
       const optimized = await optimizer.optimizePng({ input: TILE, output: join(root, 'optimized.png'), level: 4 });
       expect(optimized.manifest.fidelity).toMatchObject({ decodedPixelsEqual: true, alphaPreserved: true });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('commits atlas PNG, JSON, and manifest with one directory rename and preserves a racing output', async () => {
+    const root = await temp('phase4-atlas-transaction');
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const fake = new FakeImageTools();
+      const racedDirectory = join(root, 'raced-atlas');
+      const racingPacker: AtlasPackAsync = async (files, config) => {
+        const result = await atlasPacker(fake)(files, config);
+        await mkdir(racedDirectory, { recursive: true });
+        await writeFile(join(racedDirectory, 'owned-by-racer.txt'), 'preserve me');
+        return result;
+      };
+      const racingWorkshop = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake), maxPixels: 64, atlasPacker: racingPacker });
+      await expect(racingWorkshop.atlasPack({ inputs: [CYAN, ORANGE], output: racedDirectory, maxSize: 8, fixedGrid: true })).rejects.toThrow(/appeared|racing/i);
+      expect(await readFile(join(racedDirectory, 'owned-by-racer.txt'), 'utf8')).toBe('preserve me');
+      expect(await Bun.file(join(racedDirectory, 'atlas.png')).exists()).toBe(false);
+      expect((await readdir(root)).some((name) => name.includes('raced-atlas.dsh-staging'))).toBe(false);
+
+      const failedDirectory = join(root, 'failed-atlas');
+      const failingWorkshop = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake), maxPixels: 64, atlasPacker: async () => { throw new Error('synthetic pack failure'); } });
+      await expect(failingWorkshop.atlasPack({ inputs: [CYAN, ORANGE], output: failedDirectory, maxSize: 8, fixedGrid: true })).rejects.toThrow(/synthetic pack failure/i);
+      expect(await Bun.file(failedDirectory).exists()).toBe(false);
+      expect((await readdir(root)).some((name) => name.includes('failed-atlas.dsh-staging'))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects fixed-grid atlas metadata that crops a source border despite trimmed=false', async () => {
+    const root = await temp('phase4-atlas-metadata');
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const fake = new FakeImageTools();
+      const corruptJson = await readFile(CORRUPT_FIXED_GRID);
+      const corruptPacker: AtlasPackAsync = async () => {
+        fake.atlasGrid = grid(4, 2, [CYAN_PIXEL, CYAN_PIXEL, ORANGE_PIXEL, ORANGE_PIXEL, CYAN_PIXEL, CYAN_PIXEL, ORANGE_PIXEL, ORANGE_PIXEL]);
+        return [{ name: 'atlas.png', buffer: Buffer.from('png') }, { name: 'atlas.json', buffer: corruptJson }];
+      };
+      const workshop = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake), maxPixels: 64, atlasPacker: corruptPacker });
+      const output = join(root, 'corrupt-fixed-grid');
+      await expect(workshop.atlasPack({ inputs: [CYAN, ORANGE], output, maxSize: 8, fixedGrid: true })).rejects.toThrow(/complete source/i);
+      expect(await Bun.file(output).exists()).toBe(false);
+      expect((await readdir(root)).some((name) => name.includes('corrupt-fixed-grid.dsh-staging'))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -22,6 +22,8 @@ The supported outcome operations are:
 - `sheet-assemble`: row-major PNG assembly from equal-sized cells.
 - `atlas-pack`: pinned `free-tex-packer-core@0.3.9`, nearest-neighbour,
   no-rotation defaults, optional padding/extrusion, and JSON frame metadata.
+  `--output` is a new output directory; the PNG, JSON, and `manifest.json` are
+  committed together by one atomic directory rename.
 - `optimize-png`: an explicit release-only post-pass through pinned
   `oxipng@10.2.0`; never call it as an implicit part of editing.
 
@@ -31,16 +33,17 @@ Invoke the CLI with the operation name and its flags. For example:
 bun "$DSH_IMAGE_WORKSHOP_CLI" image resize-pixel --input <source.png> --output <new.png> --scale 3
 bun "$DSH_IMAGE_WORKSHOP_CLI" image trim-pad --input <source.png> --output <new.png> --trim --width 64 --height 64
 bun "$DSH_IMAGE_WORKSHOP_CLI" image sheet-slice --input <sheet.png> --output-dir <frames> --cell-width 48 --cell-height 48
+bun "$DSH_IMAGE_WORKSHOP_CLI" image atlas-pack --inputs-json '["a.png","b.png"]' --output <new-atlas-directory> --max-size 2048 --fixed-grid
 bun "$DSH_IMAGE_WORKSHOP_CLI" image optimize-png --input <verified.png> --output <release.png> --level 4
 ```
 
 Every mutating operation must report its JSON manifest and inspect the output
 before claiming success. The manifest records resolved tool paths and versions,
 input/output dimensions, format, channels, alpha mode, hashes, options, and
-fidelity evidence. Preserve the manifest beside the output. A pre-existing
-output or manifest is a collision: stop and ask for a new output path. Never
-replace a source file, even during an explicit optimization; use a distinct
-release output.
+fidelity evidence. Atlas output is a new directory containing its PNG, JSON,
+and `manifest.json`; a pre-existing output directory is a collision. Other
+operations preserve the manifest beside the output. Never replace a source
+file, even during an explicit optimization; use a distinct release output.
 
 The workflow has bounded ImageMagick resource and time limits. Treat malformed
 inputs, non-zero exits, missing output files, failed dimension/alpha checks,

@@ -14,6 +14,9 @@ import { backupIgnoreGuidance, type BackupIgnoreGuidance } from './mcp-loop';
 import {
   ASSET_WORKSHOP_PRESET_ID,
   prepareImageToolchain,
+  type ImageArchiveDownloader,
+  type ImageArchiveExtractor,
+  type ImageToolRenamePath,
   type ImageToolchain,
   type ImageToolchainPreparationOptions
 } from './image-workshop';
@@ -83,11 +86,18 @@ export interface RpgMakerDeploymentOptions extends PathOptions {
   imageMagickExecutable?: string;
   imageMagickSha256?: string;
   imageMagickUrl?: string;
+  imageMagickRelease?: ImageToolchainPreparationOptions['imageMagickRelease'];
   imageToolchainRoot?: string;
   imageHelperRuntimeDir?: string;
   oxipngExecutable?: string;
   oxipngSha256?: string;
   oxipngUrl?: string;
+  oxipngRelease?: ImageToolchainPreparationOptions['oxipngRelease'];
+  installOxipng?: boolean;
+  downloadArchive?: ImageArchiveDownloader;
+  extractArchive?: ImageArchiveExtractor;
+  archiveExtractorExecutable?: string;
+  renamePath?: ImageToolRenamePath;
   commandRunner?: CommandRunner;
   schemaProbe?: McpSchemaProbe;
   lockTimeoutMs?: number;
@@ -521,9 +531,16 @@ async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: 
         imageMagickExecutable: options.imageMagickExecutable,
         imageMagickSha256: options.imageMagickSha256,
         imageMagickUrl: options.imageMagickUrl,
+        imageMagickRelease: options.imageMagickRelease,
         oxipngExecutable: options.oxipngExecutable,
         oxipngSha256: options.oxipngSha256,
         oxipngUrl: options.oxipngUrl,
+        oxipngRelease: options.oxipngRelease,
+        installOxipng: options.installOxipng,
+        downloadArchive: options.downloadArchive,
+        extractArchive: options.extractArchive,
+        archiveExtractorExecutable: options.archiveExtractorExecutable,
+        renamePath: options.renamePath,
         bunExecutable: options.bunExecutable,
         commandRunner: options.commandRunner
       };

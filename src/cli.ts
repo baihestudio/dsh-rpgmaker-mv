@@ -2,7 +2,14 @@ import { bootstrapRuntime, BootstrapError } from './bootstrap';
 import { runDoctor, renderDoctorReport } from './doctor';
 import { launchProject, SINGLE_WRITER_NOTICE, LauncherError } from './launcher';
 import { launchRpgmakerProject } from './rpgmaker';
-import { createImageWorkshop, resolveImageToolchain, type ImageToolchainOptions } from './image-workshop';
+import {
+  createImageWorkshop,
+  prepareImageToolchain,
+  type ImageArchiveDownloader,
+  type ImageArchiveExtractor,
+  type ImageToolchainOptions
+} from './image-workshop';
+import type { ImageReleasePin } from './image-releases';
 import { childExitCode, redactSensitive, type CommandRunner, type InteractiveSpawner } from './process';
 
 export interface CliIO {
@@ -15,6 +22,10 @@ export interface CliDependencies {
   platform?: string;
   io?: CliIO;
   commandRunner?: CommandRunner;
+  downloadArchive?: ImageArchiveDownloader;
+  extractArchive?: ImageArchiveExtractor;
+  imageMagickRelease?: ImageReleasePin;
+  oxipngRelease?: ImageReleasePin;
   spawnInteractive?: InteractiveSpawner;
   rpgmaker?: boolean;
 }
@@ -73,7 +84,8 @@ function helpText(): string {
     '  --image-magick-url <url>  Exact pinned ImageMagick release URL',
     '  --image-toolchain-root <path>  Use the app-owned image toolchain directory',
     '  --image-helper-runtime <path> Use the app-owned atlas helper runtime',
-    '  --oxipng <path>            Enable the optional pinned oxipng optimizer (requires SHA-256)',
+    '  --oxipng <path>            Use an explicit pinned oxipng override (requires SHA-256)',
+    '  --install-oxipng          Download and install the optional pinned oxipng optimizer',
     '  --oxipng-sha256 <hex>     Expected SHA-256 for an explicit oxipng override',
     '  --oxipng-url <url>        Exact pinned oxipng release URL',
     '  --bun-executable <path>   Use an explicit Bun executable',
@@ -86,7 +98,7 @@ function helpText(): string {
     '  image trim-pad --input <path> --output <path> --trim --width <n> --height <n>',
     '  image sheet-slice --input <path> --output-dir <dir> --cell-width <n> --cell-height <n>',
     '  image sheet-assemble --inputs-json <json-array> --output <path> --columns <n>',
-    '  image atlas-pack --inputs-json <json-array> --output <path> --max-size <n>',
+    '  image atlas-pack --inputs-json <json-array> --output <new-directory> --max-size <n>',
     '  image optimize-png --input <path> --output <path> --level <0-6>',
     '  image tool flags: --image-magick <path> --helper-root <path> --oxipng <path>',
     '  --help                    Show this help'
@@ -106,11 +118,16 @@ function baseOptions(parsed: ParsedArgs, dependencies: CliDependencies): Record<
     imageMagickExecutable: option(parsed.values, 'image-magick'),
     imageMagickSha256: option(parsed.values, 'image-magick-sha256'),
     imageMagickUrl: option(parsed.values, 'image-magick-url'),
+    imageMagickRelease: dependencies.imageMagickRelease,
     imageToolchainRoot: option(parsed.values, 'image-toolchain-root'),
     imageHelperRuntimeDir: option(parsed.values, 'image-helper-runtime'),
     oxipngExecutable: option(parsed.values, 'oxipng'),
     oxipngSha256: option(parsed.values, 'oxipng-sha256'),
     oxipngUrl: option(parsed.values, 'oxipng-url'),
+    oxipngRelease: dependencies.oxipngRelease,
+    installOxipng: parsed.flags.has('install-oxipng') || (parsed.flags.has('oxipng') && !option(parsed.values, 'oxipng')),
+    downloadArchive: dependencies.downloadArchive,
+    extractArchive: dependencies.extractArchive,
     commandRunner: dependencies.commandRunner
   };
 }
@@ -153,13 +170,18 @@ async function runImageCommand(parsed: ParsedArgs, dependencies: CliDependencies
     imageMagickExecutable: option(parsed.values, 'image-magick'),
     imageMagickSha256: option(parsed.values, 'image-magick-sha256'),
     imageMagickUrl: option(parsed.values, 'image-magick-url'),
+    imageMagickRelease: dependencies.imageMagickRelease,
     helperRoot: option(parsed.values, 'helper-root'),
     oxipngExecutable: option(parsed.values, 'oxipng'),
     oxipngSha256: option(parsed.values, 'oxipng-sha256'),
     oxipngUrl: option(parsed.values, 'oxipng-url'),
+    oxipngRelease: dependencies.oxipngRelease,
+    installOxipng: parsed.flags.has('install-oxipng') || (parsed.flags.has('oxipng') && !option(parsed.values, 'oxipng')),
+    downloadArchive: dependencies.downloadArchive,
+    extractArchive: dependencies.extractArchive,
     commandRunner: dependencies.commandRunner
   };
-  const toolchain = await resolveImageToolchain(toolchainOptions);
+  const toolchain = (await prepareImageToolchain(toolchainOptions)).toolchain;
   const workshop = createImageWorkshop(toolchain, {
     commandRunner: dependencies.commandRunner,
     platform: dependencies.platform,

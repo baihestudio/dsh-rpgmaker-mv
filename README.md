@@ -73,11 +73,17 @@ Select the deterministic image preset when launching a project:
 ```
 
 The launcher resolves ImageMagick from the harness-owned tool manifest/install
-area and requires exactly `7.1.2-29`. The static release manifest records the
-exact HTTPS asset URL, archive SHA-256, and installed executable SHA-256; the
-resolved executable is hashed on every launch. Explicit ImageMagick and
-`oxipng@10.2.0` overrides must supply their expected SHA-256 (or a matching
-app-owned manifest) and are rejected otherwise. The helper is staged under
+area and requires exactly `7.1.2-29`. On a clean Windows machine, Asset Workshop
+fetches the checked-in release URL into staging, verifies the archive SHA-256
+before extraction, verifies the installed executable version/hash, and atomically
+installs it before writing the generated app-owned manifest. The static release
+manifest records the exact HTTPS asset URL, archive SHA-256, and installed
+executable SHA-256; the resolved executable is hashed on every launch.
+`oxipng@10.2.0` is not installed unless `--install-oxipng` (or an explicit
+`--oxipng <path>` override) is requested; every archive and executable is
+checked through the same pinned path. Explicit overrides must supply their
+expected SHA-256 (or a matching app-owned manifest) and are rejected otherwise.
+The helper is staged under
 `DSH_HOME` with Bun, trusted there, and checked against its exact lockfile
 integrity and lock hash. PATH aliases and `convert` are never accepted.
 `oxipng` remains optional and is only invoked by an explicit `optimize-png`
@@ -87,9 +93,11 @@ The skill owns pixel-safe resize, transparent trim/pad, fixed-grid sheet
 slice/assembly, and no-rotation atlas packing. Each operation rejects an
 existing output directory, canonicalizes approved parents, writes to a unique
 sibling staging directory, verifies there, and commits without clobbering a
-racing output. Manifests are emitted only after verification; atlas manifests
-list both the PNG and JSON artifacts and report representative-pixel
-verification rather than claiming universal losslessness. Optional Photoshop,
+racing output. Atlas packing treats `--output` as one new output directory and
+atomically renames that directory once; it contains the PNG, JSON, and
+`manifest.json` artifacts. Manifests are emitted only after verification and
+report representative-pixel verification rather than claiming universal
+losslessness. Optional Photoshop,
 Aseprite, and TexturePacker installations are detected as hints only; they are
 never downloaded or required.
 
@@ -98,7 +106,7 @@ The same operations are available at the helper seam for disposable checks:
 ```powershell
 bun src/cli.ts image resize-pixel --input source.png --output generated.png --scale 3
 bun src/cli.ts image sheet-slice --input sheet.png --output-dir frames --cell-width 48 --cell-height 48
-bun src/cli.ts image atlas-pack --inputs-json '["a.png","b.png"]' --output atlas.png --max-size 2048
+bun src/cli.ts image atlas-pack --inputs-json '["a.png","b.png"]' --output atlas-output --max-size 2048
 ```
 
 ## Editing model
