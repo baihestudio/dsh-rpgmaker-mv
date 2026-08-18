@@ -73,7 +73,7 @@ function runInteractive(command: string, args: string[], env: Record<string, str
 async function prerequisiteBin(root: string): Promise<{ bin: string; env: Record<string, string> }> {
   const bin = join(root, 'fake prerequisite bin');
   await mkdir(bin, { recursive: true });
-  for (const name of ['node.exe', 'npm.cmd', 'python.exe', 'bun.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe']) await writeFile(join(bin, name), 'fixture');
+  for (const name of ['node.exe', 'npm.cmd', 'python.exe', 'bun.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', '7z.exe']) await writeFile(join(bin, name), 'fixture');
   return { bin, env: { PATH: bin, LOCALAPPDATA: join(root, 'Local AppData'), APPDATA: join(root, 'Roaming AppData') } };
 }
 
@@ -94,6 +94,7 @@ function prerequisiteRunner() {
     if (name === 'git.exe') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
     if (name === 'coreutils-manager.exe' && args[0] === '--help') return { exitCode: 0, stdout: 'Manage coreutils utilities and PowerShell profiles\n enable\n disable\n status\n', stderr: '' };
     if (name === 'coreutils-manager.exe' && args[0] === 'status') return { exitCode: 0, stdout: 'find enabled\ngrep enabled\n', stderr: '' };
+    if (name === '7z.exe' && args[0] === 'i') return { exitCode: 0, stdout: '7-Zip 24.09 (x64) : Copyright (c) 1999-2025 Igor Pavlov\n', stderr: '' };
     return { exitCode: 0, stdout: `${name} 0.1.0`, stderr: '' };
   };
 }
@@ -171,13 +172,13 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('requires explicit consent before WinGet prerequisite installation and verifies all six identities', async () => {
+  test('requires explicit consent before WinGet prerequisite installation and verifies all seven identities', async () => {
     const root = await temp('phase7-prerequisites');
     try {
       const { bin, env } = await prerequisiteBin(root);
       const report = await verifyWindowsPrerequisites({ platform: 'win32', env, commandRunner: prerequisiteRunner() });
       expect(report.ok).toBe(true);
-      expect(report.checks.map((check) => check.id)).toEqual(['node', 'python', 'bun', 'powershell', 'git', 'coreutils']);
+      expect(report.checks.map((check) => check.id)).toEqual(['node', 'python', 'bun', 'powershell', 'git', 'coreutils', '7zip']);
       const missing = await verifyWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, commandRunner: prerequisiteRunner() });
       expect(missing.ok).toBe(false);
       await expect(installWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, consent: false, commandRunner: prerequisiteRunner() })).rejects.toBeInstanceOf(PrerequisiteConsentError);

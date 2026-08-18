@@ -1,10 +1,10 @@
 import { join } from 'node:path';
 
 import { withEnvironmentPath } from './config';
-import { resolveExecutable, resolveWindowsPwsh } from './executable';
+import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip } from './executable';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 
-export const WINDOWS_PREREQUISITE_IDS = ['node', 'python', 'bun', 'powershell', 'git', 'coreutils'] as const;
+export const WINDOWS_PREREQUISITE_IDS = ['node', 'python', 'bun', 'powershell', 'git', 'coreutils', '7zip'] as const;
 export type WindowsPrerequisiteId = (typeof WINDOWS_PREREQUISITE_IDS)[number];
 
 export interface WindowsPrerequisiteCheck {
@@ -37,6 +37,7 @@ export interface WindowsPrerequisiteOptions {
   pwshExecutable?: string;
   gitExecutable?: string;
   coreutilsExecutable?: string;
+  sevenZipExecutable?: string;
   wingetExecutable?: string;
 }
 
@@ -194,6 +195,7 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const git = await resolved('git', options.gitExecutable ?? env.GIT_EXECUTABLE, env);
   const manager = await resolved('coreutils-manager', options.coreutilsExecutable ?? env.COREUTILS_MANAGER, env)
     ?? await resolved('coreutils', undefined, env);
+  const sevenZip = options.sevenZipExecutable ?? env.SEVEN_ZIP_EXECUTABLE ?? await resolveWindowsSevenZip({ platform: 'win32', env });
   // Prefer find/grep owned by the verified Coreutils root so a clean install
   // succeeds even when System32/find.exe or another shim precedes Coreutils on PATH.
   const ownedCommands = await ownedCoreutilsCommands(manager, env);
@@ -211,6 +213,7 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const managerStatus = await commandVersion(runner, manager, env, ['status']);
   const findVersion = await commandVersion(runner, find, env);
   const grepVersion = await commandVersion(runner, grep, env);
+  const sevenZipVersion = await commandVersion(runner, sevenZip, env, ['i']);
   const managerRoot = coreutilsRoot(manager);
   const nodeParsed = versionNumbers(nodeVersion.output);
   const nodeLtsName = nodeLts.output.trim().split(/\r?\n/).find(Boolean);
@@ -222,6 +225,7 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const bunIdentity = /(?:^|\r?\n)\s*\d+\.\d+\.\d+/i.test(bunVersion.output);
   const powershellIdentity = /PowerShell\s+\d+\.\d+/i.test(pwshVersion.output);
   const gitIdentity = /(?:^|\r?\n)\s*git version\s+\d+\.\d+\.\d+/i.test(gitVersion.output);
+  const sevenZipIdentity = /7-Zip\s+\d+\.\d+/i.test(sevenZipVersion.output);
   const nodeOk = nodeVersion.ok && nodeIdentity && atLeast(nodeParsed, [18, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && npmIdentity && Boolean(versionNumbers(npmVersion.output));
   const powershellOk = pwshVersion.ok && powershellIdentity && atLeast(pwshParsed, [7, 4, 0]);
   const coreutilsContractOk = managerHelp.ok && managerStatus.ok && managerContract(managerHelp.output, managerStatus.output);
@@ -289,6 +293,17 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
         ? `Microsoft Coreutils manager and enabled find/grep are available under ${managerRoot}`
         : `Microsoft Coreutils manager, enabled find, and enabled grep were not verified; install Microsoft.Coreutils with WinGet (${coreutilsFailureDetail(manager, coreutilsContractOk, find, grep, managerRoot)})`,
       manager
+    ),
+    check(
+      '7zip',
+      '7-Zip',
+      '7zip.7zip',
+      sevenZipVersion.ok && sevenZipIdentity && Boolean(versionNumbers(sevenZipVersion.output)),
+      sevenZipVersion.ok && sevenZipIdentity && versionNumbers(sevenZipVersion.output)
+        ? `7-Zip ${versionNumbers(sevenZipVersion.output)!.join('.')} is available at ${sevenZip}`
+        : '7-Zip was not verified; install 7zip.7zip with WinGet',
+      sevenZip,
+      versionNumbers(sevenZipVersion.output)?.join('.')
     )
   ];
   const missing = checks.filter((item) => !item.ok).map((item) => item.id);

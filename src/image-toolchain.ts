@@ -105,6 +105,8 @@ export interface ImageToolchainOptions extends PathOptions {
   downloadArchive?: ImageArchiveDownloader;
   extractArchive?: ImageArchiveExtractor;
   archiveExtractorExecutable?: string;
+  /** Verified 7-Zip executable used to extract .7z archives on Windows. */
+  sevenZipExecutable?: string;
   renamePath?: ImageToolRenamePath;
   commandRunner?: CommandRunner;
 }
@@ -291,7 +293,7 @@ async function defaultDownloadArchive(url: string, destination: string): Promise
   }
 }
 
-async function defaultExtractArchive(
+export async function defaultExtractArchive(
   archive: string,
   destination: string,
   operation: ImageArchiveOperationOptions,
@@ -299,8 +301,18 @@ async function defaultExtractArchive(
 ): Promise<void> {
   const runner = options.commandRunner ?? runCommand;
   const env = withoutCredentials(operation.env);
-  const extractor = options.archiveExtractorExecutable ?? operation.env.DSH_ARCHIVE_EXTRACTOR ?? 'tar';
-  const args = ['-xf', archive, '-C', destination];
+  // The pinned ImageMagick portable build ships only as a .7z, which Windows
+  // tar cannot decode ("LZMA codec is unsupported"). Route .7z archives to a
+  // verified 7-Zip executable with 7z-style args; keep tar for .zip and other
+  // archives. Argument syntax follows the archive type so an explicit override
+  // either fits the actual extractor or fails clearly with its own message.
+  const archiveIsSevenZip = /\.7z$/i.test(archive);
+  const extractor = archiveIsSevenZip
+    ? options.sevenZipExecutable ?? operation.env.SEVEN_ZIP_EXECUTABLE ?? options.archiveExtractorExecutable ?? '7z'
+    : options.archiveExtractorExecutable ?? operation.env.DSH_ARCHIVE_EXTRACTOR ?? 'tar';
+  const args = archiveIsSevenZip
+    ? ['x', archive, `-o${destination}`, '-y']
+    : ['-xf', archive, '-C', destination];
   let result;
   try {
     result = await runner(extractor, args, {

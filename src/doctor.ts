@@ -5,7 +5,7 @@ import { resolveHarnessPaths, type PathOptions } from './config';
 import { ownedCoreutilsCommands } from './prerequisites';
 import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
-import { resolveExecutable, resolveWindowsPwsh } from './executable';
+import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip } from './executable';
 import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
 import { resolveImageToolchain } from './image-workshop';
@@ -36,6 +36,7 @@ export interface DoctorOptions extends PathOptions {
   nodeExecutable?: string;
   npmExecutable?: string;
   pythonExecutable?: string;
+  sevenZipExecutable?: string;
   verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; image: DoctorCheck; packager: DoctorCheck }>;
   verifyImageWorkshopPlugin?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<ImageWorkshopPluginVerification>;
   verifyVisionToolkit?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<VisionToolkitVerification>;
@@ -150,6 +151,9 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     ? await resolveExecutable(join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe'), { platform, env })
     : undefined;
   const python = options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? wingetPython ?? await resolveExecutable('python', { platform, env });
+  const sevenZip = platform === 'win32'
+    ? options.sevenZipExecutable ?? env.SEVEN_ZIP_EXECUTABLE ?? await resolveWindowsSevenZip({ platform, env })
+    : undefined;
 
   const checks: DoctorCheck[] = [];
   const executablePaths: Record<string, string | undefined> = {
@@ -161,7 +165,8 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     bun,
     node,
     npm,
-    python
+    python,
+    ...(sevenZip ? { sevenZip } : {})
   };
 
   const pwshVersion = await commandVersion(runner, pwsh, commandEnv);
@@ -213,6 +218,16 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   ));
 
   if (platform === 'win32') {
+    const sevenZipVersion = await commandVersion(runner, sevenZip, commandEnv, ['i']);
+    const sevenZipParsed = versionNumbers(sevenZipVersion.output);
+    checks.push(check(
+      '7zip',
+      '7-Zip',
+      sevenZipVersion.ok && /7-Zip\s+\d+\.\d+/i.test(sevenZipVersion.output) && Boolean(sevenZipParsed),
+      sevenZipVersion.ok && sevenZipParsed ? `7-Zip ${sevenZipParsed.join('.')} is available at ${sevenZip}` : '7-Zip was not verified; run Install.cmd to install 7zip.7zip with WinGet',
+      sevenZip
+    ));
+
     const pythonVersion = await commandVersion(runner, python, commandEnv);
     const pythonParsed = versionNumbers(pythonVersion.output);
     checks.push(check(

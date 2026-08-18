@@ -76,6 +76,24 @@ export async function resolveWindowsPwsh(options: ExecutableLookupOptions = {}):
   return resolved;
 }
 
+/**
+ * Resolve the real 7-Zip executable for Windows. WinGet's 7zip.7zip installs
+ * under %ProgramFiles%\7-Zip\7z.exe; prefer that verified install over a PATH
+ * lookup so a stale or unrelated 7z shim cannot be chosen to extract archives.
+ */
+export async function resolveWindowsSevenZip(options: ExecutableLookupOptions = {}): Promise<string | undefined> {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const explicit = env.SEVEN_ZIP_EXECUTABLE;
+  if (explicit) return resolveExecutable(explicit, { platform, env });
+  const programFiles = env.ProgramFiles ?? env.ProgramW6432;
+  if (programFiles) {
+    const standard = join(programFiles, '7-Zip', '7z.exe');
+    if (await isRegularFile(standard)) return standard;
+  }
+  return resolveExecutable('7z', { platform, env });
+}
+
 /** Find the newest installed Microsoft Store PowerShell package executable, if any. */
 async function resolveMsixPowerShell(programFiles: string): Promise<string | undefined> {
   const appsRoot = join(programFiles, 'WindowsApps');

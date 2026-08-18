@@ -250,7 +250,8 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           toolchainRoot: join(context.paths.programRoot, 'tools', 'image-workshop'),
           bunExecutable: context.bunExecutable,
           commandRunner: context.commandRunner,
-          installOxipng: true
+          installOxipng: true,
+          sevenZipExecutable: prerequisites.checks.find((check) => check.id === '7zip')?.executable
         });
         await prepareRpgmPackerRuntime({
           platform,

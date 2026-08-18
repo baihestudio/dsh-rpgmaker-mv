@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { runCli } from '../src/cli';
 import {
   createImageWorkshop,
+  defaultExtractArchive,
   ensureImageHelperRuntime,
   prepareImageToolchain,
   resolveImageToolchain,
@@ -397,6 +398,43 @@ describe('Asset Workshop trust and safe outputs', () => {
       expect(withOptional.toolchain.oxipng).toContain(join('native-tools', 'oxipng', 'oxipng.exe'));
       expect(downloads).toEqual([imageRelease.url, oxipngRelease.url]);
       expect(extractions).toEqual(['magick.exe', 'oxipng.exe']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('routes .7z archives to verified 7-Zip and .zip archives to tar', async () => {
+    const root = await temp('phase4-archive-extractor');
+    try {
+      const calls: Array<{ command: string; args: string[] }> = [];
+      const runner = async (command: string, args: string[]): Promise<CommandResult> => {
+        calls.push({ command, args });
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+      const options = { commandRunner: runner };
+      const operation = { platform: 'win32', env: { PATH: '' }, executableName: 'magick.exe', version: '7.1.2-29', kind: 'ImageMagick' as const };
+      const sevenZipArchive = join(root, 'ImageMagick-7.1.2-29-portable-Q16-x64.7z');
+      const zipArchive = join(root, 'tool.zip');
+      const sevenZipDest = join(root, 'seven-out');
+      const zipDest = join(root, 'zip-out');
+
+      await defaultExtractArchive(sevenZipArchive, sevenZipDest, operation, options);
+      expect(calls.at(-1)).toEqual({ command: '7z', args: ['x', sevenZipArchive, `-o${sevenZipDest}`, '-y'] });
+
+      await defaultExtractArchive(zipArchive, zipDest, operation, options);
+      expect(calls.at(-1)).toEqual({ command: 'tar', args: ['-xf', zipArchive, '-C', zipDest] });
+
+      // A verified 7-Zip path is honored for .7z archives.
+      const verified = join(root, 'Program Files', '7-Zip', '7z.exe');
+      await defaultExtractArchive(sevenZipArchive, sevenZipDest, operation, { ...options, sevenZipExecutable: verified });
+      expect(calls.at(-1)).toEqual({ command: verified, args: ['x', sevenZipArchive, `-o${sevenZipDest}`, '-y'] });
+
+      // An explicit tar-style override on a .7z archive still receives 7z-style
+      // args and fails with that extractor's own error rather than silently
+      // sending tar args to 7-Zip.
+      const explicit = join(root, 'custom-extractor.exe');
+      await expect(defaultExtractArchive(sevenZipArchive, sevenZipDest, operation, { ...options, archiveExtractorExecutable: explicit })).resolves.toBeUndefined();
+      expect(calls.at(-1)).toEqual({ command: explicit, args: ['x', sevenZipArchive, `-o${sevenZipDest}`, '-y'] });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
