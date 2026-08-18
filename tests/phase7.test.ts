@@ -108,17 +108,37 @@ describe('Windows release gate foundations', () => {
     expect(withEnvironmentPath({ PATH: 'a' }, 'x', 'darwin').PATH).toBe('x');
   });
 
-  test('prefers the real PowerShell 7 install over the WindowsApps execution alias', async () => {
+  test('prefers a real PowerShell 7 install over the WindowsApps execution alias', async () => {
     const root = await temp('phase7-pwsh-alias');
     try {
       const apps = join(root, 'WindowsApps');
       const ps7 = join(root, 'Program Files', 'PowerShell', '7');
+      const store = join(root, 'Program Files', 'WindowsApps', 'Microsoft.PowerShell_7.6.5.0_x64__8wekyb3d8bbwe');
       await mkdir(apps, { recursive: true });
       await mkdir(ps7, { recursive: true });
+      await mkdir(store, { recursive: true });
       await writeFile(join(apps, 'pwsh.exe'), 'alias');
       await writeFile(join(ps7, 'pwsh.exe'), 'real');
       const env = { PATH: apps, ProgramFiles: join(root, 'Program Files') };
       expect(await resolveWindowsPwsh({ platform: 'win32', env })).toBe(join(ps7, 'pwsh.exe'));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('falls back to the Microsoft Store PowerShell package when only the WindowsApps alias exists', async () => {
+    const root = await temp('phase7-pwsh-store');
+    try {
+      const apps = join(root, 'WindowsApps');
+      const older = join(root, 'Program Files', 'WindowsApps', 'Microsoft.PowerShell_7.4.0.0_x64__8wekyb3d8bbwe');
+      const newest = join(root, 'Program Files', 'WindowsApps', 'Microsoft.PowerShell_7.6.5.0_x64__8wekyb3d8bbwe');
+      await mkdir(apps, { recursive: true });
+      await mkdir(older, { recursive: true });
+      await mkdir(newest, { recursive: true });
+      await writeFile(join(apps, 'pwsh.exe'), 'alias');
+      await writeFile(join(newest, 'pwsh.exe'), 'newest');
+      const env = { PATH: apps, ProgramFiles: join(root, 'Program Files') };
+      expect(await resolveWindowsPwsh({ platform: 'win32', env })).toBe(join(newest, 'pwsh.exe'));
     } finally {
       await rm(root, { recursive: true, force: true });
     }

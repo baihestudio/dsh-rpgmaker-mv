@@ -1,5 +1,5 @@
 import { isRegularFile } from './files';
-import { lstat } from 'node:fs/promises';
+import { lstat, readdir } from 'node:fs/promises';
 import { extname, isAbsolute, join } from 'node:path';
 import { environmentPath, pathDelimiter } from './config';
 
@@ -56,7 +56,8 @@ export async function resolveExecutable(name: string, options: ExecutableLookupO
  * Resolve the real PowerShell 7 executable for Windows, avoiding the
  * WindowsApps App Execution Alias (`WindowsApps\pwsh.exe`). The alias is a
  * reparse-point stub that Bun and Node cannot spawn as a normal executable;
- * prefer the actual WinGet/MSIX installation under `%ProgramFiles%\PowerShell\7`.
+ * prefer the actual WinGet installation under `%ProgramFiles%\PowerShell\7`
+ * or the Microsoft Store/MSIX package directory.
  */
 export async function resolveWindowsPwsh(options: ExecutableLookupOptions = {}): Promise<string | undefined> {
   const platform = options.platform ?? process.platform;
@@ -69,6 +70,29 @@ export async function resolveWindowsPwsh(options: ExecutableLookupOptions = {}):
   if (programFiles) {
     const standard = join(programFiles, 'PowerShell', '7', 'pwsh.exe');
     if (await isRegularFile(standard)) return standard;
+    const store = await resolveMsixPowerShell(programFiles);
+    if (store) return store;
   }
   return resolved;
+}
+
+/** Find the newest installed Microsoft Store PowerShell package executable, if any. */
+async function resolveMsixPowerShell(programFiles: string): Promise<string | undefined> {
+  const appsRoot = join(programFiles, 'WindowsApps');
+  let entries;
+  try {
+    entries = await readdir(appsRoot, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  const candidates = entries
+    .filter((entry) => entry.isDirectory() && /^Microsoft\.PowerShell_/i.test(entry.name))
+    .map((entry) => entry.name)
+    .sort()
+    .reverse();
+  for (const name of candidates) {
+    const pwsh = join(appsRoot, name, 'pwsh.exe');
+    if (await isRegularFile(pwsh)) return pwsh;
+  }
+  return undefined;
 }
