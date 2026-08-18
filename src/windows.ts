@@ -5,6 +5,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type HarnessPaths, type PathOptions } from './config';
+import { resolveWindowsPwsh } from './executable';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 import { assertValidMvProject, type ProjectValidation } from './project';
 
@@ -194,7 +195,7 @@ export async function createStartMenuShortcut(options: ShortcutCreationOptions):
   const paths = resolveHarnessPaths(options);
   const env = options.env ?? process.env;
   const helperScript = options.helperScript ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'create-shortcut.ps1');
-  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? 'pwsh.exe';
+  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform, env }) ?? 'pwsh.exe';
   const runner = options.commandRunner ?? runCommand;
   const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', helperScript, '-TargetPath', options.targetPath, '-ShortcutPath', paths.startMenuShortcutPath, '-WorkingDirectory', options.workingDirectory];
   if (options.iconPath) args.push('-IconPath', options.iconPath);

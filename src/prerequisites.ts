@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 
-import { resolveExecutable } from './executable';
+import { withEnvironmentPath } from './config';
+import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 
 export const WINDOWS_PREREQUISITE_IDS = ['node', 'python', 'bun', 'powershell', 'git', 'coreutils'] as const;
@@ -147,7 +148,7 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
     : undefined;
   const python = await resolved('python', options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? wingetPython, env);
   const bun = await resolved('bun', options.bunExecutable ?? env.BUN_EXECUTABLE, env);
-  const pwsh = await resolved('pwsh', options.pwshExecutable ?? env.PWSH_EXECUTABLE, env);
+  const pwsh = options.pwshExecutable ?? await resolveWindowsPwsh({ platform: 'win32', env });
   const git = await resolved('git', options.gitExecutable ?? env.GIT_EXECUTABLE, env);
   const manager = await resolved('coreutils-manager', options.coreutilsExecutable ?? env.COREUTILS_MANAGER, env)
     ?? await resolved('coreutils', undefined, env);
@@ -267,7 +268,7 @@ async function refreshWindowsEnvironment(runner: CommandRunner, env: Record<stri
       // Verification still uses the original environment if registry refresh is unavailable.
     }
   }
-  return { ...env, PATH: [...new Set(paths.filter(Boolean).flatMap((value) => value.split(';')))].join(';') };
+  return withEnvironmentPath(env, [...new Set(paths.filter(Boolean).flatMap((value) => value.split(';')))].join(';'), 'win32');
 }
 
 async function installOne(

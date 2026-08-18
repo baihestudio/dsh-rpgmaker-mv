@@ -5,14 +5,14 @@ import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 
-import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths } from '../src/config';
+import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease } from '../src/release-gate';
 import { installWindowsPrerequisites, PrerequisiteConsentError, verifyWindowsPrerequisites } from '../src/prerequisites';
 import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
 import { runDoctor } from '../src/doctor';
 import { runCommand } from '../src/process';
-import { resolveExecutable } from '../src/executable';
+import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, recordRecentProject, readRecentProjects, uninstallHarness, UninstallSafetyError } from '../src/windows';
 import { visionToolkitActivationFixture, visionToolkitFixture } from './fixtures/vision-toolkit';
 
@@ -99,6 +99,31 @@ function prerequisiteRunner() {
 }
 
 describe('Windows release gate foundations', () => {
+  test('normalizes Windows PATH to one canonical environment key', () => {
+    const out = withEnvironmentPath({ Path: 'a;b', DSH_HOME: 'c' }, 'x;y', 'win32');
+    expect(Object.keys(out).filter((key) => key.toLowerCase() === 'path')).toEqual(['PATH']);
+    expect(out.PATH).toBe('x;y');
+    expect(Object.prototype.hasOwnProperty.call(out, 'Path')).toBe(false);
+    expect(out.DSH_HOME).toBe('c');
+    expect(withEnvironmentPath({ PATH: 'a' }, 'x', 'darwin').PATH).toBe('x');
+  });
+
+  test('prefers the real PowerShell 7 install over the WindowsApps execution alias', async () => {
+    const root = await temp('phase7-pwsh-alias');
+    try {
+      const apps = join(root, 'WindowsApps');
+      const ps7 = join(root, 'Program Files', 'PowerShell', '7');
+      await mkdir(apps, { recursive: true });
+      await mkdir(ps7, { recursive: true });
+      await writeFile(join(apps, 'pwsh.exe'), 'alias');
+      await writeFile(join(ps7, 'pwsh.exe'), 'real');
+      const env = { PATH: apps, ProgramFiles: join(root, 'Program Files') };
+      expect(await resolveWindowsPwsh({ platform: 'win32', env })).toBe(join(ps7, 'pwsh.exe'));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('resolves Windows executables from a case-insensitive Path environment key', async () => {
     const root = await temp('windows-path-case');
     try {

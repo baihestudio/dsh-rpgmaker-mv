@@ -4,7 +4,7 @@ import { stat } from 'node:fs/promises';
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
-import { resolveExecutable } from './executable';
+import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
 import { resolveImageToolchain } from './image-workshop';
@@ -136,7 +136,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   const runner = options.commandRunner ?? runCommand;
   const commandEnv = withoutCredentials(env);
 
-  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveExecutable('pwsh', { platform, env });
+  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform, env });
   const coreutils = options.coreutilsExecutable ?? env.COREUTILS_MANAGER ?? await resolveExecutable('coreutils-manager', { platform, env }) ?? await resolveExecutable('coreutils', { platform, env });
   const coreutilsFind = await resolveExecutable('find', { platform, env });
   const coreutilsGrep = await resolveExecutable('grep', { platform, env });

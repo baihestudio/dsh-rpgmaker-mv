@@ -135,6 +135,7 @@ describe('Vision Toolkit profile integration', () => {
           return { exitCode: 0, stdout: '', stderr: '' };
         }
         expect(command).toBe(dsh);
+        expect(Object.keys(options.env ?? {}).filter((key) => key.toLowerCase() === 'path')).toEqual(['PATH']);
         expect(options.env?.PATH).toContain(join('runtime', 'pnpm', 'node_modules', '.bin'));
         expect(options.env?.PATH).toContain(join(root, 'native bun bin'));
         await writeInstalledProfile(dshHome);

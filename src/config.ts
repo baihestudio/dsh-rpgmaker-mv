@@ -90,3 +90,25 @@ export function environmentPath(env: Record<string, string | undefined>, platfor
   const key = Object.keys(env).find((candidate) => candidate.toLowerCase() === 'path');
   return key ? env[key] ?? '' : '';
 }
+
+/**
+ * Return `env` with every case-insensitive PATH key variant replaced by one
+ * canonical `PATH` holding `value`. Windows environment keys are
+ * case-insensitive; keeping both `Path` and `PATH` lets child-process spawning
+ * pick a stale variant, so this normalizes to exactly one key.
+ */
+export function withEnvironmentPath(
+  env: Record<string, string | undefined>,
+  value: string,
+  platform: string = process.platform
+): Record<string, string | undefined> {
+  const next = { ...env };
+  const matches = platform === 'win32'
+    ? (key: string): boolean => key.toLowerCase() === 'path'
+    : (key: string): boolean => key === 'PATH';
+  for (const key of Object.keys(next)) {
+    if (matches(key)) delete next[key];
+  }
+  next.PATH = value;
+  return next;
+}

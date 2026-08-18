@@ -4,8 +4,8 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { bootstrapRuntime, type BootstrapResult } from './bootstrap';
-import { environmentPath, pathDelimiter, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
-import { resolveExecutable } from './executable';
+import { environmentPath, pathDelimiter, withEnvironmentPath, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { prepareImageToolchain } from './image-workshop';
 import { withoutCredentials, runCommand, type CommandRunner } from './process';
 import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
@@ -110,9 +110,9 @@ async function copyReleaseTree(sourceRootInput: string, destination: string): Pr
 function generatedEnvironment(env: Record<string, string | undefined>, paths: HarnessPaths, prerequisites: WindowsPrerequisiteReport): Record<string, string | undefined> {
   const executableDirs = prerequisites.checks.flatMap((item) => item.executable ? [dirname(item.executable)] : []);
   const path = [...new Set([...executableDirs, ...environmentPath(env, 'win32').split(pathDelimiter('win32')).filter(Boolean)])].join(pathDelimiter('win32'));
+  const next = withEnvironmentPath(env, path, 'win32');
   return {
-    ...env,
-    PATH: path,
+    ...next,
     DSH_HOME: paths.dshHome,
     DSH_RPGMAKER_PROGRAM_ROOT: paths.programRoot,
     DSH_RPGMAKER_DATA_ROOT: paths.mutableRoot,
@@ -351,7 +351,7 @@ async function archiveWithZip(options: ReleaseZipOptions, staging: string, outpu
 async function archiveWithPowerShell(options: ReleaseZipOptions, staging: string, outputZip: string): Promise<void> {
   const env = options.env ?? process.env;
   const runner = options.commandRunner ?? runCommand;
-  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveExecutable('pwsh', { platform: 'win32', env });
+  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform: 'win32', env });
   if (!pwsh) throw new ReleaseGateError('PowerShell 7 was not found to create the Release ZIP.');
   const helper = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'scripts', 'compress-release.ps1');
   const result = await runner(pwsh, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', helper, '-SourceRoot', staging, '-Destination', outputZip], { env: withoutCredentials(env), platform: 'win32', timeoutMs: 15 * 60_000 });

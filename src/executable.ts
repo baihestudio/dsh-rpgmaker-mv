@@ -51,3 +51,24 @@ export async function resolveExecutable(name: string, options: ExecutableLookupO
   }
   return undefined;
 }
+
+/**
+ * Resolve the real PowerShell 7 executable for Windows, avoiding the
+ * WindowsApps App Execution Alias (`WindowsApps\pwsh.exe`). The alias is a
+ * reparse-point stub that Bun and Node cannot spawn as a normal executable;
+ * prefer the actual WinGet/MSIX installation under `%ProgramFiles%\PowerShell\7`.
+ */
+export async function resolveWindowsPwsh(options: ExecutableLookupOptions = {}): Promise<string | undefined> {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const explicit = env.PWSH_EXECUTABLE;
+  if (explicit) return resolveExecutable(explicit, { platform, env });
+  const resolved = await resolveExecutable('pwsh', { platform, env });
+  if (resolved && !/windowsapps/i.test(resolved)) return resolved;
+  const programFiles = env.ProgramFiles ?? env.ProgramW6432;
+  if (programFiles) {
+    const standard = join(programFiles, 'PowerShell', '7', 'pwsh.exe');
+    if (await isRegularFile(standard)) return standard;
+  }
+  return resolved;
+}

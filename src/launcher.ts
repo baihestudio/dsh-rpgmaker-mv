@@ -4,7 +4,7 @@ import { stdin as processStdin, stdout as processStdout } from 'node:process';
 
 import { findDshExecutable } from './bootstrap';
 import { resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
-import { resolveExecutable } from './executable';
+import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { inspectCredentialMetadata } from './credentials';
 import { childExitCode, runCommand, spawnInteractive, withoutCredentials, type CommandRunner, type InteractiveSpawner } from './process';
 import { assertValidMvProject, pathExists, type ProjectValidation } from './project';
@@ -103,7 +103,7 @@ export async function pickProjectDirectory(options: FolderPickerOptions = {}): P
   const runner = options.commandRunner ?? runCommand;
   const commandEnv = withoutCredentials(env);
   if (platform === 'win32') {
-    const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveExecutable('pwsh', { platform, env }) ?? 'pwsh';
+    const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform, env }) ?? 'pwsh';
     let result;
     try {
       result = await runner(pwsh, ['-NoLogo', '-NoProfile', '-STA', '-Command', WINDOWS_PICKER_SCRIPT], { env: commandEnv, timeoutMs: 10 * 60_000 });

@@ -5,7 +5,7 @@ import { basename, dirname, extname, join, relative, resolve, sep } from 'node:p
 import { fileURLToPath } from 'node:url';
 
 import { findDshExecutable } from './bootstrap';
-import { environmentPath, resolveHarnessPaths, pathDelimiter, type HarnessPaths, type PathOptions } from './config';
+import { environmentPath, resolveHarnessPaths, pathDelimiter, withEnvironmentPath, type HarnessPaths, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
 import { commandFailure, prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, withoutCredentials, type CommandRunner } from './process';
 
@@ -141,7 +141,7 @@ function pluginEnvironment(env: Record<string, string | undefined>): Record<stri
 
 function prependPath(env: Record<string, string | undefined>, directory: string, platform: string): Record<string, string | undefined> {
   const current = environmentPath(env, platform);
-  return { ...env, PATH: [directory, current].filter(Boolean).join(pathDelimiter(platform)) };
+  return withEnvironmentPath(env, [directory, current].filter(Boolean).join(pathDelimiter(platform)), platform);
 }
 
 function profilePackageDir(profileDir: string): string {
