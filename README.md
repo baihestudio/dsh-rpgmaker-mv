@@ -3,7 +3,7 @@ DeepSeek for RPG Maker MV
 
 ## Windows Release ZIP (Phase 7)
 
-For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs the pinned DSH runtime, and creates the per-user Start Menu shortcut **DSH for RPG Maker MV**.
+For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs the pinned DSH and RPG Maker MCP runtimes plus the complete image toolchain, and creates the per-user Start Menu shortcut **DSH for RPG Maker MV**.
 
 The full first-run, repair, port-conflict, project-switching, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata and preserves rollback/recovery state, mutable state, credentials, logs, recent projects, and projects; `uninstall.ps1 -Purge` is explicit.
 
@@ -76,22 +76,7 @@ Select the deterministic image preset when launching a project:
 # For an explicit override, also pass --image-magick-sha256 <64-hex-digest>
 ```
 
-The launcher resolves ImageMagick from the harness-owned tool manifest/install
-area and requires exactly `7.1.2-29`. On a clean Windows machine, Asset Workshop
-fetches the checked-in release URL into staging, verifies the archive SHA-256
-before extraction, verifies the installed executable version/hash, and atomically
-installs it before writing the generated app-owned manifest. The static release
-manifest records the exact HTTPS asset URL, archive SHA-256, and installed
-executable SHA-256; the resolved executable is hashed on every launch.
-`oxipng@10.2.0` is not installed unless `--install-oxipng` (or an explicit
-`--oxipng <path>` override) is requested; every archive and executable is
-checked through the same pinned path. Explicit overrides must supply their
-expected SHA-256 (or a matching app-owned manifest) and are rejected otherwise.
-The helper is staged under
-`DSH_HOME` with Bun, trusted there, and checked against its exact lockfile
-integrity and lock hash. PATH aliases and `convert` are never accepted.
-`oxipng` remains optional and is only invoked by an explicit `optimize-png`
-operation with a distinct output path.
+`Install.cmd` provisions the complete app-owned image toolchain for every agent: ImageMagick `7.1.2-29`, `free-tex-packer-core@0.3.9`, and `oxipng@10.2.0`. Downloads are staged, checked against the pinned archive and executable hashes, verified by version, and installed atomically. Re-running the installer or launcher verifies and reuses a valid installation instead of downloading it again. Every launched session receives the resolved image workflow environment, so selecting 游戏图片素材助手 in the Web UI does not depend on which preset originally started DSH. Explicit overrides must still supply their expected SHA-256 and PATH aliases or `convert` are never accepted. `oxipng` is installed for readiness but is invoked only by an explicit `optimize-png` operation with a distinct output path.
 
 The skill owns pixel-safe resize, transparent trim/pad, fixed-grid sheet
 slice/assembly, and no-rotation atlas packing. Each operation rejects an

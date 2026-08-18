@@ -628,14 +628,17 @@ describe('Asset Workshop CLI and real preset preparation seam', () => {
       const bun = join(root, 'bun.exe');
       const dsh = join(root, 'dsh.exe');
       const magick = join(root, 'tools with spaces', 'magick.exe');
+      const oxipng = join(root, 'tools with spaces', 'oxipng.exe');
       await writeFile(bun, 'fixture');
       await writeFile(dsh, 'fixture');
       await mkdir(dirname(magick), { recursive: true });
       await writeFile(magick, 'fixture');
+      await writeFile(oxipng, 'fixture oxipng');
       const fake = new FakeImageTools();
-      const deployment = await prepareRpgMakerDeployment({ platform: 'win32', dshHome: join(root, 'dsh-home'), runtimeDir: dshRuntime, projectPath: project, agentPreset: 'asset-workshop', imageMagickExecutable: magick, imageMagickSha256: hash('fixture'), sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'), jsExecutable: bun, dshExecutable: dsh, commandRunner: fake.run.bind(fake), schemaProbe: async () => ({ tools: ['get_project_info', 'list_records', 'get_record', 'update_record', 'create_record', 'create_event', 'get_event', 'update_event', 'add_dialogue', 'update_map', 'get_map', 'configure_plugin', 'list_plugins', 'validate_project', 'list_backups', 'restore_backup', 'playtest_start', 'playtest_status', 'playtest_log', 'playtest_stop'].map((name) => ({ name, inputSchema: { type: 'object' } })) }) });
+      const deployment = await prepareRpgMakerDeployment({ platform: 'win32', dshHome: join(root, 'dsh-home'), runtimeDir: dshRuntime, projectPath: project, agentPreset: 'asset-workshop', imageMagickExecutable: magick, imageMagickSha256: hash('fixture'), oxipngExecutable: oxipng, oxipngSha256: hash('fixture oxipng'), sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'), jsExecutable: bun, dshExecutable: dsh, commandRunner: fake.run.bind(fake), schemaProbe: async () => ({ tools: ['get_project_info', 'list_records', 'get_record', 'update_record', 'create_record', 'create_event', 'get_event', 'update_event', 'add_dialogue', 'update_map', 'get_map', 'configure_plugin', 'list_plugins', 'validate_project', 'list_backups', 'restore_backup', 'playtest_start', 'playtest_status', 'playtest_log', 'playtest_stop'].map((name) => ({ name, inputSchema: { type: 'object' } })) }) });
       expect(deployment.agentPreset).toBe('asset-workshop');
       expect(deployment.imageToolchain?.imageMagickVersion).toBe('7.1.2-29');
+      expect(deployment.imageToolchain?.oxipngVersion).toBe('10.2.0');
       expect(await readFile(join(deployment.presetDir, 'skills', 'asset-workshop', 'SKILL.md'), 'utf8')).toContain('resize-pixel');
       const composition = await readFile(deployment.compositionPath, 'utf8');
       expect(composition).toContain('default: asset-workshop');

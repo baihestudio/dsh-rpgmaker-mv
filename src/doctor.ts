@@ -1,4 +1,4 @@
-import { basename, dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { stat } from 'node:fs/promises';
 
 import { resolveHarnessPaths, type PathOptions } from './config';
@@ -7,6 +7,8 @@ import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } f
 import { resolveExecutable } from './executable';
 import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
+import { resolveImageToolchain } from './image-workshop';
+import { verifyMcpRuntime } from './rpgmaker';
 
 export interface DoctorOptions extends PathOptions {
   commandRunner?: CommandRunner;
@@ -16,6 +18,7 @@ export interface DoctorOptions extends PathOptions {
   gitExecutable?: string;
   nodeExecutable?: string;
   npmExecutable?: string;
+  verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; image: DoctorCheck }>;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
 }
@@ -227,6 +230,36 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   ));
 
   if (platform === 'win32') {
+    const verifyAgentDependencies = options.verifyAgentDependencies ?? (async (context) => {
+      const mcpRuntime = join(context.paths.programRoot, 'runtime', 'mcp');
+      const mcp = await verifyMcpRuntime(mcpRuntime, context.platform);
+      let image: DoctorCheck;
+      try {
+        const toolchain = await resolveImageToolchain({
+          platform: context.platform,
+          env: context.env,
+          dshHome: context.paths.dshHome,
+          programRoot: context.paths.programRoot,
+          mutableRoot: context.paths.mutableRoot,
+          toolchainRoot: join(context.paths.programRoot, 'tools', 'image-workshop'),
+          commandRunner: context.commandRunner,
+          installOxipng: true
+        });
+        const complete = Boolean(toolchain.oxipng && toolchain.oxipngVersion);
+        image = check('image-toolchain', 'Image asset toolchain', complete, complete
+          ? `ImageMagick ${toolchain.imageMagickVersion}, free-tex-packer-core ${toolchain.helperPackageVersion}, and oxipng ${toolchain.oxipngVersion} are verified`
+          : 'The app-owned image toolchain is missing oxipng; run Install.cmd to repair it', toolchain.manifestPath);
+      } catch (error) {
+        image = check('image-toolchain', 'Image asset toolchain', false, `The app-owned image toolchain is not verified: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return {
+        mcp: check('rpgmaker-mcp', 'RPG Maker MV MCP runtime', mcp.valid, mcp.valid ? `Pinned RPG Maker MV MCP ${mcp.packageVersion} is verified` : mcp.errors.join('; '), mcp.executable ?? mcpRuntime),
+        image
+      };
+    });
+    const agentDependencies = await verifyAgentDependencies({ platform, env: commandEnv, paths, commandRunner: runner });
+    checks.push(agentDependencies.mcp, agentDependencies.image);
+
     const layoutPaths = [paths.mutableRoot, paths.dshHome, paths.logsDir, paths.cacheDir];
     const layoutValues = await Promise.all(layoutPaths.map(async (path) => (await stat(path).catch(() => undefined))?.isDirectory() ?? false));
     const layoutOk = layoutValues.every(Boolean);

@@ -235,7 +235,10 @@ async function runRequired(
   if (result.exitCode !== 0) throw new RpgMakerStartupError(commandFailure(command, args, result, env).message);
 }
 
-async function installMcpRuntime(options: RpgMakerDeploymentOptions, runtimeDir: string): Promise<McpVerification> {
+export async function prepareRpgMakerMcpRuntime(
+  options: Pick<RpgMakerDeploymentOptions, 'platform' | 'env' | 'bunExecutable' | 'commandRunner'>,
+  runtimeDir: string
+): Promise<McpVerification> {
   const platform = options.platform ?? process.platform;
   const env = withoutCredentials(options.env ?? process.env);
   const runner = options.commandRunner ?? runCommand;
@@ -533,7 +536,7 @@ async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: 
   const paths = resolveHarnessPaths(options);
   const platform = options.platform ?? process.platform;
   const mcpRuntimeDir = resolve(options.mcpRuntimeDir ?? join(paths.programRoot, 'runtime', 'mcp'));
-  const mcp = await installMcpRuntime(options, mcpRuntimeDir);
+  const mcp = await prepareRpgMakerMcpRuntime(options, mcpRuntimeDir);
   if (!mcp.valid || !mcp.executable || !mcp.packageVersion) throw new RpgMakerStartupError(`RPG Maker MCP is not usable: ${mcp.errors.join('; ')}`);
   const env = withoutCredentials(options.env ?? process.env);
   const mcpRunner = await resolveMcpRunner(options, platform, env);
@@ -558,7 +561,8 @@ async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: 
   await installPreset(defaultSourceRoot(ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
   await installPreset(defaultSourceRoot(BUILD_RELEASE_PRESET_ID), paths.dshHome, codePresetPath, BUILD_RELEASE_PRESET_ID);
   let imageToolchain: ImageToolchain | undefined;
-  if (agentPreset === ASSET_WORKSHOP_PRESET_ID) {
+  const installedImageManifest = join(options.imageToolchainRoot ?? join(paths.programRoot, 'tools', 'image-workshop'), 'toolchain.json');
+  if (agentPreset === ASSET_WORKSHOP_PRESET_ID || await pathExists(installedImageManifest)) {
     try {
       const preparationOptions: ImageToolchainPreparationOptions = {
         platform,
@@ -574,7 +578,7 @@ async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: 
         oxipngSha256: options.oxipngSha256,
         oxipngUrl: options.oxipngUrl,
         oxipngRelease: options.oxipngRelease,
-        installOxipng: options.installOxipng,
+        installOxipng: true,
         downloadArchive: options.downloadArchive,
         extractArchive: options.extractArchive,
         archiveExtractorExecutable: options.archiveExtractorExecutable,

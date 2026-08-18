@@ -18,6 +18,8 @@ async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
 }
 
+const prepareAgentDependencies = async (): Promise<void> => undefined;
+
 async function project(root: string): Promise<string> {
   const path = join(root, '选择 project with spaces');
   await mkdir(join(path, 'data'), { recursive: true });
@@ -179,7 +181,13 @@ describe('Windows release gate foundations', () => {
       await dshRuntime(runtime);
       await ensureHarnessLayout({ platform: 'win32', env, mutableRoot, dshHome, programRoot, runtimeDir: runtime });
       await writeFile(join(dshHome, '.credentials.yaml'), 'provider: local\n');
-      const report = await runDoctor({ platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, commandRunner: prerequisiteRunner() });
+      const report = await runDoctor({
+        platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, commandRunner: prerequisiteRunner(),
+        verifyAgentDependencies: async () => ({
+          mcp: { id: 'rpgmaker-mcp', label: 'RPG Maker MV MCP runtime', ok: true, detail: 'fixture MCP verified' },
+          image: { id: 'image-toolchain', label: 'Image asset toolchain', ok: true, detail: 'fixture image tools verified' }
+        })
+      });
       expect(report.ok).toBe(true);
       expect(report.checks.map((check) => check.id)).toContain('node');
       expect(report.checks.map((check) => check.id)).toContain('app-layout');
@@ -198,6 +206,7 @@ describe('Windows release gate foundations', () => {
       const state = join(mutable, 'state');
       await mkdir(state, { recursive: true });
       await writeFile(join(state, '.credentials.yaml'), 'provider: local\n');
+      let dependencyPreparations = 0;
       const result = await installWindowsRelease({
         platform: 'win32',
         env: { ...env, DEEPSEEK_API_KEY: 'must-not-be-written' },
@@ -207,6 +216,11 @@ describe('Windows release gate foundations', () => {
         dshHome: state,
         commandRunner: prerequisiteRunner(),
         consent: true,
+        prepareAgentDependencies: async ({ paths, bunExecutable }) => {
+          dependencyPreparations += 1;
+          expect(paths.programRoot).toBe(program);
+          expect(bunExecutable.toLowerCase()).toContain('bun');
+        },
         createShortcut: async (options) => {
           await mkdir(resolve(options.targetPath, '..'), { recursive: true });
           await writeFile(options.targetPath + '.shortcut-test', options.targetPath);
@@ -214,6 +228,7 @@ describe('Windows release gate foundations', () => {
         }
       });
       expect(result.paths.programRoot).toBe(program);
+      expect(dependencyPreparations).toBe(1);
       expect(await Bun.file(join(program, 'Install.cmd')).exists()).toBe(true);
       expect(await Bun.file(join(program, PROGRAM_OWNERSHIP_FILE)).exists()).toBe(true);
       expect(JSON.parse(await readFile(join(program, 'install.json'), 'utf8')).owner).toBe(PROGRAM_OWNER);
@@ -299,8 +314,9 @@ describe('Windows release gate foundations', () => {
         const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
         const mutable = join(root, 'mutable');
         const state = join(mutable, 'state');
-        await mkdir(program, { recursive: true });
+        await mkdir(join(program, 'tools'), { recursive: true });
         await writeFile(join(program, 'old-tree.txt'), `prior ${failure}\n`);
+        await writeFile(join(program, 'tools', 'preserved-tool.txt'), 'verified dependency fixture\n');
         const baseRunner = prerequisiteRunner();
         const commandRunner = failure === 'bootstrap'
           ? async (command: string, args: string[], options: { cwd?: string }) => args[0] === 'add'
@@ -316,6 +332,7 @@ describe('Windows release gate foundations', () => {
           dshHome: state,
           commandRunner,
           consent: true,
+          prepareAgentDependencies,
           ...(failure === 'metadata' ? { writeInstallMetadata: async () => { throw new Error('metadata fixture failure'); } } : {}),
           ...(failure === 'shortcut' ? { createShortcut: async () => { throw new Error('shortcut fixture failure'); } } : {})
         };
@@ -325,6 +342,7 @@ describe('Windows release gate foundations', () => {
         const failed = entries.find((entry) => entry.startsWith(`${basename(program)}.failed-`));
         expect(failed).toBeDefined();
         expect(await Bun.file(join(dirname(program), failed!, 'Install.cmd')).exists()).toBe(true);
+        expect(await readFile(join(dirname(program), failed!, 'tools', 'preserved-tool.txt'), 'utf8')).toBe('verified dependency fixture\n');
         expect(await Bun.file(join(program, 'install.json')).exists()).toBe(false);
       } finally {
         await rm(root, { recursive: true, force: true });
@@ -347,6 +365,7 @@ describe('Windows release gate foundations', () => {
         dshHome: join(mutable, 'state'),
         commandRunner: prerequisiteRunner(),
         consent: true,
+        prepareAgentDependencies,
         writeInstallMetadata: async () => { throw new Error('first install metadata failure'); }
       })).rejects.toThrow(/no prior program tree existed; the install path is inactive/i);
       expect(await Bun.file(program).exists()).toBe(false);

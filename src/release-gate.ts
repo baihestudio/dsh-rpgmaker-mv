@@ -6,8 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { bootstrapRuntime, type BootstrapResult } from './bootstrap';
 import { PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
+import { prepareImageToolchain } from './image-workshop';
 import { withoutCredentials, runCommand, type CommandRunner } from './process';
 import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
+import { prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
@@ -38,6 +40,7 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   commandRunner?: CommandRunner;
   createShortcut?: (options: ShortcutCreationOptions) => Promise<string>;
   writeInstallMetadata?: (path: string, content: string) => Promise<void>;
+  prepareAgentDependencies?: (context: { paths: HarnessPaths; env: Record<string, string | undefined>; bunExecutable: string; commandRunner?: CommandRunner }) => Promise<void>;
   now?: () => Date;
 }
 
@@ -127,6 +130,21 @@ function installMetadata(paths: HarnessPaths, prerequisites: WindowsPrerequisite
   }, null, 2)}\n`;
 }
 
+async function carryForwardVerifiedDependencies(previousProgramRoot: string, nextProgramRoot: string): Promise<void> {
+  for (const relativePath of [join('tools'), join('runtime', 'mcp')]) {
+    const source = join(previousProgramRoot, relativePath);
+    const destination = join(nextProgramRoot, relativePath);
+    if (await exists(source) && !(await exists(destination))) {
+      await mkdir(dirname(destination), { recursive: true });
+      await cp(source, destination, { recursive: true, force: false, errorOnExist: true });
+    }
+  }
+  // The legacy manifest may point at a helper runtime outside the carried tool
+  // tree. Native binaries are re-verified from their pinned locations and a
+  // fresh manifest is written after the canonical helper is prepared.
+  await rm(join(nextProgramRoot, 'tools', 'image-workshop', 'toolchain.json'), { force: true });
+}
+
 async function restoreInstallTransaction(
   paths: HarnessPaths,
   rollbackRoot: string,
@@ -199,6 +217,7 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
     let bootstrap: BootstrapResult;
     let shortcutPath: string;
     try {
+      if (oldMoved) await carryForwardVerifiedDependencies(rollbackRoot, paths.programRoot);
       bootstrap = await bootstrapRuntime({
         ...options,
         platform,
@@ -210,6 +229,23 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         bunExecutable: options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE,
         commandRunner: options.commandRunner
       });
+      const bunExecutable = options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE ?? 'bun';
+      const prepareAgentDependencies = options.prepareAgentDependencies ?? (async (context) => {
+        const mcp = await prepareRpgMakerMcpRuntime({ platform, env: context.env, bunExecutable: context.bunExecutable, commandRunner: context.commandRunner }, join(context.paths.programRoot, 'runtime', 'mcp'));
+        if (!mcp.valid) throw new Error(`RPG Maker MCP is not usable: ${mcp.errors.join('; ')}`);
+        await prepareImageToolchain({
+          platform,
+          env: context.env,
+          dshHome: context.paths.dshHome,
+          programRoot: context.paths.programRoot,
+          mutableRoot: context.paths.mutableRoot,
+          toolchainRoot: join(context.paths.programRoot, 'tools', 'image-workshop'),
+          bunExecutable: context.bunExecutable,
+          commandRunner: context.commandRunner,
+          installOxipng: true
+        });
+      });
+      await prepareAgentDependencies({ paths, env: installedEnv, bunExecutable, commandRunner: options.commandRunner });
       const metadataPath = join(paths.programRoot, 'install.json');
       const metadataWriter = options.writeInstallMetadata ?? ((path: string, content: string) => writeFile(path, content, 'utf8'));
       await metadataWriter(metadataPath, installMetadata(paths, prerequisites, options.now ?? (() => new Date())));
