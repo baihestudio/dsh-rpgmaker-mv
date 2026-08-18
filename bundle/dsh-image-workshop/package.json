@@ -1,0 +1,17 @@
+{
+  "name": "@baihestudio/dsh-image-workshop",
+  "version": "0.1.0",
+  "description": "App-owned, Agent-scoped DSH tool plugin for the deterministic Image Workshop.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "lib",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

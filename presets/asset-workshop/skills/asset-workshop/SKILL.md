@@ -11,9 +11,31 @@ Use the shared Vision Toolkit for screenshot understanding, OCR, grounding, colo
 
 Use the harness-owned image workflow for every raster transformation. Do not
 write an ImageMagick command from memory, use `convert`, use a PATH-discovered
-binary, or invoke a user-provided shell wrapper. The launcher exposes the
-resolved command through `DSH_IMAGE_WORKSHOP_CLI`; pass paths as separate
-arguments and keep the selected project/source files untouched.
+binary, or invoke a user-provided shell wrapper. Prefer the typed tools below;
+the launcher-internal `DSH_IMAGE_WORKSHOP_CLI` is a maintainer/debug detail and
+must never be explained to the user or invoked directly.
+
+## Typed image tools
+
+This Agent mounts the app-owned image tool plugin, which exposes typed tools
+scoped to this Agent only. Use them instead of constructing commands:
+
+- `image_inspect` — decode and report an image's metadata (dimensions, format,
+  channels, alpha, bytes, SHA-256). `input` is project-relative to this
+  Agent's workspace.
+- `image_resize_pixel` — pixel-safe integer nearest-neighbour scaling.
+  Provide `scale`, or both `width` and `height` that match one integer scale;
+  non-integer scales are rejected rather than smoothed. `output` must not
+  exist and the source is never overwritten.
+
+Every path passed to these tools is project-relative to the current workspace;
+absolute paths, `..` traversal, symlink/junction escapes, missing inputs, and
+pre-existing outputs are rejected. External sources must first be copied into
+the workspace.
+
+The remaining operations (trim-pad, sheet-slice, sheet-assemble, atlas-pack,
+optimize-png) are available through the typed tool set as it ships in this
+release; their CLI form remains an internal diagnostic seam.
 
 The supported outcome operations are:
 
@@ -26,20 +48,10 @@ The supported outcome operations are:
 - `sheet-assemble`: row-major PNG assembly from equal-sized cells.
 - `atlas-pack`: pinned `free-tex-packer-core@0.3.9`, nearest-neighbour,
   no-rotation defaults, optional padding/extrusion, and JSON frame metadata.
-  `--output` is a new output directory; the PNG, JSON, and `manifest.json` are
+  The output is a new directory; the PNG, JSON, and `manifest.json` are
   committed together by one atomic directory rename.
 - `optimize-png`: an explicit release-only post-pass through pinned
   `oxipng@10.2.0`; never call it as an implicit part of editing.
-
-Invoke the CLI with the operation name and its flags. For example:
-
-```text
-bun "$DSH_IMAGE_WORKSHOP_CLI" image resize-pixel --input <source.png> --output <new.png> --scale 3
-bun "$DSH_IMAGE_WORKSHOP_CLI" image trim-pad --input <source.png> --output <new.png> --trim --width 64 --height 64
-bun "$DSH_IMAGE_WORKSHOP_CLI" image sheet-slice --input <sheet.png> --output-dir <frames> --cell-width 48 --cell-height 48
-bun "$DSH_IMAGE_WORKSHOP_CLI" image atlas-pack --inputs-json '["a.png","b.png"]' --output <new-atlas-directory> --max-size 2048 --fixed-grid
-bun "$DSH_IMAGE_WORKSHOP_CLI" image optimize-png --input <verified.png> --output <release.png> --level 4
-```
 
 Every mutating operation must report its JSON manifest and inspect the output
 before claiming success. The manifest records resolved tool paths and versions,

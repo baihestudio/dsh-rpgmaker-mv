@@ -19,6 +19,7 @@ import {
   type ImageToolchain,
   type ImageToolchainPreparationOptions
 } from './image-workshop';
+import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_PLUGIN_ROW_ID, type ImageWorkshopPluginOptions } from './image-plugin';
 import { prepareVisionToolkit, type VisionToolkitOptions, type VisionToolkitVerification } from './vision-toolkit';
 
 export const RPGMAKER_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
@@ -125,6 +126,7 @@ export type RpgMakerLaunchOptions = LaunchOptions & Omit<RpgMakerDeploymentOptio
   npmExecutable?: string;
   pnpmExecutable?: string;
   visionToolkitPreparer?: (options: VisionToolkitOptions) => Promise<VisionToolkitVerification>;
+  imageWorkshopPluginPreparer?: (options: ImageWorkshopPluginOptions) => Promise<unknown>;
   schemaProbe?: McpSchemaProbe;
 };
 
@@ -338,13 +340,32 @@ function composePresetComposition(code: string, overlay: string, presetId: strin
     throw new RpgMakerStartupError(`Pinned DSH Code preset must contain exactly one persona row for ${presetId}.`);
   }
   const overlayRows = topLevelRows(overlay);
-  if (overlayRows.length !== 1 || overlayRows[0].id !== 'persona') {
-    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must provide exactly one persona row and no other composition rows.`);
+  const personaRows = overlayRows.filter((row) => row.id === 'persona');
+  const pluginRows = overlayRows.filter((row) => row.id === IMAGE_WORKSHOP_PLUGIN_ROW_ID);
+  if (personaRows.length !== 1) {
+    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must provide exactly one persona row; found ${personaRows.length}.`);
   }
-  const composed = replaceTopLevelRow(code, 'persona', overlayRows[0].text, `RPG Maker preset ${presetId}`);
+  if (pluginRows.length > 1) {
+    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must not duplicate the ${IMAGE_WORKSHOP_PLUGIN_ROW_ID} row.`);
+  }
+  const otherRows = overlayRows.filter((row) => row.id !== 'persona' && row.id !== IMAGE_WORKSHOP_PLUGIN_ROW_ID);
+  if (otherRows.length > 0) {
+    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must define no composition rows beyond persona${pluginRows.length === 1 ? ' and the app-owned image plugin row' : ''}.`);
+  }
+  if (pluginRows.length === 1 && presetId !== ASSET_WORKSHOP_PRESET_ID) {
+    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must not mount the image tool plugin; only ${ASSET_WORKSHOP_PRESET_ID} may scope it.`);
+  }
+  let composed = replaceTopLevelRow(code, 'persona', personaRows[0].text, `RPG Maker preset ${presetId}`);
+  if (pluginRows.length === 1) composed = insertTopLevelRowAfter(composed, 'persona', pluginRows[0].text.trim(), `RPG Maker preset ${presetId}`);
   const ids = topLevelIds(composed);
   if (new Set(ids).size !== ids.length) throw new RpgMakerStartupError(`RPG Maker preset ${presetId} derived from Code contains duplicate top-level row ids.`);
   return composed;
+}
+
+function insertTopLevelRowAfter(composition: string, afterId: string, rowText: string, sourceLabel: string): string {
+  const anchor = topLevelRows(composition).find((row) => row.id === afterId);
+  if (!anchor) throw new RpgMakerStartupError(`${sourceLabel} has no ${afterId} row to insert after.`);
+  return `${composition.slice(0, anchor.end).replace(/\s+$/, '')}\n${rowText}\n${composition.slice(anchor.end)}`;
 }
 
 export async function installPreset(sourceRoot: string, dshHome: string, codePresetPath: string, presetId: string): Promise<{ presetRoot: string; presetDir: string }> {
@@ -652,6 +673,18 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
   const projectPath = await resolveLaunchProjectPath(options);
   const visionToolkitPreparer = options.visionToolkitPreparer ?? prepareVisionToolkit;
   await visionToolkitPreparer({
+    platform: options.platform,
+    env: options.env,
+    dshHome: options.dshHome,
+    programRoot: options.programRoot,
+    runtimeDir: options.runtimeDir,
+    dshExecutable: options.dshExecutable,
+    npmExecutable: options.npmExecutable,
+    pnpmExecutable: options.pnpmExecutable,
+    commandRunner: options.commandRunner
+  });
+  const imageWorkshopPluginPreparer = options.imageWorkshopPluginPreparer ?? prepareImageWorkshopPlugin;
+  await imageWorkshopPluginPreparer({
     platform: options.platform,
     env: options.env,
     dshHome: options.dshHome,

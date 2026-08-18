@@ -10,6 +10,7 @@ import { inspectCredentialMetadata, type CredentialMetadata } from './credential
 import { resolveImageToolchain } from './image-workshop';
 import { verifyMcpRuntime } from './rpgmaker';
 import { verifyRpgmPackerRuntime } from './release';
+import { verifyImageWorkshopPlugin, imageWorkshopPluginSummary, type ImageWorkshopPluginVerification } from './image-plugin';
 import {
   checkVisionToolkitActivation,
   verifyVisionToolkit,
@@ -35,6 +36,7 @@ export interface DoctorOptions extends PathOptions {
   npmExecutable?: string;
   pythonExecutable?: string;
   verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; image: DoctorCheck; packager: DoctorCheck }>;
+  verifyImageWorkshopPlugin?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<ImageWorkshopPluginVerification>;
   verifyVisionToolkit?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<VisionToolkitVerification>;
   verifyVisionToolkitActivation?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<VisionToolkitActivation>;
   lockTimeoutMs?: number;
@@ -295,6 +297,23 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     });
     const agentDependencies = await verifyAgentDependencies({ platform, env: commandEnv, paths, commandRunner: runner });
     checks.push(agentDependencies.mcp, agentDependencies.image, agentDependencies.packager);
+
+    const imagePlugin = await (options.verifyImageWorkshopPlugin ?? (context => verifyImageWorkshopPlugin({
+      platform: context.platform,
+      env: context.env,
+      dshHome: context.paths.dshHome,
+      programRoot: context.paths.programRoot,
+      runtimeDir: context.paths.runtimeDir,
+      commandRunner: context.commandRunner
+    })))({ platform, env: commandEnv, paths, commandRunner: runner });
+    if (imagePlugin.packageDir) executablePaths['image-workshop-plugin'] = imagePlugin.packageDir;
+    checks.push(check(
+      'image-tool-plugin',
+      'App-owned image tool plugin',
+      imagePlugin.valid,
+      imageWorkshopPluginSummary(imagePlugin),
+      imagePlugin.packageDir
+    ));
 
     const vision = await (options.verifyVisionToolkit ?? (context => verifyVisionToolkit({
       platform: context.platform,

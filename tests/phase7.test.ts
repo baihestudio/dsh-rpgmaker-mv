@@ -206,11 +206,23 @@ describe('Windows release gate foundations', () => {
           packager: { id: 'rpgmpacker', label: 'RPG Maker build packager', ok: true, detail: 'fixture packager verified' }
         }),
         verifyVisionToolkit,
-        verifyVisionToolkitActivation
+        verifyVisionToolkitActivation,
+        verifyImageWorkshopPlugin: async () => ({
+          valid: true,
+          errors: [],
+          packageDir: join(root, 'program', 'bundle', 'dsh-image-workshop'),
+          packageVersion: '0.1.0',
+          profileDependency: 'link:../../../../program/bundle/dsh-image-workshop',
+          bundleOccurrences: 0,
+          entrypoint: join(root, 'program', 'bundle', 'dsh-image-workshop', 'lib', 'index.js'),
+          ownedPath: true,
+          sha256: 'edd700c03856033e08d5886830d6bfee3f7f3e603f94cc10f011849ef0dde05a'
+        })
       });
       expect(report.ok).toBe(true);
       expect(report.checks.map((check) => check.id)).toContain('node');
       expect(report.checks.map((check) => check.id)).toContain('python');
+      expect(report.checks.map((check) => check.id)).toContain('image-tool-plugin');
       expect(report.executablePaths.python).toContain('python.exe');
       expect(report.checks.map((check) => check.id)).toContain('app-layout');
       expect(report.checks.map((check) => check.id)).toContain('vision-toolkit-profile');

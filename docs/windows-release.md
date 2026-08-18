@@ -11,7 +11,7 @@
    - PowerShell 7.4+ (`Microsoft.PowerShell`)
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
-4. The installer verifies executable paths and versions, supplies the verified WinGet Python to Vision Toolkit's isolated managed environment, stages the pinned DSH `0.1.0-rc.7` runtime with Bun, installs the exact RPG Maker MCP, build packager, and Vision Toolkit profile dependency, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. The Vision Toolkit package and license notice are listed in [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md).
+4. The installer verifies executable paths and versions, supplies the verified WinGet Python to Vision Toolkit's isolated managed environment, stages the pinned DSH `0.1.0-rc.7` runtime with Bun, installs the exact RPG Maker MCP, build packager, Vision Toolkit profile dependency, and the app-owned image tool plugin (scoped to 游戏图片素材助手), then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. The Vision Toolkit package and license notice are listed in [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md).
 
 No Git clone, npm install, or manual package command is needed for this path. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported repair path; a previous runtime is retained by the staged runtime swap for recovery. If post-swap bootstrap, metadata, or shortcut creation fails, the prior program tree is restored and the failed new tree is retained as a named diagnostic/recovery directory.
 
