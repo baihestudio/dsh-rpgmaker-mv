@@ -55,19 +55,19 @@ Tests use disposable runtime, DSH home, credential, and MV project directories. 
 
 ## Phase 2: RPG Maker Agent and MCP editing loop
 
-`launch.ps1` now prepares the pinned `@xerolo44/rpgmaker-mv-mcp@0.1.0` in an app-owned staging runtime, probes its `tools/list` schema, installs the `rpgmaker` agent preset as a Code-derived composition, validates the generated overlay through the pinned DSH `web --dump-config` path, and launches the official `web` profile with a generated `--patch` overlay. The overlay supplies an app-contained Bun/Node JavaScript MCP entry as argv, the selected project as both `--project` and child cwd, `serverName: rpgmaker_mv`, and `failOnStartupError: true`; schema or project failures stop launch instead of presenting a tool-less session.
+`launch.ps1` now prepares the pinned `@xerolo44/rpgmaker-mv-mcp@0.1.0` in an app-owned staging runtime, probes its `tools/list` schema, installs the four Chinese-named specialist presets (`rpgmaker`, `playtest-debug`, `asset-workshop`, and `build-release`) as Code-derived compositions, validates the generated overlay through the pinned DSH `web --dump-config` path, and launches the official `web` profile with a generated `--patch` overlay. The fresh-state default is RPG Maker MV 开发助手; each preset keeps PTC/Code Mode and adds a domain persona while existing user defaults remain authoritative. The overlay supplies an app-contained Bun/Node JavaScript MCP entry as argv, the selected project as both `--project` and child cwd, `serverName: rpgmaker_mv`, and `failOnStartupError: true`; schema or project failures stop launch instead of presenting a tool-less session.
 
 The RPG Maker preset treats the MCP/agent as the sole writer. Database, event/dialogue, map-metadata, plugin, and restore mutations use a targeted reread followed by `validate_project` before success is returned. The `.mcp-backups/` guidance is read-only: the harness reports the suggested `.gitignore` entry but never edits an existing project ignore file without user consent.
 
 The generated preset and patch live under `DSH_HOME`; they contain executable paths and project-independent `process.cwd()` references only, never credentials. The pinned DSH Code preset is read from the installed runtime and is not edited.
 
-## Phase 3: Playtest Debug Agent
+## Phase 3: 游戏测试与调试助手
 
 Select `--preset playtest-debug` when creating a session. The Debug skill directly sequences the existing `mcp__rpgmaker_mv__*` tools: static validation, idle status preflight, NW.js launch, bounded status/log polling, MCP stop, and post-stop status. It refuses an already-running Playtest, never adopts a PID or invokes OS process controls, and reports cleanup as unverified when MCP status cannot confirm it.
 
 Reports distinguish static validation, process launch, crash/log evidence, cleanup confirmation, and behavior/visual gameplay verification. A launched process and clean log are not behavior verification. Harness-owned process-tree cleanup belongs to the separate automated-playtest capability; screenshot/input/gameplay automation is out of scope here.
 
-## Phase 4: Asset Workshop Agent
+## Phase 4: 游戏图片素材助手
 
 Select the deterministic image preset when launching a project:
 
@@ -123,7 +123,7 @@ The Xerolo MCP lock check is deliberately limited to its stable release facts: e
 
 In the first release, the agent is the sole writer while an RPG Maker MV project is under agent control. The editor may remain open only for read-only reference: users must not save from it, and must reopen the project before inspecting agent changes.
 
-## Phase 6: Build and Release Agent
+## Phase 6: 游戏构建与发布助手
 
 Select `--preset build-release` for a packaging session, or run the harness
 workflow directly after the existing RPG Maker MCP has validated the project:

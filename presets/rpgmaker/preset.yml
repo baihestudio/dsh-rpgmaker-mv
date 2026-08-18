@@ -1,3 +1,3 @@
-name: RPG Maker MV Agent
-description: Inspect and modify one RPG Maker MV project through the validated database, event, map-metadata, dialogue, plugin, and backup tools.
+name: RPG Maker MV 开发助手
+description: 检查和修改 RPG Maker MV 的数据库、事件、对话、地图与插件，并在变更后执行验证和备份检查。
 order: 0

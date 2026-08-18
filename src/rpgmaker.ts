@@ -307,6 +307,39 @@ function topLevelIds(composition: string): string[] {
   return [...composition.matchAll(/^- id:\s*([^\s#]+)/gm)].map((match) => match[1]);
 }
 
+type TopLevelCompositionRow = { id: string; start: number; end: number; text: string };
+
+function topLevelRows(composition: string): TopLevelCompositionRow[] {
+  const matches = [...composition.matchAll(/^- id:\s*([^\s#]+)/gm)];
+  return matches.map((match, index) => {
+    const start = match.index ?? 0;
+    const end = matches[index + 1]?.index ?? composition.length;
+    return { id: match[1], start, end, text: composition.slice(start, end).trim() };
+  });
+}
+
+function replaceTopLevelRow(composition: string, id: string, replacement: string, sourceLabel: string): string {
+  const matches = topLevelRows(composition).filter((row) => row.id === id);
+  if (matches.length !== 1) throw new RpgMakerStartupError(`${sourceLabel} must contain exactly one ${id} row; found ${matches.length}.`);
+  const row = matches[0];
+  return `${composition.slice(0, row.start)}${replacement.trim()}\n${composition.slice(row.end)}`;
+}
+
+function composePresetComposition(code: string, overlay: string, presetId: string): string {
+  const codeRows = topLevelRows(code);
+  if (codeRows.filter((row) => row.id === 'persona').length !== 1) {
+    throw new RpgMakerStartupError(`Pinned DSH Code preset must contain exactly one persona row for ${presetId}.`);
+  }
+  const overlayRows = topLevelRows(overlay);
+  if (overlayRows.length !== 1 || overlayRows[0].id !== 'persona') {
+    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must provide exactly one persona row and no other composition rows.`);
+  }
+  const composed = replaceTopLevelRow(code, 'persona', overlayRows[0].text, `RPG Maker preset ${presetId}`);
+  const ids = topLevelIds(composed);
+  if (new Set(ids).size !== ids.length) throw new RpgMakerStartupError(`RPG Maker preset ${presetId} derived from Code contains duplicate top-level row ids.`);
+  return composed;
+}
+
 export async function installPreset(sourceRoot: string, dshHome: string, codePresetPath: string, presetId: string): Promise<{ presetRoot: string; presetDir: string }> {
   const source = resolve(sourceRoot);
   const sourceComposition = join(source, 'agent.cordis.yml');
@@ -319,11 +352,7 @@ export async function installPreset(sourceRoot: string, dshHome: string, codePre
     ? code
     : code.replace(skillFilesystem, `${skillFilesystem}\n  config:\n    customSkillDirs:\n      - !!js \"process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))\"`);
   const overlay = await readFile(sourceComposition, 'utf8');
-  const overlayRows = overlay.trim();
-  const overlayIsEmpty = overlayRows.split(/\r?\n/).filter((line) => !line.trim().startsWith('#')).join('').trim() === '[]';
-  const composed = overlayIsEmpty ? `${codeWithSkill.trimEnd()}\n` : `${codeWithSkill.trimEnd()}\n\n${overlayRows}\n`;
-  const ids = topLevelIds(composed);
-  if (new Set(ids).size !== ids.length) throw new RpgMakerStartupError('RPG Maker preset derived from Code contains duplicate top-level row ids.');
+  const composed = `${composePresetComposition(codeWithSkill, overlay, presetId).trimEnd()}\n`;
   const presetRoot = join(dshHome, '.agent-presets');
   const presetDir = join(presetRoot, presetId);
   const ownershipPath = join(presetDir, PRESET_OWNERSHIP_FILE);

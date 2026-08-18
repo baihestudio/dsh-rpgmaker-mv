@@ -624,7 +624,7 @@ describe('Asset Workshop CLI and real preset preparation seam', () => {
       await writeFile(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ version: DSH_VERSION, bin: { dsh: 'lib/bin.js' } }));
       await mkdir(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true });
       await writeFile(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'fixture');
-      await writeFile(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml'), "- id: code-tool\n  name: fake\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n");
+      await writeFile(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml'), "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: >-\n      generic Code persona\n- id: code-tool\n  name: fake\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n");
       const bun = join(root, 'bun.exe');
       const dsh = join(root, 'dsh.exe');
       const magick = join(root, 'tools with spaces', 'magick.exe');

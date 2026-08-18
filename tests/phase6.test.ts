@@ -157,7 +157,7 @@ async function makeDshRuntime(root: string): Promise<string> {
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: DSH_VERSION, bin: { dsh: 'lib/bin.js' } }));
   await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true });
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'fixture');
-  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml'), "- id: code-tool\n  name: fake-code-tool\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n");
+  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml'), "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: >-\n      generic Code persona\n- id: code-tool\n  name: fake-code-tool\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n");
   return runtime;
 }
 
@@ -420,7 +420,7 @@ describe('build-release preset mount', () => {
       });
       expect(deployment.agentPreset).toBe('build-release');
       expect(dumpCalls).toBe(1);
-      expect(await readFile(join(deployment.presetDir, 'preset.yml'), 'utf8')).toContain('Build and Release Agent');
+      expect(await readFile(join(deployment.presetDir, 'preset.yml'), 'utf8')).toContain('游戏构建与发布助手');
       const composition = await readFile(deployment.compositionPath, 'utf8');
       expect(composition).toContain('default: build-release');
       expect((composition.match(/id: mcp-rpgmaker-mv/g) ?? [])).toHaveLength(1);

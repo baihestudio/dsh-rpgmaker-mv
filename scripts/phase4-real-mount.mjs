@@ -17,7 +17,7 @@ try {
   const presets = mounted.ctx.get('agentPresets');
   if (!presets) throw new Error('official DSH agent preset service did not mount');
   const preset = await presets.resolve('asset-workshop');
-  if (preset.id !== 'asset-workshop' || preset.name !== 'Asset Workshop Agent') throw new Error(`unexpected mounted preset metadata ${preset.id}/${preset.name}`);
+  if (preset.id !== 'asset-workshop' || preset.name !== '游戏图片素材助手' || preset.description !== '处理缩放、裁切、补边、切图、精灵表、图集与 PNG 优化，并验证像素、透明度和输出清单。') throw new Error(`unexpected mounted preset metadata ${preset.id}/${preset.name}`);
   const presetText = JSON.stringify(preset);
   const skillPath = join(dirname(preset.path), 'skills', 'asset-workshop', 'SKILL.md');
   const skillText = await readFile(skillPath, 'utf8');

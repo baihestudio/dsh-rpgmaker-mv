@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { prepareRpgMakerDeployment, launchRpgmakerProject, RpgMakerStartupError, resolveMcpRunner, verifyMcpRuntime, type McpToolDefinition } from '../src/rpgmaker';
+import { installPreset, prepareRpgMakerDeployment, launchRpgmakerProject, RpgMakerStartupError, resolveMcpRunner, verifyMcpRuntime, type McpToolDefinition } from '../src/rpgmaker';
 import { DSH_VERSION } from '../src/config';
 import { backupIgnoreGuidance } from '../src/project';
 
@@ -34,7 +34,7 @@ async function makeDshRuntime(root: string): Promise<string> {
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: DSH_VERSION, bin: { dsh: 'lib/bin.js' } }));
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), '#!/usr/bin/env bun\n');
   await writeFile(join(runtime, 'node_modules', '.bin', 'dsh.cmd'), '@echo off\r\n');
-  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml'), "- id: code-tool\n  name: fake-code-tool\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n");
+  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml'), "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: >-\n      generic Code persona\n- id: code-tool\n  name: fake-code-tool\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n");
   return runtime;
 }
 
@@ -115,6 +115,23 @@ describe('RPG Maker MCP deployment', () => {
       expect(presetComposition).not.toContain('dsh-mcp-client');
       expect(presetComposition).toContain('customSkillDirs');
       expect(await readFile(join(deployment.presetDir, 'skills', 'rpgmaker-mv', 'SKILL.md'), 'utf8')).toContain('validate_project');
+      const specializedPresets = [
+        { id: 'rpgmaker', name: 'RPG Maker MV 开发助手', fact: '默认入口和轻量协调者' },
+        { id: 'playtest-debug', name: '游戏测试与调试助手', fact: '静态验证、进程启动、状态与日志证据' },
+        { id: 'asset-workshop', name: '游戏图片素材助手', fact: '确定性图片素材处理' },
+        { id: 'build-release', name: '游戏构建与发布助手', fact: '可复现 Windows 和 Web 构建' }
+      ];
+      for (const specialized of specializedPresets) {
+        const installedDir = join(deployment.presetRoot, specialized.id);
+        expect(await readFile(join(installedDir, 'preset.yml'), 'utf8')).toContain(`name: ${specialized.name}`);
+        const installedComposition = await readFile(join(installedDir, 'agent.cordis.yml'), 'utf8');
+        expect((installedComposition.match(/^- id: persona$/gm) ?? [])).toHaveLength(1);
+        expect(installedComposition).toContain(specialized.fact);
+        expect(installedComposition).toContain('code-tool');
+        expect(installedComposition).toContain('customSkillDirs');
+        expect(installedComposition).not.toContain('generic Code persona');
+        expect(installedComposition).not.toContain('dsh-mcp-client');
+      }
       expect(composition).not.toContain('DEEPSEEK_API_KEY');
       expect(deployment.presetRoot).toContain('.agent-presets');
       expect(JSON.parse(await readFile(join(deployment.presetDir, '.dsh-rpgmaker-owned.json'), 'utf8')).owner).toBe('dsh-rpgmaker-mv');
@@ -146,6 +163,18 @@ describe('RPG Maker MCP deployment', () => {
       expect(debug.presetDir).toBe(join(dshHome, '.agent-presets', 'playtest-debug'));
       expect(await readFile(debug.compositionPath, 'utf8')).toContain('default: playtest-debug');
       expect(JSON.parse(await readFile(join(debug.presetDir, '.dsh-rpgmaker-owned.json'), 'utf8')).presetId).toBe('playtest-debug');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed when the pinned Code composition has no persona seam', async () => {
+    const root = await temp('phase2-persona-seam');
+    try {
+      const runtime = await makeDshRuntime(root);
+      const code = join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml');
+      await writeFile(code, "- id: code-tool\n  name: fake-code-tool\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n");
+      await expect(installPreset(join(process.cwd(), 'presets', 'rpgmaker'), join(root, 'dsh-home'), code, 'rpgmaker')).rejects.toThrow(/exactly one persona row/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
