@@ -1,5 +1,6 @@
 import { isRegularFile } from './files';
-import { isAbsolute, join } from 'node:path';
+import { lstat } from 'node:fs/promises';
+import { extname, isAbsolute, join } from 'node:path';
 import { pathDelimiter } from './config';
 
 export interface ExecutableLookupOptions {
@@ -11,6 +12,17 @@ function looksLikePath(value: string): boolean {
   return isAbsolute(value) || value.includes('/') || value.includes('\\');
 }
 
+async function isExecutableFile(path: string, platform: string): Promise<boolean> {
+  if (await isRegularFile(path)) return true;
+  if (platform !== 'win32' || extname(path).toLowerCase() !== '.exe') return false;
+  try {
+    const entry = await lstat(path);
+    return entry.isFile() || entry.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 export async function resolveExecutable(name: string, options: ExecutableLookupOptions = {}): Promise<string | undefined> {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
@@ -18,10 +30,10 @@ export async function resolveExecutable(name: string, options: ExecutableLookupO
   if (!requested) return undefined;
 
   if (looksLikePath(requested)) {
-    if (await isRegularFile(requested)) return requested;
+    if (await isExecutableFile(requested, platform)) return requested;
     if (platform === 'win32' && !requested.includes('.')) {
       for (const extension of ['.exe', '.cmd', '.bat', '.ps1']) {
-        if (await isRegularFile(`${requested}${extension}`)) return `${requested}${extension}`;
+        if (await isExecutableFile(`${requested}${extension}`, platform)) return `${requested}${extension}`;
       }
     }
     return undefined;
@@ -29,12 +41,12 @@ export async function resolveExecutable(name: string, options: ExecutableLookupO
 
   const entries = (env.PATH ?? '').split(pathDelimiter(platform)).filter(Boolean);
   const names = platform === 'win32'
-    ? [requested, `${requested}.exe`, `${requested}.cmd`, `${requested}.bat`, `${requested}.ps1`]
+    ? (extname(requested) ? [requested] : [`${requested}.exe`, `${requested}.cmd`, `${requested}.bat`, `${requested}.ps1`, requested])
     : [requested];
   for (const entry of entries) {
     for (const candidate of names) {
       const path = join(entry.replace(/^"|"$/g, ''), candidate);
-      if (await isRegularFile(path)) return path;
+      if (await isExecutableFile(path, platform)) return path;
     }
   }
   return undefined;

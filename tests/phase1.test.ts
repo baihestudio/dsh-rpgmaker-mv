@@ -705,7 +705,7 @@ describe('doctor and launcher seams', () => {
     const invocation = prepareProcessInvocation(command, ['--version'], 'win32', { ComSpec: String.raw`C:\Windows\System32\cmd.exe` });
     expect(invocation.command).toBe(String.raw`C:\Windows\System32\cmd.exe`);
     expect(invocation.args.slice(0, 4)).toEqual(['/d', '/v:off', '/s', '/c']);
-    expect(invocation.args[4]).toContain(`"${command}" --version`);
+    expect(invocation.args[4]).toBe(`""${command}" --version"`);
     expect(invocation.args[4]).not.toContain('Game 游戏');
   });
   test('Windows .cmd argv preserves percent and exclamation characters at the cmd boundary', () => {

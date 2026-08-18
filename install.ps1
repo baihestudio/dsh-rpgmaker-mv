@@ -52,6 +52,8 @@ if (-not $bun) {
 
 $cli = Join-Path $root 'src\cli.ts'
 $arguments = @('run', $cli, 'install', '--release-root', $root)
+$winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+if ($winget) { $arguments += @('--winget-executable', $winget.Source) }
 if ($consent) { $arguments += '--yes' }
 & $bun.Source @arguments
 $code = $LASTEXITCODE

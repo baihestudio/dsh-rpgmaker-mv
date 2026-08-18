@@ -6,6 +6,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
+$machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+$user = [Environment]::GetEnvironmentVariable('Path', 'User')
+$env:Path = (@($machine, $user, $env:Path) | Where-Object { $_ }) -join ';'
 $bun = Get-Command bun.exe -ErrorAction SilentlyContinue
 if (-not $bun) { throw 'Bun was not found. Run Install.cmd or repair the installation, then retry.' }
 if (-not $env:DSH_RPGMAKER_PROGRAM_ROOT) { $env:DSH_RPGMAKER_PROGRAM_ROOT = $root }

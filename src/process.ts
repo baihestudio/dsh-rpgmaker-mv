@@ -65,7 +65,7 @@ export function prepareProcessInvocation(
   if (platform !== 'win32' || !/\.(?:cmd|bat)$/i.test(command)) return { command, args };
   const comspec = env.ComSpec ?? env.COMSPEC ?? process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe';
   const commandLine = [quoteWindowsCommandArgument(command), ...args.map(quoteWindowsCommandArgument)].join(' ');
-  return { command: comspec, args: ['/d', '/v:off', '/s', '/c', commandLine] };
+  return { command: comspec, args: ['/d', '/v:off', '/s', '/c', `"${commandLine}"`] };
 }
 
 function mergedEnvironment(env?: Record<string, string | undefined>): Record<string, string> {
@@ -139,6 +139,7 @@ export async function executeCommand(
       env: mergedEnvironment(options.env),
       shell: false,
       windowsHide: true,
+      windowsVerbatimArguments: (options.platform ?? process.platform) === 'win32' && /\.(?:cmd|bat)$/i.test(command),
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
@@ -209,6 +210,7 @@ export const spawnInteractive: InteractiveSpawner = (command, args, options) => 
     env: mergedEnvironment(options.env),
     shell: false,
     windowsHide: false,
+    windowsVerbatimArguments: (options.platform ?? process.platform) === 'win32' && /\.(?:cmd|bat)$/i.test(command),
     stdio: 'inherit'
   });
 };
