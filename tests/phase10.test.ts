@@ -1,0 +1,593 @@
+import { afterAll, describe, expect, test } from 'bun:test';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { basename, join, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
+
+import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION, prepareMcporterRuntime, verifyMcporterRuntime } from '../src/mcport';
+import {
+  JS_RUNNER_ENV,
+  MCPORTER_RUNTIME_ENV,
+  WORKSPACE_MCP_BUNDLE_RELATIVE,
+  WORKSPACE_MCP_PACKAGE,
+  WORKSPACE_MCP_SHA256,
+  WORKSPACE_MCP_VERSION,
+  XEROLO_RUNTIME_ENV,
+  prepareWorkspaceMcpBundle,
+  verifyWorkspaceMcpBundle
+} from '../src/workspace-mcp';
+import { prepareRpgMakerMcpRuntime } from '../src/rpgmaker';
+import { HarnessScope, createHarnessAgent } from './fixtures/dsh-agent-harness';
+
+async function temp(prefix: string): Promise<string> {
+  return mkdtemp(join(tmpdir(), `${prefix}-`));
+}
+
+async function countLines(path: string): Promise<number> {
+  try {
+    const content = await readFile(path, 'utf8');
+    return content.split(/\r?\n/).filter((line) => line.trim().length > 0).length;
+  } catch {
+    return 0;
+  }
+}
+
+function harnessPaths(root: string) {
+  return {
+    dshHome: join(root, 'home'),
+    programRoot: join(root, 'program'),
+    runtimeDir: join(root, 'program', 'runtime', 'dsh')
+  };
+}
+
+const BUNDLE_LIB = join(process.cwd(), 'bundle', 'dsh-workspace-mcp', 'lib');
+const FIXTURE_SERVER = join(process.cwd(), 'tests', 'fixtures', 'deterministic-mcp-server.mjs');
+
+/** Lazy real installs shared by the disposable probe and the Agent-seam tests. */
+let sharedRuntimesPromise: Promise<{ root: string; mcporter: string; xerolo: string }> | undefined;
+let sharedRootForCleanup: string | undefined;
+
+function sharedRealRuntimes(): Promise<{ root: string; mcporter: string; xerolo: string }> {
+  sharedRuntimesPromise ??= (async () => {
+    const root = await temp('ws-mcp-real');
+    sharedRootForCleanup = root;
+    const paths = harnessPaths(root);
+    const mcporter = join(paths.programRoot, 'runtime', 'mcporter');
+    await prepareMcporterRuntime({ bunExecutable: 'bun', ...paths }, mcporter);
+    const xerolo = join(paths.programRoot, 'runtime', 'mcp');
+    await prepareRpgMakerMcpRuntime({ bunExecutable: 'bun', platform: process.platform }, xerolo);
+    return { root, mcporter, xerolo };
+  })();
+  return sharedRuntimesPromise;
+}
+
+afterAll(async () => {
+  if (sharedRootForCleanup) await rm(sharedRootForCleanup, { recursive: true, force: true });
+});
+
+async function makeMvProject(root: string, title = 'Probe Game'): Promise<string> {
+  const project = join(root, '选择 project with spaces');
+  await mkdir(join(project, 'data'), { recursive: true });
+  await mkdir(join(project, 'js'), { recursive: true });
+  await writeFile(join(project, 'Game.rpgproject'), '{}\n');
+  await writeFile(join(project, 'data', 'System.json'), JSON.stringify({ gameTitle: title }));
+  await writeFile(join(project, 'data', 'MapInfos.json'), '[]\n');
+  await writeFile(join(project, 'data', 'Actors.json'), '[null]\n');
+  await writeFile(join(project, 'js', 'plugins.js'), '[]\n');
+  return project;
+}
+
+async function withBundleEnv(env: Record<string, string>, fn: () => Promise<void>): Promise<void> {
+  const saved: Array<[string, string | undefined]> = [];
+  const keys = [MCPORTER_RUNTIME_ENV, XEROLO_RUNTIME_ENV, JS_RUNNER_ENV];
+  for (const key of keys) {
+    saved.push([key, process.env[key]]);
+    process.env[key] = env[key];
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+async function bundleModule<T = Record<string, unknown>>(name: string): Promise<T> {
+  return import(pathToFileURL(join(BUNDLE_LIB, name)).href) as Promise<T>;
+}
+
+describe('app-owned MCPorter runtime verification', () => {
+  test('accepts an installed exact-pinned runtime and rejects a tampered lock', async () => {
+    const root = await temp('mcport-verify');
+    try {
+      const runtime = join(root, 'runtime');
+      await mkdir(join(runtime, 'node_modules', 'mcporter', 'dist'), { recursive: true });
+      await writeFile(join(runtime, 'package.json'), JSON.stringify({ private: true, dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } }));
+      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({
+        lockfileVersion: 1,
+        workspaces: { '': { dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } } },
+        packages: { [MCPORTER_PACKAGE]: [`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`, '', {}, MCPORTER_NPM_INTEGRITY] }
+      }));
+      await writeFile(join(runtime, 'node_modules', 'mcporter', 'package.json'), JSON.stringify({ version: MCPORTER_VERSION }));
+      await writeFile(join(runtime, 'node_modules', 'mcporter', 'dist', 'index.js'), 'export {}');
+
+      const valid = await verifyMcporterRuntime(runtime, 'win32');
+      expect(valid.valid).toBe(true);
+      expect(valid.packageVersion).toBe(MCPORTER_VERSION);
+      expect(valid.packageDir).toBe(join(runtime, 'node_modules', 'mcporter'));
+      expect(valid.entrypoint).toBe(join(runtime, 'node_modules', 'mcporter', 'dist', 'index.js'));
+
+      const lockPath = join(runtime, 'bun.lock');
+      const lock = await readFile(lockPath, 'utf8');
+      await writeFile(lockPath, lock.replace(MCPORTER_NPM_INTEGRITY, 'sha512-tampered'));
+      const tampered = await verifyMcporterRuntime(runtime, 'win32');
+      expect(tampered.valid).toBe(false);
+      expect(tampered.errors.join(' ')).toContain('npm integrity');
+
+      await rm(lockPath);
+      const missing = await verifyMcporterRuntime(runtime, 'win32');
+      expect(missing.valid).toBe(false);
+      expect(missing.errors.join(' ')).toContain('bun.lock');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects an entry that escapes the app-owned runtime and a wrong version', async () => {
+    const root = await temp('mcport-escape');
+    try {
+      const runtime = join(root, 'runtime');
+      await mkdir(join(runtime, 'node_modules', 'mcporter'), { recursive: true });
+      await writeFile(join(runtime, 'package.json'), JSON.stringify({ private: true, dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } }));
+      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({
+        lockfileVersion: 1,
+        workspaces: { '': { dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } } },
+        packages: { [MCPORTER_PACKAGE]: [`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`, '', {}, MCPORTER_NPM_INTEGRITY] }
+      }));
+      const escape = join(root, 'escape', 'index.js');
+      await mkdir(dirnameOf(escape), { recursive: true });
+      await writeFile(escape, 'export {}');
+      await writeFile(join(runtime, 'node_modules', 'mcporter', 'package.json'), JSON.stringify({ version: MCPORTER_VERSION, main: '../../../../escape/index.js' }));
+
+      const result = await verifyMcporterRuntime(runtime, 'win32');
+      expect(result.valid).toBe(false);
+      expect(result.errors.join(' ')).toContain('entry was not found');
+
+      await writeFile(join(runtime, 'node_modules', 'mcporter', 'package.json'), JSON.stringify({ version: '0.1.0' }));
+      const wrong = await verifyMcporterRuntime(runtime, 'win32');
+      expect(wrong.valid).toBe(false);
+      expect(wrong.errors.join(' ')).toContain('installed MCPorter version');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+function dirnameOf(path: string): string {
+  return path.slice(0, Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')));
+}
+
+function relativeTo(from: string, to: string): string {
+  return relative(from, to);
+}
+
+describe('Xerolo tool contract fail-closed', () => {
+  test('accepts the complete fixed set and rejects missing, unknown, and duplicate names', async () => {
+    const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
+    expect(contract.XEROLO_MANIFEST.tools.length).toBe(41);
+    const full = contract.XEROLO_MANIFEST.tools.map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema }));
+    expect(contract.validateDiscoveredTools(full).errors).toEqual([]);
+    expect(contract.validateDiscoveredTools([]).errors.join(' ')).toContain('no tools');
+    expect(contract.validateDiscoveredTools([{ name: '', inputSchema: {} }]).errors.join(' ')).toContain('without a name');
+    expect(contract.validateDiscoveredTools([{ name: 'echo' }, { name: 'echo' }]).errors.join(' ')).toContain('duplicate');
+    const withUnknown = [...full.slice(0, 10), { name: 'not_in_contract', inputSchema: { type: 'object' } }];
+    expect(contract.validateDiscoveredTools(withUnknown).errors.join(' ')).toContain('outside the fixed Xerolo contract');
+    const missingOne = full.slice(1);
+    expect(contract.validateDiscoveredTools(missingOne).errors.join(' ')).toContain('missing required RPG Maker tools');
+  });
+
+  test('verifies the pinned manifest digest and rejects tampering and live schema drift', async () => {
+    const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
+    expect(contract.manifestDigest()).toBe(contract.XEROLO_MANIFEST_SHA256);
+    expect(contract.verifyManifest().errors).toEqual([]);
+
+    const tampered = {
+      ...contract.XEROLO_MANIFEST,
+      tools: [{ ...contract.XEROLO_MANIFEST.tools[0], description: 'edited by hand' }, ...contract.XEROLO_MANIFEST.tools.slice(1)]
+    };
+    expect(contract.verifyManifest(tampered).errors.join(' ')).toContain('digest mismatch');
+
+    const noTools = { ...contract.XEROLO_MANIFEST, tools: [] };
+    expect(contract.verifyManifest(noTools).errors.join(' ')).toContain('no tools');
+
+    // A live set with the right names but unsupported schemas drifts from the
+    // pinned manifest and must fail closed before any execution.
+    const drifted = contract.XEROLO_MANIFEST.tools.map((tool) => ({ name: tool.name, inputSchema: { type: 'object', properties: {} } }));
+    expect(contract.validateDiscoveredTools(drifted).errors.join(' ')).toContain('drifted');
+  });
+
+  test('rejects schemas outside the DSH vocabulary and invalid generated names', async () => {
+    const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
+    const base = (inputSchema: unknown) => ({ name: 'validate_project', inputSchema });
+    expect(contract.schemaProblem(base({ type: ['string', 'number'] }).inputSchema, 't')).toContain('type array');
+    expect(contract.schemaProblem(base({ type: 'object', nullable: true }).inputSchema, 't')).toContain('nullable');
+    expect(contract.schemaProblem(base({ $ref: '#/x' }).inputSchema, 't')).toContain('$ref');
+    expect(contract.schemaProblem(base({ type: 'file' }).inputSchema, 't')).toContain('unsupported type');
+    expect(contract.schemaProblem(base({ oneOf: [{ type: 'string' }] }).inputSchema, 't')).toContain('invalid oneOf');
+    expect(contract.schemaProblem(base({ type: 'object', properties: { a: { type: ['x'] } } }).inputSchema, 't')).toContain('type array');
+    expect(contract.schemaProblem(undefined, 't')).toContain('no inputSchema');
+    expect(contract.schemaProblem({ type: 'object', properties: { a: { type: 'string' } } }, 't')).toBeUndefined();
+
+    expect(contract.validateModelNames(['rpgmaker_validate_project']).errors).toEqual([]);
+    expect(contract.validateModelNames(['rpgmaker_x', 'rpgmaker_x']).errors.join(' ')).toContain('not unique');
+    expect(contract.validateModelNames(['run_code']).errors.join(' ')).toContain('reserved');
+    expect(contract.validateModelNames(['rpgmaker-9x']).errors.join(' ')).toContain('invalid');
+  });
+});
+
+describe('app-owned workspace MCP bundle profile link', () => {
+  const BUNDLE_SOURCE = join(process.cwd(), 'bundle', 'dsh-workspace-mcp');
+  const OTHER_BUNDLE = '@deepseek-ai/dsh-base';
+
+  async function writeInstalledProfile(dshHome: string, dependency: string, bundleDir: string): Promise<void> {
+    const profile = join(dshHome, 'profiles', 'web');
+    const installedDir = join(profile, 'node_modules', WORKSPACE_MCP_PACKAGE);
+    await mkdir(dirnameOf(installedDir), { recursive: true });
+    await rm(installedDir, { recursive: true, force: true });
+    await symlink(bundleDir, installedDir, 'dir');
+    const manifest = {
+      name: 'dsh-profile-web',
+      private: true,
+      version: '0.1.0',
+      dependencies: { [WORKSPACE_MCP_PACKAGE]: dependency },
+      dsh: { profile: { bundles: [OTHER_BUNDLE, WORKSPACE_MCP_PACKAGE] } }
+    };
+    await writeFile(join(profile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(profile, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\nimporters:\n  .:\n    dependencies:\n      __placeholder__:\n        specifier: "0.0.0"\n        version: 0.0.0\n');
+  }
+
+  test('installs the local bundle once as a host-level layer and reuses it idempotently', async () => {
+    const root = await temp('ws-bundle-install');
+    try {
+      const paths = harnessPaths(root);
+      await mkdir(join(paths.programRoot, 'bundle'), { recursive: true });
+      await mkdir(join(paths.runtimeDir, 'node_modules', '.bin'), { recursive: true });
+      const pnpm = join(root, 'pnpm.exe');
+      await writeFile(pnpm, 'fixture');
+      const dsh = join(paths.runtimeDir, 'dsh.exe');
+      await writeFile(dsh, 'fixture');
+      let pluginCalls = 0;
+      const runner = async (command: string, args: string[]) => {
+        expect(command).toBe(dsh);
+        if (args[0] === 'plugin') {
+          pluginCalls += 1;
+          const local = args.find((value) => value.startsWith('file:'));
+          expect(local).toBeDefined();
+          await writeInstalledProfile(paths.dshHome, local!, join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE));
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        throw new Error(`unexpected runner call: ${args.join(' ')}`);
+      };
+      const options = { platform: 'win32', ...paths, dshExecutable: dsh, pnpmExecutable: pnpm, commandRunner: runner } as const;
+      const first = await prepareWorkspaceMcpBundle(options);
+      expect(first.valid).toBe(true);
+      expect(first.packageVersion).toBe(WORKSPACE_MCP_VERSION);
+      expect(first.bundleOccurrences).toBe(1);
+      expect(first.packageDir).toBe(await realpath(join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE)));
+      expect(pluginCalls).toBe(1);
+
+      const second = await prepareWorkspaceMcpBundle(options);
+      expect(second.valid).toBe(true);
+      expect(pluginCalls).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a tampered bundle, a missing bundle patch, and a non-host-level occurrence', async () => {
+    const root = await temp('ws-bundle-verify');
+    try {
+      const paths = harnessPaths(root);
+      await mkdir(paths.programRoot, { recursive: true });
+      const bundleDir = join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE);
+      await cp(BUNDLE_SOURCE, bundleDir, { recursive: true });
+      await writeFile(join(bundleDir, 'lib', 'index.js'), await readFile(join(bundleDir, 'lib', 'index.js'), 'utf8').then((text) => `${text}\n`));
+
+      const tampered = await verifyWorkspaceMcpBundle({ platform: 'win32', ...paths, bundleDir });
+      expect(tampered.valid).toBe(false);
+      expect(tampered.errors.join(' ')).toMatch(/release hash/);
+
+      await rm(join(bundleDir, 'cordis.patch.yml'));
+      const noPatch = await verifyWorkspaceMcpBundle({ platform: 'win32', ...paths, bundleDir });
+      expect(noPatch.errors.join(' ')).toMatch(/bundle patch file/);
+
+      const external = join(root, 'external');
+      await cp(BUNDLE_SOURCE, external, { recursive: true });
+      const outside = await verifyWorkspaceMcpBundle({ platform: 'win32', ...paths, bundleDir: external });
+      expect(outside.ownedPath).toBe(false);
+      expect(outside.valid).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('accepts a copied install at the canonical profile path with a matching hash', async () => {
+    const root = await temp('ws-bundle-copied');
+    try {
+      const paths = harnessPaths(root);
+      const bundleDir = join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE);
+      await mkdir(bundleDir, { recursive: true });
+      await cp(BUNDLE_SOURCE, bundleDir, { recursive: true });
+      const profile = join(paths.dshHome, 'profiles', 'web');
+      const installedDir = join(profile, 'node_modules', WORKSPACE_MCP_PACKAGE);
+      await mkdir(dirnameOf(installedDir), { recursive: true });
+      await cp(bundleDir, installedDir, { recursive: true });
+      const manifest = {
+        name: 'dsh-profile-web',
+        private: true,
+        version: '0.1.0',
+        dependencies: { [WORKSPACE_MCP_PACKAGE]: `file:${relativeTo(profile, bundleDir)}` },
+        dsh: { profile: { bundles: [WORKSPACE_MCP_PACKAGE] } }
+      };
+      await writeFile(join(profile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      await writeFile(join(profile, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\nimporters:\n  .:\n    dependencies:\n      __placeholder__:\n        specifier: "0.0.0"\n        version: 0.0.0\n');
+      const verification = await verifyWorkspaceMcpBundle({ platform: 'win32', ...paths, bundleDir });
+      expect(verification.valid).toBe(true);
+      expect(verification.bundleOccurrences).toBe(1);
+      expect(verification.sha256).toBe(WORKSPACE_MCP_SHA256);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('disposable MCPorter probe', () => {
+  test('proves single-flight runtime, dynamic stdio registration, listing, pooling, containment, per-server and final close', async () => {
+    const shared = await sharedRealRuntimes();
+    const root = await temp('ws-mcp-probe');
+    try {
+      const host = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const env = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/env.js')>('env.js');
+      const paths = { mcporterRuntime: shared.mcporter };
+
+      const contextDir = join(root, 'server-context');
+      const serverCwd = join(root, 'server-cwd');
+      await mkdir(contextDir, { recursive: true });
+      await mkdir(serverCwd, { recursive: true });
+
+      // Corrupt config in every mcporter discovery location: because the Host
+      // runtime is created with an explicit server list, none of these are read.
+      const xdgHome = join(root, 'xdg-config');
+      await mkdir(join(xdgHome, 'mcporter'), { recursive: true });
+      await writeFile(join(xdgHome, 'mcporter', 'mcporter.json'), '{ corrupt');
+      await mkdir(join(serverCwd, 'config'), { recursive: true });
+      await writeFile(join(serverCwd, 'config', 'mcporter.json'), '{ corrupt');
+      const savedXdg = process.env.XDG_CONFIG_HOME;
+      const savedConfig = process.env.MCPORTER_CONFIG;
+      process.env.XDG_CONFIG_HOME = xdgHome;
+      process.env.MCPORTER_CONFIG = join(xdgHome, 'mcporter', 'mcporter.json');
+      const savedCredential = process.env.DEEPSEEK_API_KEY;
+      const savedDsh = process.env.DSH_HOME;
+      process.env.DEEPSEEK_API_KEY = 'probe-secret-never-shared';
+      process.env.DSH_HOME = join(root, 'dsh-home');
+
+      host.resetHostState();
+      try {
+        // One single-flight Runtime: concurrent creation returns one object.
+        const [runtimeA, runtimeB] = await Promise.all([host.getHostRuntime(paths), host.getHostRuntime(paths)]);
+        expect(runtimeA).toBe(runtimeB);
+        const runtime = runtimeA as { listServers: () => string[] };
+        expect(runtime.listServers()).toEqual([]);
+
+        // Dynamic stdio registration with explicit argv/cwd/neutralized env.
+        const canonical = resolve(join(root, 'workspace-probe'));
+        const definition = {
+          name: 'rpgmaker-ws-probe',
+          command: { kind: 'stdio', command: process.execPath, args: [FIXTURE_SERVER, '--context', contextDir], cwd: serverCwd },
+          env: env.neutralizedServerEnv(process.env) as Record<string, string>
+        };
+        // The definition env covers every inherited key, so mcporter's
+        // {...process.env, ...overrides} merge cannot carry an original value;
+        // every present credential/DSH key is overridden with the marker.
+        for (const key of Object.keys(process.env)) {
+          expect(Object.prototype.hasOwnProperty.call(definition.env, key)).toBe(true);
+        }
+        expect(definition.env.DEEPSEEK_API_KEY).toBe(env.SECRET_MARKER);
+        expect(definition.env.DSH_HOME).toBe(env.SECRET_MARKER);
+        for (const key of Object.keys(process.env).filter((candidate) => candidate.startsWith('DSH_'))) {
+          expect(definition.env[key]).toBe(env.SECRET_MARKER);
+        }
+
+        // Single-flight per-workspace acquisition: registration + listing once.
+        const [acquiredA, acquiredB] = await Promise.all([
+          host.acquireWorkspaceServer(paths, canonical, definition),
+          host.acquireWorkspaceServer(paths, canonical, definition)
+        ]);
+        expect(acquiredA).toBe(acquiredB);
+        expect(runtime.listServers()).toEqual(['rpgmaker-ws-probe']);
+        expect(acquiredA.tools.map((tool) => tool.name)).toEqual([
+          'echo', 'shared_state', 'error_tool', 'slow_tool', 'dump_context', 'update_record'
+        ]);
+        const echoSchema = acquiredA.tools.find((tool) => tool.name === 'echo')?.inputSchema as { properties?: Record<string, unknown> };
+        expect(echoSchema.properties?.message).toBeDefined();
+        expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(1);
+
+        // Pooled calls share one process.
+        const call1 = host.canonicalMcpValue(await host.callWorkspaceTool(paths, canonical, 'shared_state', {})) as { count: number; pid: number };
+        const call2 = host.canonicalMcpValue(await host.callWorkspaceTool(paths, canonical, 'shared_state', {})) as { count: number; pid: number };
+        expect(call1.count).toBe(1);
+        expect(call2.count).toBe(2);
+        expect(call2.pid).toBe(call1.pid);
+        expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(1);
+
+        // The spawned child observed the exact argv, cwd, and neutralized env.
+        await host.callWorkspaceTool(paths, canonical, 'dump_context', {});
+        const dumped = JSON.parse(await readFile(join(contextDir, 'context.json'), 'utf8')) as { argv: string[]; cwd: string; env: Record<string, string> };
+        expect(dumped.argv.slice(1)).toEqual([FIXTURE_SERVER, '--context', contextDir]);
+        expect(dumped.cwd).toBe(await realpath(serverCwd));
+        // mcporter spawns stdio servers with `{ ...process.env, ...definition.env }`
+        // (runtime/transport.js createStdioClientContext), so strict key absence is
+        // impossible without a separate broker process. The marker override instead
+        // proves no original secret bytes reach the deterministic child: every
+        // present credential/DSH key that the fixture dumps is the marker.
+        for (const key of ['DEEPSEEK_API_KEY', 'NPM_TOKEN', 'DSH_HOME', 'DSH_RPGMAKER_PROGRAM_ROOT', 'DSH_RPGMAKER_MCPORTER_RUNTIME']) {
+          if (process.env[key] !== undefined) {
+            expect(dumped.env[key]).toBe(env.SECRET_MARKER);
+            expect(dumped.env[key]).not.toBe(process.env[key]);
+          }
+        }
+        expect(dumped.env.PATH).toBeDefined();
+
+        // Result normalization and MCP errors as failures.
+        const echo = await host.callWorkspaceTool(paths, canonical, 'echo', { message: 'hi' });
+        expect(echo).toEqual({ content: [{ type: 'text', text: 'hi' }] });
+        expect(host.normalizeMcpResult(echo)).toEqual({ text: 'hi', content: [{ type: 'text', text: 'hi' }], structuredContent: null });
+        expect(host.canonicalMcpValue(echo)).toBe('hi');
+        // MCP error results surface as failures through the normalization layer
+        // the tool factory uses, while the raw pooled call resolves with them.
+        const errorRaw = await host.callWorkspaceTool(paths, canonical, 'error_tool', {});
+        expect(() => host.normalizeMcpResult(errorRaw)).toThrow(/boom/);
+
+        // Cancellation containment closes that server (killing its child); the
+        // next call reconnects without restarting the Host runtime.
+        const controller = new AbortController();
+        const slow = host.callWorkspaceTool(paths, canonical, 'slow_tool', { ms: 10_000 }, { signal: controller.signal });
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+        controller.abort();
+        await expect(slow).rejects.toThrow(/cancelled/);
+        const reconnected = await host.callWorkspaceTool(paths, canonical, 'echo', { message: 'again' });
+        expect(host.canonicalMcpValue(reconnected)).toBe('again');
+        expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(2);
+
+        // Per-server close keeps the definition registered; the next call reconnects.
+        await host.closeWorkspaceServer(paths, canonical);
+        expect(runtime.listServers()).toEqual(['rpgmaker-ws-probe']);
+        const afterClose = await host.callWorkspaceTool(paths, canonical, 'echo', { message: 'x' });
+        expect(host.canonicalMcpValue(afterClose)).toBe('x');
+        expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(3);
+
+        // Final close: one Runtime and every pooled child are closed.
+        await host.closeHost();
+        expect(host.hostState().closed).toBe(true);
+        expect(host.hostState().workspaces).toEqual([]);
+        await expect(host.getHostRuntime(paths)).rejects.toThrow(/closed/);
+      } finally {
+        host.resetHostState();
+        if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = savedXdg;
+        if (savedConfig === undefined) delete process.env.MCPORTER_CONFIG; else process.env.MCPORTER_CONFIG = savedConfig;
+        if (savedCredential === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = savedCredential;
+        if (savedDsh === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = savedDsh;
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('real DSH Agent seam', () => {
+  test('first prompt assembly waits for discovery, exposes stable rpgmaker_* tools, shares one server, and fails closed', async () => {
+    const shared = await sharedRealRuntimes();
+    const root = await temp('ws-mcp-seam');
+    try {
+      const project = await makeMvProject(root);
+      const canonicalProject = await realpath(project);
+      const bundle = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/index.js')>('index.js');
+      const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
+      const expectedNames = contract.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort();
+
+      bundle.resetHostState();
+      await withBundleEnv(
+        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [XEROLO_RUNTIME_ENV]: shared.xerolo, [JS_RUNNER_ENV]: process.execPath },
+        async () => {
+          const hostCtx = new HarnessScope('host');
+          const shutdown = await bundle.apply(hostCtx);
+          try {
+            // One valid RPG Maker Agent: its first assembly carries every
+            // generated stable tool synchronously (the manifest was registered
+            // at agent/created, before DSH's pre-waterfall schema collection)
+            // and waits for discovery + live manifest parity, with no workspace
+            // hash, session id, or MCP prefix in any name.
+            const agentA = createHarnessAgent('agent-a', { cwd: project, agentPreset: 'rpgmaker' });
+            hostCtx.emit('agent/created', { agent: agentA });
+            const assemblyA = await agentA.ctx.assemble();
+            const namesA = assemblyA.tools.map((tool) => tool.name).sort();
+            expect(namesA).toEqual(expectedNames);
+            expect(namesA.every((name) => /^rpgmaker_[a-z][a-z0-9_]*$/.test(name))).toBe(true);
+            expect(namesA.some((name) => name.includes('-'))).toBe(false);
+            expect(namesA.some((name) => /[0-9a-f]{8,}/.test(name))).toBe(false);
+            const updateRecord = assemblyA.tools.find((tool) => tool.name === 'rpgmaker_update_record');
+            expect(updateRecord?.parameters).toMatchObject({ type: 'object', properties: { type: { type: 'string' } } });
+
+            const infoDefinition = agentA.ctx.tools.get('rpgmaker_get_project_info');
+            expect(infoDefinition).toBeDefined();
+            const info = await infoDefinition!.execute({}, { signal: new AbortController().signal }) as { gameTitle: string };
+            expect(info.gameTitle).toBe('Probe Game');
+
+            // A second Agent in the same workspace reuses one pooled server and
+            // receives identical stable names; calls share state.
+            const agentB = createHarnessAgent('agent-b', { cwd: project, agentPreset: 'rpgmaker' });
+            hostCtx.emit('agent/created', { agent: agentB });
+            const assemblyB = await agentB.ctx.assemble();
+            expect(assemblyB.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
+            expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
+            await agentA.ctx.tools.get('rpgmaker_create_record')!.execute({ type: 'actors', data: { name: 'Hero' } }, { signal: new AbortController().signal });
+            const records = await agentB.ctx.tools.get('rpgmaker_list_records')!.execute({ type: 'actors' }, { signal: new AbortController().signal }) as Array<{ name: string }>;
+            expect(records.some((record) => record.name === 'Hero')).toBe(true);
+
+            // Disposing one Agent removes only its registrations; the pooled
+            // server stays warm for the other Agent.
+            agentA.ctx.dispose();
+            expect(agentA.ctx.tools.schemas()).toEqual([]);
+            expect(agentA.ctx.listeners.has('system-prompt/assemble')).toBe(false);
+            const stillWarm = await agentB.ctx.tools.get('rpgmaker_get_project_info')!.execute({}, { signal: new AbortController().signal }) as { gameTitle: string };
+            expect(stillWarm.gameTitle).toBe('Probe Game');
+            expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
+
+            // A non-RPG preset registers neither a server nor RPG Maker tools.
+            const agentCode = createHarnessAgent('agent-code', { cwd: project, agentPreset: 'code' });
+            hostCtx.emit('agent/created', { agent: agentCode });
+            const assemblyCode = await agentCode.ctx.assemble();
+            expect(assemblyCode.tools.filter((tool) => tool.name.startsWith('rpgmaker_'))).toEqual([]);
+            expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
+
+            // An invalid workspace registers no server and fails its first
+            // request naming the missing project markers, even though its
+            // manifest tools were collected synchronously at agent/created.
+            const emptyWorkspace = join(root, 'empty-workspace');
+            await mkdir(emptyWorkspace, { recursive: true });
+            const agentInvalid = createHarnessAgent('agent-invalid', { cwd: emptyWorkspace, agentPreset: 'rpgmaker' });
+            hostCtx.emit('agent/created', { agent: agentInvalid });
+            expect(agentInvalid.ctx.tools.schemas().map((tool) => tool.name).sort()).toEqual(expectedNames);
+            await expect(agentInvalid.ctx.assemble()).rejects.toThrow(/Game\.rpgproject/);
+            expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
+
+            const partialWorkspace = join(root, 'partial-workspace');
+            await mkdir(join(partialWorkspace, 'data'), { recursive: true });
+            await writeFile(join(partialWorkspace, 'Game.rpgproject'), '{}\n');
+            const agentPartial = createHarnessAgent('agent-partial', { cwd: partialWorkspace, agentPreset: 'rpgmaker' });
+            hostCtx.emit('agent/created', { agent: agentPartial });
+            await expect(agentPartial.ctx.assemble()).rejects.toThrow(/js/);
+            expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
+
+            // A missing session cwd fails closed before any server is touched.
+            const agentNoCwd = createHarnessAgent('agent-nocwd', { agentPreset: 'rpgmaker' });
+            hostCtx.emit('agent/created', { agent: agentNoCwd });
+            await expect(agentNoCwd.ctx.assemble()).rejects.toThrow(/no workspace cwd/);
+            expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
+
+            // Host shutdown closes the one MCPorter Runtime and every child.
+            await shutdown();
+            expect(bundle.hostState().closed).toBe(true);
+          } finally {
+            await shutdown().catch(() => undefined);
+            bundle.resetHostState();
+          }
+        }
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
