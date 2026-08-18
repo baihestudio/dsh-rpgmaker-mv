@@ -63,7 +63,7 @@ The generated preset and patch live under `DSH_HOME`; they contain executable pa
 
 ## Phase 3: 游戏测试与调试助手
 
-Select `--preset playtest-debug` when creating a session. The Debug skill directly sequences the existing `mcp__rpgmaker_mv__*` tools: static validation, idle status preflight, NW.js launch, bounded status/log polling, MCP stop, and post-stop status. It refuses an already-running Playtest, never adopts a PID or invokes OS process controls, and reports cleanup as unverified when MCP status cannot confirm it.
+Select `--preset playtest-debug` when creating a session. The Debug skill directly sequences the existing `mcp__rpgmaker_mv__*` tools: static validation, idle status preflight, bounded Steam App ID `363890` discovery, NW.js launch when `nwjs-win\Game.exe` exists, browser-mode fallback otherwise, bounded status/log observation, MCP stop, and post-stop status. It never recursively scans disks, refuses an already-running Playtest, never adopts a PID or invokes OS process controls, and reports cleanup as unverified when MCP status cannot confirm it. Browser fallback returns a playable URL but cannot capture browser DevTools console output through `playtest_log`.
 
 Reports distinguish static validation, process launch, crash/log evidence, cleanup confirmation, and behavior/visual gameplay verification. A launched process and clean log are not behavior verification. Harness-owned process-tree cleanup belongs to the separate automated-playtest capability; screenshot/input/gameplay automation is out of scope here.
 
