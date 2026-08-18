@@ -19,6 +19,7 @@ import {
   type ImageToolchain,
   type ImageToolchainPreparationOptions
 } from './image-workshop';
+import { prepareVisionToolkit, type VisionToolkitOptions, type VisionToolkitVerification } from './vision-toolkit';
 
 export const RPGMAKER_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
 export const RPGMAKER_MCP_VERSION = '0.1.0';
@@ -121,6 +122,9 @@ export interface RpgMakerDeployment {
 export type RpgMakerLaunchOptions = LaunchOptions & Omit<RpgMakerDeploymentOptions, 'projectPath' | 'dshHome' | 'runtimeDir' | 'platform' | 'env' | 'commandRunner' | 'lockTimeoutMs' | 'lockRetryMs'> & {
   sourceRoot?: string;
   mcpRuntimeDir?: string;
+  npmExecutable?: string;
+  pnpmExecutable?: string;
+  visionToolkitPreparer?: (options: VisionToolkitOptions) => Promise<VisionToolkitVerification>;
   schemaProbe?: McpSchemaProbe;
 };
 
@@ -646,6 +650,18 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
   if (options.webPort !== undefined && options.webPort !== WINDOWS_DSH_PORT) throw new RpgMakerStartupError(`The DSH web binding is fixed at ${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}.`);
   if (options.dshArgs) addFixedWebBinding(options.dshArgs);
   const projectPath = await resolveLaunchProjectPath(options);
+  const visionToolkitPreparer = options.visionToolkitPreparer ?? prepareVisionToolkit;
+  await visionToolkitPreparer({
+    platform: options.platform,
+    env: options.env,
+    dshHome: options.dshHome,
+    programRoot: options.programRoot,
+    runtimeDir: options.runtimeDir,
+    dshExecutable: options.dshExecutable,
+    npmExecutable: options.npmExecutable,
+    pnpmExecutable: options.pnpmExecutable,
+    commandRunner: options.commandRunner
+  });
   await ensureLaunchPort({ ...options, projectPath, bindWeb: true, webHost: '127.0.0.1', webPort: 3081 });
   const deployment = await prepareRpgMakerDeployment({
     ...options,

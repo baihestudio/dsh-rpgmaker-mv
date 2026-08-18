@@ -11,6 +11,7 @@ import { withoutCredentials, runCommand, type CommandRunner } from './process';
 import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
 import { prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { prepareRpgmPackerRuntime } from './release';
+import { prepareVisionToolkit } from './vision-toolkit';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
@@ -24,6 +25,7 @@ export const RELEASE_ENTRIES = [
   'bootstrap.ps1',
   'doctor.ps1',
   'LICENSE',
+  'THIRD-PARTY-NOTICES.md',
   'README.md',
   'docs',
   'package.json',
@@ -41,7 +43,7 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   commandRunner?: CommandRunner;
   createShortcut?: (options: ShortcutCreationOptions) => Promise<string>;
   writeInstallMetadata?: (path: string, content: string) => Promise<void>;
-  prepareAgentDependencies?: (context: { paths: HarnessPaths; env: Record<string, string | undefined>; bunExecutable: string; commandRunner?: CommandRunner }) => Promise<void>;
+  prepareAgentDependencies?: (context: { paths: HarnessPaths; env: Record<string, string | undefined>; bunExecutable: string; npmExecutable?: string; commandRunner?: CommandRunner }) => Promise<void>;
   now?: () => Date;
 }
 
@@ -132,7 +134,7 @@ function installMetadata(paths: HarnessPaths, prerequisites: WindowsPrerequisite
 }
 
 async function carryForwardVerifiedDependencies(previousProgramRoot: string, nextProgramRoot: string): Promise<void> {
-  for (const relativePath of [join('tools', 'image-workshop', 'native-tools'), join('runtime', 'mcp'), join('runtime', 'rpgmpacker-runtime')]) {
+  for (const relativePath of [join('tools', 'image-workshop', 'native-tools'), join('runtime', 'mcp'), join('runtime', 'rpgmpacker-runtime'), join('runtime', 'pnpm')]) {
     const source = join(previousProgramRoot, relativePath);
     const destination = join(nextProgramRoot, relativePath);
     if (await exists(source) && !(await exists(destination))) {
@@ -255,8 +257,24 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           bunExecutable: context.bunExecutable,
           commandRunner: context.commandRunner
         }, platform, context.env);
+        await prepareVisionToolkit({
+          platform,
+          env: context.env,
+          dshHome: context.paths.dshHome,
+          programRoot: context.paths.programRoot,
+          runtimeDir: context.paths.runtimeDir,
+          dshExecutable: context.env.DSH_EXECUTABLE,
+          npmExecutable: context.npmExecutable,
+          commandRunner: context.commandRunner
+        });
       });
-      await prepareAgentDependencies({ paths, env: installedEnv, bunExecutable, commandRunner: options.commandRunner });
+      await prepareAgentDependencies({
+        paths,
+        env: installedEnv,
+        bunExecutable,
+        npmExecutable: options.npmExecutable ?? env.NPM_EXECUTABLE,
+        commandRunner: options.commandRunner
+      });
       const metadataPath = join(paths.programRoot, 'install.json');
       const metadataWriter = options.writeInstallMetadata ?? ((path: string, content: string) => writeFile(path, content, 'utf8'));
       await metadataWriter(metadataPath, installMetadata(paths, prerequisites, options.now ?? (() => new Date())));
@@ -364,7 +382,7 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
   const result = await runner(command, args, { env: withoutCredentials(env), platform, timeoutMs: 30_000 });
   if (result.exitCode !== 0) throw new ReleaseGateError(`Release ZIP inspection failed: ${result.stderr || result.stdout}`.trim());
   const entries = result.stdout.split(/\r?\n/).map((entry) => entry.trim().replaceAll('\\', '/').replace(/^\.\//, '')).filter(Boolean);
-  const requiredEntries = ['Install.cmd', 'install.ps1', 'Launch.cmd', 'launch.ps1', 'Uninstall.cmd', 'uninstall.ps1', 'docs/windows-release.md', 'src/cli.ts', 'presets/rpgmaker/preset.yml'];
+  const requiredEntries = ['Install.cmd', 'install.ps1', 'Launch.cmd', 'launch.ps1', 'Uninstall.cmd', 'uninstall.ps1', 'THIRD-PARTY-NOTICES.md', 'docs/windows-release.md', 'src/cli.ts', 'presets/rpgmaker/preset.yml'];
   const missing = requiredEntries.filter((entry) => !entries.includes(entry) && !entries.some((candidate) => candidate.startsWith(`${entry}/`)));
   return { path: zipPath, entries, requiredEntries, valid: missing.length === 0, missing };
 }

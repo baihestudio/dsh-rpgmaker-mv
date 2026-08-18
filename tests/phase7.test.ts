@@ -13,12 +13,37 @@ import { runCli } from '../src/cli';
 import { runDoctor } from '../src/doctor';
 import { runCommand } from '../src/process';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, recordRecentProject, readRecentProjects, uninstallHarness, UninstallSafetyError } from '../src/windows';
+import type { VisionToolkitVerification } from '../src/vision-toolkit';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
 }
 
 const prepareAgentDependencies = async (): Promise<void> => undefined;
+
+const verifyVisionToolkit = async (): Promise<VisionToolkitVerification> => ({
+  valid: true,
+  errors: [],
+  profile: 'web',
+  profileDir: '/fixture/profile',
+  manifestPath: '/fixture/profile/package.json',
+  packageDir: '/fixture/profile/node_modules/@anionex/dsh-vision-toolkit',
+  packageVersion: '0.1.31',
+  profileDependency: '0.1.31',
+  bundleOccurrences: 1,
+  runtimeCacheDir: '/fixture/cache/dsh-vision-toolkit',
+  managedRuntimeReady: true,
+  provider: {
+    baseUrl: 'https://vision.anionex.me/v1',
+    model: 'gemini-3.7-flash',
+    credential: 'ANIONEX_FREE_VISION',
+    dailyLimit: 300,
+    imagesPerRequest: 5,
+    maxImageBytes: 4 * 1024 * 1024,
+    maxImagePixels: 20_000_000,
+    maxOutputTokens: 4096
+  }
+});
 
 async function project(root: string): Promise<string> {
   const path = join(root, '选择 project with spaces');
@@ -187,11 +212,14 @@ describe('Windows release gate foundations', () => {
           mcp: { id: 'rpgmaker-mcp', label: 'RPG Maker MV MCP runtime', ok: true, detail: 'fixture MCP verified' },
           image: { id: 'image-toolchain', label: 'Image asset toolchain', ok: true, detail: 'fixture image tools verified' },
           packager: { id: 'rpgmpacker', label: 'RPG Maker build packager', ok: true, detail: 'fixture packager verified' }
-        })
+        }),
+        verifyVisionToolkit
       });
       expect(report.ok).toBe(true);
       expect(report.checks.map((check) => check.id)).toContain('node');
       expect(report.checks.map((check) => check.id)).toContain('app-layout');
+      expect(report.checks.map((check) => check.id)).toContain('vision-toolkit-profile');
+      expect(report.checks.map((check) => check.id)).toContain('vision-toolkit-runtime');
       expect(JSON.stringify(report)).not.toContain('never-report');
     } finally {
       await rm(root, { recursive: true, force: true });

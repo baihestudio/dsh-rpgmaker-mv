@@ -10,6 +10,7 @@ import { inspectCredentialMetadata, type CredentialMetadata } from './credential
 import { resolveImageToolchain } from './image-workshop';
 import { verifyMcpRuntime } from './rpgmaker';
 import { verifyRpgmPackerRuntime } from './release';
+import { verifyVisionToolkit, type VisionToolkitVerification } from './vision-toolkit';
 
 export interface DoctorOptions extends PathOptions {
   commandRunner?: CommandRunner;
@@ -20,6 +21,7 @@ export interface DoctorOptions extends PathOptions {
   nodeExecutable?: string;
   npmExecutable?: string;
   verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; image: DoctorCheck; packager: DoctorCheck }>;
+  verifyVisionToolkit?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<VisionToolkitVerification>;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
 }
@@ -263,6 +265,34 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     });
     const agentDependencies = await verifyAgentDependencies({ platform, env: commandEnv, paths, commandRunner: runner });
     checks.push(agentDependencies.mcp, agentDependencies.image, agentDependencies.packager);
+
+    const vision = await (options.verifyVisionToolkit ?? (context => verifyVisionToolkit({
+      platform: context.platform,
+      env: context.env,
+      dshHome: context.paths.dshHome,
+      programRoot: context.paths.programRoot,
+      runtimeDir: context.paths.runtimeDir,
+      commandRunner: context.commandRunner
+    })))({ platform, env: commandEnv, paths, commandRunner: runner });
+    if (vision.packageDir) executablePaths['vision-toolkit'] = vision.packageDir;
+    checks.push(check(
+      'vision-toolkit-profile',
+      `Vision Toolkit ${vision.packageVersion ?? 'profile'}`,
+      vision.valid,
+      vision.valid
+        ? `Pinned ${vision.provider.model} Vision Toolkit profile layer is verified; default provider is ${vision.provider.baseUrl} with ${vision.provider.dailyLimit} shared images per machine per day`
+        : vision.errors.join('; '),
+      vision.packageDir ?? vision.profileDir
+    ));
+    checks.push(check(
+      'vision-toolkit-runtime',
+      'Vision Toolkit managed Python runtime',
+      vision.valid && vision.managedRuntimeReady,
+      vision.managedRuntimeReady
+        ? `Managed runtime is materialized under ${vision.runtimeCacheDir}`
+        : `Managed runtime is not materialized; run Install.cmd or launch DSH to prepare the pinned isolated Python runtime under ${vision.runtimeCacheDir}`,
+      vision.runtimeCacheDir
+    ));
 
     const layoutPaths = [paths.mutableRoot, paths.dshHome, paths.logsDir, paths.cacheDir];
     const layoutValues = await Promise.all(layoutPaths.map(async (path) => (await stat(path).catch(() => undefined))?.isDirectory() ?? false));

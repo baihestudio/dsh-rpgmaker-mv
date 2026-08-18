@@ -10,7 +10,7 @@
    - PowerShell 7.4+ (`Microsoft.PowerShell`)
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
-4. The installer verifies executable paths and versions, stages the pinned DSH `0.1.0-rc.7` runtime with Bun, verifies `koffi`, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**.
+4. The installer verifies executable paths and versions, stages the pinned DSH `0.1.0-rc.7` runtime with Bun, installs the exact RPG Maker MCP, build packager, and Vision Toolkit profile dependency, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. The Vision Toolkit package and license notice are listed in [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md).
 
 No Git clone, npm install, or manual package command is needed for this path. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported repair path; a previous runtime is retained by the staged runtime swap for recovery. If post-swap bootstrap, metadata, or shortcut creation fails, the prior program tree is restored and the failed new tree is retained as a named diagnostic/recovery directory.
 
@@ -32,7 +32,7 @@ Use the Start Menu shortcut, or run `Launch.cmd` from the installed program root
 
 Later launches offer **continue last project** or **choose another project**. The selected project is recorded outside the project tree. One DSH instance owns one project; switching starts a new instance. The agent and RPG Maker MCP are the sole writers. If the RPG Maker editor is open, it is read-only: do not save from it, and reopen it before inspecting agent changes.
 
-The web session always binds to `http://127.0.0.1:3081`. If that port is occupied, the launcher offers to open the existing session or asks you to close it and retry. It never silently selects another port and never starts concurrent project sessions.
+The web session always binds to `http://127.0.0.1:3081`. If that port is occupied, the launcher offers to open the existing session or asks you to close it and retry. It never silently selects another port and never starts concurrent project sessions. The disposable Vision Toolkit compatibility probe is `bun run phase8:real`; it boots DSH rc.7, prepares the managed runtime, activates the ten visual tools in each shipped preset, and never sends an image to the provider.
 
 ## Doctor and repair
 
@@ -42,7 +42,7 @@ From the installed program root:
 ./doctor.ps1
 ```
 
-Doctor reports the resolved Node/npm, Bun, PowerShell, Git, Coreutils, DSH runtime, RPG Maker MCP runtime, complete image toolchain, pinned build packager, credential metadata, and mutable-layout facts without reading credential values. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
+Doctor reports the resolved Node/npm, Bun, PowerShell, Git, Coreutils, DSH runtime, RPG Maker MCP runtime, complete image toolchain, pinned build packager, Vision Toolkit profile and managed-runtime status, credential metadata, and mutable-layout facts without reading credential values. Installation performs a short local Web boot to prepare the Vision Toolkit managed Python cache; it never calls the remote vision provider. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
 
 ## Uninstall
 
@@ -64,6 +64,8 @@ Four selectable presets use one shared DSH host/MCP composition:
 - `playtest-debug` — MCP-owned static validation and NW.js launch/status/log/stop evidence;
 - `asset-workshop` — deterministic ImageMagick and atlas workflows;
 - `build-release` — pinned Windows/Web packaging and smoke checks.
+
+All four presets expose Vision Toolkit understanding and OCR tools. By default, visual requests send images to the shared `https://vision.anionex.me/v1` service; the service has a 300-image daily machine quota, five-image request limit, 4 MiB/20,000,000-pixel image limits, and 4,096 output-token limit. Configure a private provider under **Settings → Vision Toolkit**. AI image generation is not included.
 
 The Debug preset can truthfully report process launch, logs, MCP stop, and post-stop status. A launched process is not a gameplay or visual assertion. Actual RPG Maker MV/NW.js Windows launch, installed MV discovery, and behavior remain Windows hardware-gate observations. Automated `phase6:real` uses only a disposable fixture; the explicit opt-in `bun run phase6:windows-manual -- --rpgmaker-installation <path>` gate is required for an installed MV path. macOS substitutes are reported as non-blocking and never presented as Windows evidence. Photoshop, Aseprite, and TexturePacker are optional user-owned enhancements.
 

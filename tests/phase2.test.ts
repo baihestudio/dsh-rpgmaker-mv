@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { installPreset, prepareRpgMakerDeployment, launchRpgmakerProject, RpgMakerStartupError, resolveMcpRunner, verifyMcpRuntime, type McpToolDefinition } from '../src/rpgmaker';
 import { DSH_VERSION } from '../src/config';
 import { backupIgnoreGuidance } from '../src/project';
+import type { VisionToolkitVerification } from '../src/vision-toolkit';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -53,6 +54,32 @@ async function makeMcpRuntime(runtime: string): Promise<void> {
 
 function toolNames(): McpToolDefinition[] {
   return ['get_project_info', 'list_records', 'get_record', 'update_record', 'create_record', 'create_event', 'get_event', 'update_event', 'add_dialogue', 'update_map', 'get_map', 'configure_plugin', 'list_plugins', 'validate_project', 'list_backups', 'restore_backup', 'playtest_start', 'playtest_status', 'playtest_log', 'playtest_stop'].map((name) => ({ name, inputSchema: { type: 'object' } }));
+}
+
+function visionToolkitFixture(): VisionToolkitVerification {
+  return {
+    valid: true,
+    errors: [],
+    profile: 'web',
+    profileDir: '/fixture/profile',
+    manifestPath: '/fixture/profile/package.json',
+    packageDir: '/fixture/profile/node_modules/@anionex/dsh-vision-toolkit',
+    packageVersion: '0.1.31',
+    profileDependency: '0.1.31',
+    bundleOccurrences: 1,
+    runtimeCacheDir: '/fixture/cache/dsh-vision-toolkit',
+    managedRuntimeReady: true,
+    provider: {
+      baseUrl: 'https://vision.anionex.me/v1',
+      model: 'gemini-3.7-flash',
+      credential: 'ANIONEX_FREE_VISION',
+      dailyLimit: 300,
+      imagesPerRequest: 5,
+      maxImageBytes: 4 * 1024 * 1024,
+      maxImagePixels: 20_000_000,
+      maxOutputTokens: 4096
+    }
+  };
 }
 
 describe('RPG Maker MCP deployment', () => {
@@ -353,6 +380,7 @@ describe('RPG Maker MCP deployment', () => {
           return { exitCode: 0, stdout: '', stderr: '' };
         },
         schemaProbe: async () => ({ tools: toolNames() }),
+        visionToolkitPreparer: async () => visionToolkitFixture(),
         portProbe: async () => { probes += 1; return probes > 1; },
         openExistingSession: async (url) => { opened.push(url); },
         spawnInteractive: (_command, args, options) => {
