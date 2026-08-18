@@ -5,7 +5,7 @@ import { resolveHarnessPaths, type PathOptions } from './config';
 import { ownedCoreutilsCommands } from './prerequisites';
 import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
-import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip } from './executable';
+import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion, parseSevenZipVersionText } from './executable';
 import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
 import { resolveImageToolchain } from './image-workshop';
@@ -219,12 +219,13 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
 
   if (platform === 'win32') {
     const sevenZipVersion = await commandVersion(runner, sevenZip, commandEnv, ['i']);
-    const sevenZipParsed = versionNumbers(sevenZipVersion.output);
+    const sevenZipParsed = parseSevenZipVersion(sevenZipVersion.output);
+    const sevenZipVersionText = parseSevenZipVersionText(sevenZipVersion.output);
     checks.push(check(
       '7zip',
       '7-Zip',
-      sevenZipVersion.ok && /7-Zip\s+\d+\.\d+/i.test(sevenZipVersion.output) && Boolean(sevenZipParsed),
-      sevenZipVersion.ok && sevenZipParsed ? `7-Zip ${sevenZipParsed.join('.')} is available at ${sevenZip}` : '7-Zip was not verified; run Install.cmd to install 7zip.7zip with WinGet',
+      sevenZipVersion.ok && Boolean(sevenZipParsed),
+      sevenZipVersion.ok && sevenZipParsed ? `7-Zip ${sevenZipVersionText ?? sevenZipParsed.join('.')} is available at ${sevenZip}` : '7-Zip was not verified; run Install.cmd to install 7zip.7zip with WinGet',
       sevenZip
     ));
 

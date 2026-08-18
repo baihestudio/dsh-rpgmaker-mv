@@ -12,7 +12,7 @@ import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
 import { runDoctor } from '../src/doctor';
 import { runCommand } from '../src/process';
-import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
+import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, recordRecentProject, readRecentProjects, uninstallHarness, UninstallSafetyError } from '../src/windows';
 import { visionToolkitActivationFixture, visionToolkitFixture } from './fixtures/vision-toolkit';
 
@@ -151,6 +151,58 @@ describe('Windows release gate foundations', () => {
       const npm = join(root, 'npm.cmd');
       await writeFile(npm, 'fixture');
       expect(await resolveExecutable('npm', { platform: 'win32', env: { Path: root } })).toBe(npm);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('resolves installed 7-Zip from Program Files (x86) and per-user roots before PATH', async () => {
+    const root = await temp('phase7-sevenzip-roots');
+    try {
+      const x86 = join(root, 'Program Files (x86)', '7-Zip', '7z.exe');
+      await mkdir(dirname(x86), { recursive: true });
+      await writeFile(x86, 'fixture');
+      const perUser = join(root, 'Local AppData', 'Programs', '7-Zip', '7z.exe');
+      await mkdir(dirname(perUser), { recursive: true });
+      await writeFile(perUser, 'fixture');
+      const env = {
+        PATH: join(root, 'no-sevenzip-on-path'),
+        ProgramFiles: join(root, 'Program Files'),
+        'ProgramFiles(x86)': join(root, 'Program Files (x86)'),
+        ProgramW6432: join(root, 'Program Files'),
+        LOCALAPPDATA: join(root, 'Local AppData')
+      };
+      expect(await resolveWindowsSevenZip({ platform: 'win32', env })).toBe(x86);
+      await rm(dirname(x86), { recursive: true, force: true });
+      expect(await resolveWindowsSevenZip({ platform: 'win32', env })).toBe(perUser);
+      expect(parseSevenZipVersion('7-Zip 24.09 (x64) : Copyright (c) 1999-2025 Igor Pavlov\n')).toEqual([24, 9, 0]);
+      expect(parseSevenZipVersion('7-Zip [64] 19.00 (x64) : Copyright (c) 1999-2019 Igor Pavlov\n')).toEqual([19, 0, 0]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('accepts legacy and modern 7-Zip banners and rejects an unrelated 7z shim', async () => {
+    const root = await temp('phase7-sevenzip-banners');
+    try {
+      const { env } = await prerequisiteBin(root);
+      const base = prerequisiteRunner();
+      const legacy = await verifyWindowsPrerequisites({
+        platform: 'win32', env, commandRunner: async (command, args, options) => {
+          if (basename(command).toLowerCase() === '7z.exe' && args[0] === 'i') return { exitCode: 0, stdout: '7-Zip [64] 19.00 (x64) : Copyright (c) 1999-2019 Igor Pavlov\n', stderr: '' };
+          return base(command, args, options);
+        }
+      });
+      const legacySevenZip = legacy.checks.find((item) => item.id === '7zip');
+      expect(legacySevenZip?.ok).toBe(true);
+      expect(legacySevenZip?.version).toBe('19.00');
+      const shim = await verifyWindowsPrerequisites({
+        platform: 'win32', env, commandRunner: async (command, args, options) => {
+          if (basename(command).toLowerCase() === '7z.exe' && args[0] === 'i') return { exitCode: 0, stdout: 'acme archiver 1.0\n', stderr: '' };
+          return base(command, args, options);
+        }
+      });
+      expect(shim.checks.find((item) => item.id === '7zip')?.ok).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

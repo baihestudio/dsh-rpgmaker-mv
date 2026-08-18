@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 
 import { withEnvironmentPath } from './config';
-import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip } from './executable';
+import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion, parseSevenZipVersionText } from './executable';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 
 export const WINDOWS_PREREQUISITE_IDS = ['node', 'python', 'bun', 'powershell', 'git', 'coreutils', '7zip'] as const;
@@ -214,6 +214,8 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const findVersion = await commandVersion(runner, find, env);
   const grepVersion = await commandVersion(runner, grep, env);
   const sevenZipVersion = await commandVersion(runner, sevenZip, env, ['i']);
+  const sevenZipParsed = parseSevenZipVersion(sevenZipVersion.output);
+  const sevenZipVersionText = parseSevenZipVersionText(sevenZipVersion.output);
   const managerRoot = coreutilsRoot(manager);
   const nodeParsed = versionNumbers(nodeVersion.output);
   const nodeLtsName = nodeLts.output.trim().split(/\r?\n/).find(Boolean);
@@ -225,7 +227,6 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const bunIdentity = /(?:^|\r?\n)\s*\d+\.\d+\.\d+/i.test(bunVersion.output);
   const powershellIdentity = /PowerShell\s+\d+\.\d+/i.test(pwshVersion.output);
   const gitIdentity = /(?:^|\r?\n)\s*git version\s+\d+\.\d+\.\d+/i.test(gitVersion.output);
-  const sevenZipIdentity = /7-Zip\s+\d+\.\d+/i.test(sevenZipVersion.output);
   const nodeOk = nodeVersion.ok && nodeIdentity && atLeast(nodeParsed, [18, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && npmIdentity && Boolean(versionNumbers(npmVersion.output));
   const powershellOk = pwshVersion.ok && powershellIdentity && atLeast(pwshParsed, [7, 4, 0]);
   const coreutilsContractOk = managerHelp.ok && managerStatus.ok && managerContract(managerHelp.output, managerStatus.output);
@@ -298,12 +299,14 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
       '7zip',
       '7-Zip',
       '7zip.7zip',
-      sevenZipVersion.ok && sevenZipIdentity && Boolean(versionNumbers(sevenZipVersion.output)),
-      sevenZipVersion.ok && sevenZipIdentity && versionNumbers(sevenZipVersion.output)
-        ? `7-Zip ${versionNumbers(sevenZipVersion.output)!.join('.')} is available at ${sevenZip}`
-        : '7-Zip was not verified; install 7zip.7zip with WinGet',
+      sevenZipVersion.ok && Boolean(sevenZipParsed),
+      sevenZipVersion.ok && sevenZipParsed
+        ? `7-Zip ${sevenZipVersionText ?? sevenZipParsed.join('.')} is available at ${sevenZip}`
+        : sevenZip
+          ? `7-Zip was not verified at ${sevenZip}; install 7zip.7zip with WinGet`
+          : '7-Zip was not found; install 7zip.7zip with WinGet',
       sevenZip,
-      versionNumbers(sevenZipVersion.output)?.join('.')
+      sevenZipVersionText
     )
   ];
   const missing = checks.filter((item) => !item.ok).map((item) => item.id);
