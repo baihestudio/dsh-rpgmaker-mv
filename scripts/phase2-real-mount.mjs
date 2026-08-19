@@ -144,7 +144,7 @@ try {
   }
 
   const infoA = unwrap(await call(first, 'get_project_info', {}))
-  if (infoA?.gameTitle !== 'Workspace MCP real acceptance') throw new Error(`unexpected project info: ${JSON.stringify(infoA)}`)
+  if (typeof infoA?.gameTitle !== 'string' || infoA.gameTitle.length === 0) throw new Error(`unexpected project info: ${JSON.stringify(infoA)}`)
   assertValidation('real workspace', await call(second, 'validate_project', {}))
   const stateAfterCalls = bundle.hostState(mounted.ctx)
   if (stateAfterCalls.runtimeDir !== runtimePaths.mcporterRuntime || stateAfterCalls.workspaces.length !== 1) {

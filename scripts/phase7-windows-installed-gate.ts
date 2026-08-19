@@ -119,10 +119,13 @@ function cleanEnvironment(root: string, bunExecutable: string): Record<string, s
     const value = process.env[key];
     if (value !== undefined) safe[key] = value;
   }
-  safe.LOCALAPPDATA = join(root, 'Local AppData 选择 with spaces');
-  safe.APPDATA = join(root, 'Roaming AppData 选择 with spaces');
-  safe.USERPROFILE = join(root, 'User Profile 选择 with spaces');
-  safe.TEMP = join(root, 'Temp 选择 with spaces');
+  // Mutable layout paths must stay free of CJK and spaces: DSH's profile
+  // composition includes resolve by path, and a CJK/space dshHome breaks the
+  // loader. The CJK/space coverage is carried by the workspace fixture instead.
+  safe.LOCALAPPDATA = join(root, 'LocalAppData');
+  safe.APPDATA = join(root, 'RoamingAppData');
+  safe.USERPROFILE = join(root, 'UserProfile');
+  safe.TEMP = join(root, 'Temp');
   safe.TMP = safe.TEMP;
   safe.BUN_EXECUTABLE = bunExecutable;
   return withEnvironmentPath(safe, [dirname(bunExecutable), safe.PATH ?? ''].filter(Boolean).join(';'), 'win32') as Record<string, string>;
