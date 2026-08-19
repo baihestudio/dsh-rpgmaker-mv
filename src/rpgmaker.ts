@@ -359,6 +359,10 @@ function timeoutPolicyRows(composition: string): string[] {
   return [...composition.matchAll(/^    - id:\s*([^\s#]+)\s*$/gm)].map((match) => match[1]);
 }
 
+function effectiveTimeoutPolicyRows(composition: string): TopLevelCompositionRow[] {
+  return topLevelRows(composition).filter((row) => row.id === DSH_TOOL_TIMEOUT_POLICY_ROW_ID);
+}
+
 export interface TimeoutPolicyCompositionVerification {
   valid: boolean;
   errors: string[];
@@ -715,7 +719,8 @@ async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: 
   if (compositionCheck.exitCode !== 0) throw new RpgMakerStartupError(`DSH composition validation failed: ${redactSensitive(compositionCheck.stderr || compositionCheck.stdout, options.env ?? process.env)}`);
   const dumpedIds = topLevelIds(compositionCheck.stdout);
   if (!dumpedIds.includes('mcp-rpgmaker-mv') || dumpedIds.filter((id) => id === 'mcp-rpgmaker-mv').length !== 1) throw new RpgMakerStartupError('DSH composition validation did not contain exactly one RPG Maker MCP host row.');
-  if (dumpedIds.filter((id) => id === DSH_TOOL_TIMEOUT_POLICY_ROW_ID).length > 1) throw new RpgMakerStartupError(`DSH composition validation contained duplicate ${DSH_TOOL_TIMEOUT_POLICY_ROW_ID} rows.`);
+  const effectiveTimeoutRows = effectiveTimeoutPolicyRows(compositionCheck.stdout);
+  if (effectiveTimeoutRows.length !== 1) throw new RpgMakerStartupError(`DSH composition validation must contain exactly one effective ${DSH_TOOL_TIMEOUT_POLICY_ROW_ID} row; found ${effectiveTimeoutRows.length}.`);
   if (!/id: agent-presets/.test(compositionCheck.stdout)) throw new RpgMakerStartupError('DSH composition validation did not expose the agent-presets row.');
   return {
     mcpRuntimeDir,
@@ -815,8 +820,9 @@ async function validatePresetComposition(
   }
   if (result.exitCode !== 0) throw new RpgMakerStartupError(`DSH composition validation failed: ${redactSensitive(result.stderr || result.stdout, env)}`);
   const dumpedIds = topLevelIds(result.stdout);
-  if (dumpedIds.filter((id) => id === DSH_TOOL_TIMEOUT_POLICY_ROW_ID).length > 1) {
-    throw new RpgMakerStartupError(`DSH composition validation contained duplicate ${DSH_TOOL_TIMEOUT_POLICY_ROW_ID} rows.`);
+  const effectiveTimeoutRows = effectiveTimeoutPolicyRows(result.stdout);
+  if (effectiveTimeoutRows.length !== 1) {
+    throw new RpgMakerStartupError(`DSH composition validation must contain exactly one effective ${DSH_TOOL_TIMEOUT_POLICY_ROW_ID} row; found ${effectiveTimeoutRows.length}.`);
   }
   if (!/id: agent-presets/.test(result.stdout) || dumpedIds.filter((id) => id === 'agent-presets').length !== 1) {
     throw new RpgMakerStartupError('DSH composition validation did not expose exactly one agent-presets row.');
@@ -969,4 +975,4 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
   return { ...result, deployment };
 }
 
-export { REQUIRED_MCP_TOOLS, defaultSchemaProbe, renderMcpPatch, validateToolSet };
+export { REQUIRED_MCP_TOOLS, defaultSchemaProbe, renderMcpPatch, validatePresetComposition, validateToolSet };

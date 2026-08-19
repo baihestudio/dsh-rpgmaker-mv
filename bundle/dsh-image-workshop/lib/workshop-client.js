@@ -5,13 +5,11 @@
  * harness CLI (resolved through DSH_IMAGE_WORKSHOP_CLI, an internal launcher
  * detail) with structured argv and parses the canonical JSON the CLI emits.
  * Each invocation owns one CLI process tree. Cancellation is cooperative at
- * the DSH boundary, then bounded cleanup confirms the child exit or reports a
- * truthful cleanup-unconfirmed error.
+ * the DSH boundary, then bounded cleanup requires the Node child `close`
+ * event and a non-running child before it is considered confirmed.
  */
-import { randomUUID } from 'node:crypto'
-import { appendFile, mkdir } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
 import { spawn } from 'node:child_process'
+import { join } from 'node:path'
 
 const SECRET_KEYS = [
   'DEEPSEEK_API_KEY',
@@ -34,20 +32,14 @@ const FORCE_KILL_DELAY_MS = 1000
  * The CLI echoes the canonical manifest to stdout. Sheet slicing is bounded to
  * 4096 frames (Image Workshop resource contract), each frame entry ~430 bytes
  * pretty-printed (~1.8 MiB worst case); atlas packing is bounded by the pixel
- * budget and a 120 s operation deadline, with realistic input counts staying
- * far below this ceiling. The accumulator preserves complete JSON below the
- * ceiling and fails loudly on overflow instead of slicing a truncated manifest
- * that could never be parsed (which previously surfaced as a successful commit
- * followed by a "no parseable JSON" error and an "output already exists" retry
- * trap).
+ * budget, with realistic input counts staying far below this ceiling. The
+ * accumulator preserves complete JSON below the ceiling and fails loudly on
+ * overflow instead of parsing a truncated manifest.
  */
 const MANIFEST_OUTPUT_LIMIT = 4 * 1024 * 1024
 
 /** Bounded tail for error text; errors never carry the full canonical manifest. */
 const ERROR_OUTPUT_LIMIT = 16 * 1024
-const DIAGNOSTIC_TEXT_LIMIT = 512
-const DIAGNOSTIC_LABEL_LIMIT = 160
-const DIAGNOSTIC_LABELS_LIMIT = 16
 
 /** Test-owned seams; production uses real child processes. */
 let workshopRunner
@@ -88,95 +80,12 @@ export function workshopEnvironment(env = process.env) {
   return safe
 }
 
-function boundedText(value, context) {
-  let text = String(value ?? '')
-  for (const secret of context?.redactionValues ?? []) text = text.split(secret).join('[redacted]')
-  text = text.replace(/(?:DEEPSEEK_API_KEY|DSH_API_KEY|ANIONEX_FREE_VISION|NPM_TOKEN|NODE_AUTH_TOKEN|GITHUB_TOKEN|GITLAB_TOKEN)\s*[:=]\s*[^\s,;}]+/gi, '[redacted]')
-  return text.length <= DIAGNOSTIC_TEXT_LIMIT ? text : text.slice(-DIAGNOSTIC_TEXT_LIMIT)
-}
-
-function boundedLabels(values) {
-  if (!Array.isArray(values)) return undefined
-  const labels = values
-    .filter((value) => typeof value === 'string')
-    .slice(0, DIAGNOSTIC_LABELS_LIMIT)
-    .map((value) => value.length <= DIAGNOSTIC_LABEL_LIMIT ? value : value.slice(0, DIAGNOSTIC_LABEL_LIMIT))
-  return labels.length > 0 ? labels : undefined
-}
-
-function diagnosticLogPath(env) {
-  const explicit = env.DSH_IMAGE_WORKSHOP_LOG
-  if (explicit) return explicit
-  const logDir = env.DSH_RPGMAKER_LOG_DIR
-  if (logDir) return join(logDir, 'image-workshop.jsonl')
-  const mutableRoot = env.DSH_RPGMAKER_DATA_ROOT ?? env.DSH_RPGMAKER_MUTABLE_ROOT
-  if (mutableRoot) return join(mutableRoot, 'logs', 'image-workshop.jsonl')
-  if (env.DSH_HOME) return join(dirname(env.DSH_HOME), 'logs', 'image-workshop.jsonl')
-  return undefined
-}
-
-function operationContext(operation, env, diagnostics = {}) {
-  const redactionValues = SECRET_KEYS
-    .map((key) => Object.entries(env ?? {}).find(([candidate]) => candidate.toLowerCase() === key.toLowerCase())?.[1])
-    .filter((value) => typeof value === 'string' && value.length > 0)
-  return {
-    operationId: typeof diagnostics.operationId === 'string' && diagnostics.operationId.length > 0 ? diagnostics.operationId : randomUUID(),
-    operation,
-    toolName: typeof diagnostics.toolName === 'string' ? diagnostics.toolName : undefined,
-    inputLabels: boundedLabels(diagnostics.inputLabels),
-    outputLabels: boundedLabels(diagnostics.outputLabels),
-    stagingLocation: typeof diagnostics.stagingLocation === 'string' ? diagnostics.stagingLocation : undefined,
-    logPath: diagnostics.logPath ?? diagnosticLogPath(env),
-    redactionValues,
-    cleanupConfirmed: undefined,
-    terminationLog: undefined,
-    diagnosticChain: undefined
-  }
-}
-
-function diagnosticEntry(context, event, stage, executable, values = {}) {
-  return {
-    schemaVersion: 1,
-    at: new Date().toISOString(),
-    event,
-    operationId: context.operationId,
-    toolName: context.toolName ?? context.operation,
-    operation: context.operation,
-    stage,
-    executable: executable ? basename(String(executable).replaceAll('\\', '/')) : undefined,
-    ...(context.inputLabels ? { inputs: context.inputLabels } : {}),
-    ...(context.outputLabels ? { outputs: context.outputLabels } : {}),
-    ...(values.pid !== undefined ? { pid: values.pid } : {}),
-    ...(values.startedAt ? { startedAt: values.startedAt } : {}),
-    ...(values.finishedAt ? { finishedAt: values.finishedAt } : {}),
-    ...(values.elapsedMs !== undefined ? { elapsedMs: values.elapsedMs } : {}),
-    ...(values.outcome ? { outcome: values.outcome } : {}),
-    ...(values.error ? { error: boundedText(values.error, context) } : {}),
-    ...(values.stagingLocation ? { stagingLocation: boundedText(values.stagingLocation, context) } : {})
-  }
-}
-
-function appendDiagnostic(context, entry) {
-  if (!context.logPath) return Promise.resolve()
-  const previous = context.diagnosticChain ?? Promise.resolve()
-  const next = previous.then(async () => {
-    try {
-      await mkdir(dirname(context.logPath), { recursive: true })
-      await appendFile(context.logPath, `${JSON.stringify(entry)}\n`, 'utf8')
-    } catch {
-      // Diagnostics must never turn a bounded image failure into another hang.
-    }
-  })
-  context.diagnosticChain = next.catch(() => undefined)
-  return next
-}
-
-function executableBasename(command) {
-  return basename(String(command).replaceAll('\\', '/'))
-}
-
 function isRunning(child) {
   return child && child.exitCode == null && child.signalCode == null
+}
+
+function isQuiescent(child, closeObserved) {
+  return closeObserved && !isRunning(child)
 }
 
 function cancellationKind(signal) {
@@ -193,12 +102,11 @@ function operationError(message, code, info = {}) {
   return error
 }
 
-function cancellationError(context, signal) {
+function cancellationError(operation, signal, cleanupConfirmed, pid) {
   const kind = cancellationKind(signal)
-  if (context.cleanupConfirmed === false) {
-    const pid = context.pid === undefined ? 'unknown' : String(context.pid)
-    const staging = context.stagingLocation ?? `the staging location recorded in ${context.logPath ?? 'image-workshop.jsonl'}`
-    return operationError(`image workspace operation ${kind} cleanup-unconfirmed: the Harness CLI process tree did not confirm termination (PID ${pid}); inspect ${staging} before retrying.`, 'CLEANUP_UNCONFIRMED', { pid: context.pid, stagingLocation: staging, outcome: 'cleanup-unconfirmed' })
+  if (!cleanupConfirmed) {
+    const processId = pid === undefined ? 'unknown' : String(pid)
+    return operationError(`image workspace operation ${kind} cleanup-unconfirmed: the Harness CLI process tree (PID ${processId}) did not provide a quiescent close event within the ${IMAGE_OPERATION_CLEANUP_GRACE_MS}ms cleanup grace.`, 'CLEANUP_UNCONFIRMED', { pid, outcome: 'cleanup-unconfirmed' })
   }
   return operationError(`image workspace operation was ${kind}.`, kind === 'timed-out' ? 'TOOL_TIMEOUT' : 'TOOL_CANCELLED', { outcome: kind })
 }
@@ -211,6 +119,7 @@ function waitForTerminationCommand(child, timeoutMs) {
   if (!child || typeof child.once !== 'function') return Promise.resolve()
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false
+    let timer
     const finish = (error) => {
       if (settled) return
       settled = true
@@ -221,7 +130,7 @@ function waitForTerminationCommand(child, timeoutMs) {
     }
     const onError = (error) => finish(error)
     const onClose = (code) => code === null || code === 0 ? finish() : finish(new Error(`process-tree termination command exited with code ${code}`))
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       try { child.kill?.() } catch { /* the bounded wait is already the truth */ }
       finish(new Error('process-tree termination command timed out'))
     }, timeoutMs)
@@ -293,52 +202,39 @@ function cleanupListeners(child, signal, onAbort, onClose, onError, onExit, onSt
   child.stderr?.removeListener?.('data', onStderr)
 }
 
-async function runReal(args, env, signal, context) {
+async function runReal(operation, args, env, signal) {
   const cli = env.DSH_IMAGE_WORKSHOP_CLI
   if (!cli) {
     throw new Error('image workspace: DSH_IMAGE_WORKSHOP_CLI is not configured; the harness launcher must set it.')
   }
   const bun = env.BUN_EXECUTABLE ?? 'bun'
-  const platform = process.platform
-  if (signal?.aborted) {
-    context.cleanupConfirmed = true
-    throw cancellationError(context, signal)
-  }
   const spawnChild = childSpawner ?? defaultSpawn
   const terminateTree = treeTerminator ?? defaultTerminateTree
-  const startedAt = new Date().toISOString()
-  const startedTime = Date.now()
-  await appendDiagnostic(context, diagnosticEntry(context, 'start', 'harness-cli', bun, { startedAt }))
+  if (signal?.aborted) throw cancellationError(operation, signal, true)
   return new Promise((resolvePromise, rejectPromise) => {
     let child
+    const requestedPlatform = childSpawner?.platform ?? process.platform
     try {
       child = spawnChild(bun, [cli, 'image', ...args], {
         env,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
-        detached: platform !== 'win32'
+        detached: requestedPlatform !== 'win32'
       })
     } catch (error) {
-      void appendDiagnostic(context, diagnosticEntry(context, 'terminal', 'harness-cli', bun, {
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        elapsedMs: Date.now() - startedTime,
-        outcome: 'failed',
-        error: error instanceof Error ? error.message : String(error)
-      }))
       rejectPromise(error)
       return
     }
-    context.pid = child.pid
-    void appendDiagnostic(context, diagnosticEntry(context, 'stage', 'harness-cli', bun, { pid: child.pid, startedAt, outcome: 'spawned' }))
-
+    // Test-owned child seams may expose a platform. Production ChildProcess
+    // instances do not, so this remains the host platform in normal use.
+    const platform = child.platform ?? requestedPlatform
     let stdout = ''
     let stderr = ''
     let stdoutOverflow = false
     let aborted = false
-    let forceKillAttempted = false
     let settled = false
-    let terminationError
+    let closeObserved = false
+    let forceKillAttempted = false
     let forceKillTimer
     let cleanupTimer
     let terminationStarted = false
@@ -353,60 +249,41 @@ async function runReal(args, env, signal, context) {
       else rejectPromise(value)
     }
 
-    const finishCancellation = (confirmed) => {
+    const finishCancellation = (confirmed = isQuiescent(child, closeObserved)) => {
       if (settled) return
-      context.cleanupConfirmed = confirmed
-      context.terminationLog = appendDiagnostic(context, diagnosticEntry(context, 'terminal', 'termination', bun, {
-        pid: child.pid,
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        elapsedMs: Date.now() - startedTime,
-        outcome: confirmed ? cancellationKind(signal) : 'cleanup-unconfirmed',
-        error: terminationError?.message,
-        stagingLocation: context.stagingLocation
-      }))
-      finish('reject', cancellationError(context, signal))
+      finish('reject', cancellationError(operation, signal, confirmed, child.pid))
     }
 
     const escalate = () => {
       if (settled || !aborted || forceKillAttempted || !isRunning(child)) return
       forceKillAttempted = true
-      void appendDiagnostic(context, diagnosticEntry(context, 'start', 'termination', executableBasename(bun), {
-        pid: child.pid,
-        startedAt: new Date().toISOString()
-      }))
       forceTerminateTree(child, platform)
     }
 
-    const startTermination = () => {
+    const startCancellation = () => {
       if (terminationStarted || settled) return
       terminationStarted = true
-      void appendDiagnostic(context, diagnosticEntry(context, 'start', 'termination', executableBasename(bun), {
-        pid: child.pid,
-        startedAt: new Date().toISOString()
-      }))
       forceKillTimer = setTimeout(escalate, FORCE_KILL_DELAY_MS)
       cleanupTimer = setTimeout(() => {
-        if (!aborted || settled) return
-        finishCancellation(!isRunning(child))
+        if (aborted) finishCancellation()
       }, IMAGE_OPERATION_CLEANUP_GRACE_MS)
+      if (!isRunning(child)) return
       try {
         const result = terminateTree(child, { env, platform, timeoutMs: TERMINATION_COMMAND_TIMEOUT_MS })
         Promise.resolve(result).then(() => {
-          if (aborted && !isRunning(child)) finishCancellation(true)
-        }, (error) => {
-          terminationError = error instanceof Error ? error : new Error(String(error))
+          if (aborted && isQuiescent(child, closeObserved)) finishCancellation(true)
+        }, () => {
+          // The bounded cleanup timer owns the final truth if termination fails.
         })
-      } catch (error) {
-        terminationError = error instanceof Error ? error : new Error(String(error))
+      } catch {
+        // The bounded cleanup timer owns the final truth if termination fails.
       }
     }
 
     const onAbort = () => {
       if (aborted || settled) return
       aborted = true
-      if (isRunning(child)) startTermination()
-      else finishCancellation(true)
+      startCancellation()
     }
     const onStdout = (chunk) => {
       if (stdoutOverflow) return
@@ -422,17 +299,23 @@ async function runReal(args, env, signal, context) {
     }
     const onError = (error) => {
       if (aborted) {
-        if (!isRunning(child)) finishCancellation(true)
+        if (isQuiescent(child, closeObserved)) finishCancellation(true)
         return
       }
       finish('reject', error)
     }
     const onExit = () => {
-      if (aborted) finishCancellation(true)
+      // Node emits `exit` before inherited stdio has drained. It is evidence
+      // that the process exited, not evidence that the child is quiescent.
     }
     const onClose = (code) => {
+      closeObserved = true
       if (aborted) {
-        finishCancellation(true)
+        if (isQuiescent(child, closeObserved)) finishCancellation(true)
+        return
+      }
+      if (isRunning(child)) {
+        finish('reject', operationError(`image workspace CLI emitted close before becoming quiescent for ${operation}.`, 'CLEANUP_UNCONFIRMED'))
         return
       }
       if (stdoutOverflow) {
@@ -455,11 +338,8 @@ async function runReal(args, env, signal, context) {
   })
 }
 
-function runInjected(runner, bun, args, env, signal, context) {
-  if (signal?.aborted) {
-    context.cleanupConfirmed = true
-    return Promise.reject(cancellationError(context, signal))
-  }
+function runInjected(runner, bun, args, env, signal, operation) {
+  if (signal?.aborted) return Promise.reject(cancellationError(operation, signal, true))
   const value = Promise.resolve().then(() => runner(bun, args, env, signal))
   if (!signal) return value
   return new Promise((resolvePromise, rejectPromise) => {
@@ -467,11 +347,11 @@ function runInjected(runner, bun, args, env, signal, context) {
     const onAbort = () => {
       if (settled) return
       settled = true
-      context.cleanupConfirmed = true
       signal.removeEventListener('abort', onAbort)
-      rejectPromise(cancellationError(context, signal))
+      rejectPromise(cancellationError(operation, signal, true))
     }
     signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
     value.then((result) => {
       if (settled) return
       settled = true
@@ -486,72 +366,26 @@ function runInjected(runner, bun, args, env, signal, context) {
   })
 }
 
-function diagnosticOutcome(error, signal) {
-  if (!error) return 'completed'
-  if (error.code === 'CLEANUP_UNCONFIRMED') return 'cleanup-unconfirmed'
-  if (signal?.aborted) return cancellationKind(signal)
-  return 'failed'
-}
-
 /**
  * Run one Image Workshop operation with structured argv and parse the canonical
  * JSON the CLI writes to stdout. An injected runner receives the operation argv
  * (without the CLI entry) and the optional abort signal; the real path prepends
  * the harness CLI and owns bounded process-tree cleanup.
  */
-export async function invokeImageOperation(operation, cliArgs, env = process.env, signal, diagnostics = {}) {
+export async function invokeImageOperation(operation, cliArgs, env = process.env, signal) {
   const args = [operation, ...cliArgs]
-  const rawEnv = env ?? process.env
-  const safeEnv = workshopEnvironment(rawEnv)
-  const context = operationContext(operation, rawEnv, diagnostics)
-  const operationEnv = {
-    ...safeEnv,
-    DSH_IMAGE_WORKSHOP_OPERATION_ID: context.operationId,
-    DSH_IMAGE_WORKSHOP_TOOL_NAME: context.toolName ?? operation,
-    DSH_IMAGE_WORKSHOP_OPERATION: operation,
-    ...(context.inputLabels ? { DSH_IMAGE_WORKSHOP_INPUT_LABELS: JSON.stringify(context.inputLabels) } : {}),
-    ...(context.outputLabels ? { DSH_IMAGE_WORKSHOP_OUTPUT_LABELS: JSON.stringify(context.outputLabels) } : {}),
-    ...(context.stagingLocation ? { DSH_IMAGE_WORKSHOP_STAGING: context.stagingLocation } : {})
-  }
-  const startedAt = new Date().toISOString()
-  const startedTime = Date.now()
-  if (workshopRunner) {
-    await appendDiagnostic(context, diagnosticEntry(context, 'start', 'harness-cli', safeEnv.BUN_EXECUTABLE ?? 'bun', { startedAt }))
-  }
+  const safeEnv = workshopEnvironment(env ?? process.env)
+  const stdout = workshopRunner
+    ? await runInjected(workshopRunner, safeEnv.BUN_EXECUTABLE ?? 'bun', args, safeEnv, signal, operation)
+    : await runReal(operation, args, safeEnv, signal)
+  if (signal?.aborted) throw cancellationError(operation, signal, true)
+  const trimmed = String(stdout ?? '').trim()
+  let parsed
   try {
-    const stdout = workshopRunner
-      ? await runInjected(workshopRunner, safeEnv.BUN_EXECUTABLE ?? 'bun', args, operationEnv, signal, context)
-      : await runReal(args, operationEnv, signal, context)
-    if (signal?.aborted) {
-      context.cleanupConfirmed = context.cleanupConfirmed ?? true
-      throw cancellationError(context, signal)
-    }
-    const trimmed = String(stdout ?? '').trim()
-    let parsed
-    try {
-      parsed = JSON.parse(trimmed)
-    } catch {
-      throw new Error(`image workspace CLI returned no parseable JSON for ${operation}.`)
-    }
-    await appendDiagnostic(context, diagnosticEntry(context, 'terminal', 'harness-cli', safeEnv.BUN_EXECUTABLE ?? 'bun', {
-      startedAt,
-      finishedAt: new Date().toISOString(),
-      elapsedMs: Date.now() - startedTime,
-      outcome: 'completed'
-    }))
-    return parsed
-  } catch (error) {
-    const failure = error instanceof Error ? error : new Error(String(error))
-    if (context.terminationLog) await context.terminationLog
-    await appendDiagnostic(context, diagnosticEntry(context, 'terminal', 'harness-cli', safeEnv.BUN_EXECUTABLE ?? 'bun', {
-      startedAt,
-      finishedAt: new Date().toISOString(),
-      elapsedMs: Date.now() - startedTime,
-      outcome: diagnosticOutcome(failure, signal),
-      error: failure.message,
-      pid: context.pid,
-      stagingLocation: context.stagingLocation
-    }))
-    throw failure
+    parsed = JSON.parse(trimmed)
+  } catch {
+    throw new Error(`image workspace CLI returned no parseable JSON for ${operation}.`)
   }
+  if (signal?.aborted) throw cancellationError(operation, signal, true)
+  return parsed
 }

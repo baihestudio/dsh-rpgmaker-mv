@@ -134,7 +134,7 @@ describe('RPG Maker MCP deployment', () => {
           addCalls += 1;
           await makeMcpRuntime(options.cwd!);
         }
-        if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: agent-presets\n  default: rpgmaker\n', stderr: '' };
+        if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n  default: rpgmaker\n', stderr: '' };
         return { exitCode: 0, stdout: '', stderr: '' };
       };
       const schemaProbe = async (request: { command: string; args: string[]; cwd: string }) => {
@@ -309,7 +309,7 @@ describe('RPG Maker MCP deployment', () => {
         jsExecutable: bun,
         commandRunner: async (_command, args, options) => {
           if (args[0] === 'add') await makeMcpRuntime(options.cwd!);
-          if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: agent-presets\n  default: rpgmaker\n', stderr: '' };
+          if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n  default: rpgmaker\n', stderr: '' };
           return { exitCode: 0, stdout: '', stderr: '' };
         },
         schemaProbe: async () => ({ tools: toolNames() })
@@ -354,7 +354,7 @@ describe('RPG Maker MCP deployment', () => {
         jsExecutable: bun,
         commandRunner: async (_command, args, options) => {
           if (args[0] === 'add') await makeMcpRuntime(options.cwd!);
-          if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: agent-presets\n  default: rpgmaker\n', stderr: '' };
+          if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n  default: rpgmaker\n', stderr: '' };
           return { exitCode: 0, stdout: '', stderr: '' };
         },
         schemaProbe: async () => ({ tools })
@@ -525,7 +525,7 @@ describe('RPG Maker MCP deployment', () => {
         commandRunner: async (_command, args, options) => {
           if (args.includes('--dump-config')) {
             preparationHomes.validation = options.env?.DSH_HOME;
-            return { exitCode: 0, stdout: '- id: agent-presets\n  default: playtest-debug\n', stderr: '' };
+            return { exitCode: 0, stdout: '- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n  default: playtest-debug\n', stderr: '' };
           }
           return { exitCode: 0, stdout: '', stderr: '' };
         },

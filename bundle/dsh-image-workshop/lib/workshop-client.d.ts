@@ -3,14 +3,6 @@ export interface WorkshopInvocation {
   args: string[];
   env: Record<string, string | undefined>;
 }
-export interface WorkshopDiagnostics {
-  operationId?: string;
-  toolName?: string;
-  inputLabels?: string[];
-  outputLabels?: string[];
-  stagingLocation?: string;
-  logPath?: string;
-}
 export interface WorkshopTerminationOptions {
   env?: Record<string, string | undefined>;
   platform?: string;
@@ -19,6 +11,8 @@ export interface WorkshopTerminationOptions {
 export type WorkshopRunner = (bun: string, args: string[], env: Record<string, string | undefined>, signal?: AbortSignal) => Promise<string>;
 export interface WorkshopChildHandle {
   pid?: number;
+  /** Test-owned child seams may provide the modeled platform. */
+  platform?: string;
   exitCode: number | null;
   signalCode: string | null;
   kill(signal?: string): boolean;
@@ -28,7 +22,7 @@ export interface WorkshopChildHandle {
   stdout?: { on?: (event: string, listener: (...args: unknown[]) => void) => unknown; removeListener?: (event: string, listener: (...args: unknown[]) => void) => unknown };
   stderr?: { on?: (event: string, listener: (...args: unknown[]) => void) => unknown; removeListener?: (event: string, listener: (...args: unknown[]) => void) => unknown };
 }
-export type WorkshopChildSpawner = (bun: string, args: string[], options: Record<string, unknown>) => WorkshopChildHandle;
+export type WorkshopChildSpawner = ((bun: string, args: string[], options: Record<string, unknown>) => WorkshopChildHandle) & { platform?: string };
 export type WorkshopTreeTerminator = (child: WorkshopChildHandle, options?: WorkshopTerminationOptions) => void | Promise<void>;
 export declare const IMAGE_OPERATION_CLEANUP_GRACE_MS: 5000;
 export declare function workshopEnvironment(env?: Record<string, string | undefined>): Record<string, string | undefined>;
@@ -38,4 +32,4 @@ export declare function setChildSpawner(spawner?: WorkshopChildSpawner): void;
 export declare function clearChildSpawner(): void;
 export declare function setTreeTerminator(terminator?: WorkshopTreeTerminator): void;
 export declare function clearTreeTerminator(): void;
-export declare function invokeImageOperation(operation: string, cliArgs: string[], env?: Record<string, string | undefined>, signal?: AbortSignal, diagnostics?: WorkshopDiagnostics): Promise<Record<string, unknown>>;
+export declare function invokeImageOperation(operation: string, cliArgs: string[], env?: Record<string, string | undefined>, signal?: AbortSignal): Promise<Record<string, unknown>>;

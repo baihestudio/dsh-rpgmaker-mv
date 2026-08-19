@@ -12,7 +12,6 @@ import {
 } from './image-workshop';
 import type { ImageReleasePin } from './image-releases';
 import { childExitCode, redactSensitive, runCommand, type CommandRunner, type InteractiveSpawner } from './process';
-import { imageDiagnosticContextFromEnvironment, withImageDiagnostics } from './image-diagnostics';
 import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT } from './config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, uninstallWindowsRelease } from './release-gate';
 import type { PrerequisiteConsent } from './prerequisites';
@@ -236,13 +235,11 @@ function inputList(parsed: ParsedArgs): string[] {
 async function runImageCommand(parsed: ParsedArgs, dependencies: CliDependencies, io: CliIO, signal?: AbortSignal): Promise<void> {
   const operation = parsed.positionals[0] ?? option(parsed.values, 'operation');
   if (!operation) throw new Error('Image operation is required.');
-  const imageEnv = dependencies.env ?? process.env;
-  const diagnostics = imageDiagnosticContextFromEnvironment(imageEnv);
   const baseCommandRunner = dependencies.commandRunner ?? runCommand;
-  const commandRunner = withImageDiagnostics((command, args, options) => baseCommandRunner(command, args, {
+  const commandRunner = (command: string, args: string[], options: Parameters<CommandRunner>[2]) => baseCommandRunner(command, args, {
     ...options,
     signal: signal ?? options.signal
-  }), diagnostics);
+  });
   const toolchainOptions: ImageToolchainOptions = {
     platform: dependencies.platform,
     env: dependencies.env,
@@ -268,8 +265,7 @@ async function runImageCommand(parsed: ParsedArgs, dependencies: CliDependencies
     commandRunner,
     platform: dependencies.platform,
     env: dependencies.env,
-    signal,
-    diagnostics
+    signal
   });
   if (operation === 'inspect') {
     io.stdout.write(`${JSON.stringify(await workshop.inspect(requiredOption(parsed, 'input')), null, 2)}\n`);

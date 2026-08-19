@@ -114,6 +114,16 @@ async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
 }
 
+function signalThatAbortsAfter(readsBeforeAbort: number): AbortSignal {
+  let reads = 0;
+  return {
+    get aborted(): boolean {
+      reads += 1;
+      return reads >= readsBeforeAbort;
+    }
+  } as AbortSignal;
+}
+
 async function writeHelperState(helper: string): Promise<string> {
   await mkdir(join(helper, 'node_modules', 'free-tex-packer-core'), { recursive: true });
   await writeFile(join(helper, 'package.json'), JSON.stringify({ private: true, dependencies: { 'free-tex-packer-core': '0.3.9' } }));
@@ -197,7 +207,7 @@ class FakeImageTools {
       return { exitCode: 0, stdout: '', stderr: '' };
     }
     if (args[0] === 'pm') return { exitCode: 0, stdout: '', stderr: '' };
-    if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: agent-presets\n', stderr: '' };
+    if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n', stderr: '' };
     if (command.toLowerCase().includes('oxipng')) {
       const source = this.sourcePath(args.slice().reverse()) ?? args.at(-1)!;
       const output = args[args.indexOf('--out') + 1];
@@ -795,6 +805,55 @@ describe('Asset Workshop image correctness and atlas bounds', () => {
     }
   });
 
+  test('cancellation after the final file link/unlink removes outputs without touching the source', async () => {
+    const root = await temp('phase4-file-commit-cancel');
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const fake = new FakeImageTools();
+      const sourceBefore = await readFile(TILE);
+      const output = join(root, 'cancelled.png');
+      const workshop = createImageWorkshop(toolchain(root, image, helper, fake), {
+        platform: 'win32',
+        env: { PATH: '' },
+        commandRunner: fake.run.bind(fake),
+        signal: signalThatAbortsAfter(16)
+      });
+      await expect(workshop.resizePixel({ input: TILE, output, scale: 2 })).rejects.toThrow(/cancelled/);
+      expect(await readFile(TILE)).toEqual(sourceBefore);
+      expect(await Bun.file(output).exists()).toBe(false);
+      expect(await Bun.file(`${output}.manifest.json`).exists()).toBe(false);
+      expect((await readdir(root)).some((name) => name.includes('.dsh-image-operation-'))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('cancellation after a directory rename removes the published directory without touching the source', async () => {
+    const root = await temp('phase4-directory-commit-cancel');
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const sourceBefore = await readFile(SHEET);
+      const outputDir = join(root, 'cancelled-frames');
+      const fake = new FakeImageTools();
+      const workshop = createImageWorkshop(toolchain(root, image, helper, fake), {
+        platform: 'win32',
+        env: { PATH: '' },
+        commandRunner: fake.run.bind(fake),
+        signal: signalThatAbortsAfter(7)
+      });
+      await expect(workshop.sheetSlice({ input: SHEET, outputDir, cellWidth: 4, cellHeight: 4 })).rejects.toThrow(/cancelled/);
+      expect(await readFile(SHEET)).toEqual(sourceBefore);
+      expect(await Bun.file(outputDir).exists()).toBe(false);
+      expect((await readdir(root)).some((name) => name.includes('cancelled-frames.dsh-staging'))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('rejects fixed-grid atlas metadata that crops a source border despite trimmed=false', async () => {
     const root = await temp('phase4-atlas-metadata');
     try {
@@ -833,8 +892,12 @@ describe('Asset Workshop image correctness and atlas bounds', () => {
         return [{ name: 'atlas.png', buffer: Buffer.from('png') }, { name: 'atlas.json', buffer: Buffer.from('{"frames":{}}') }];
       } });
       await expect(corrupt.atlasPack({ inputs: [CYAN, ORANGE], output: join(root, 'corrupt.png'), maxSize: 8, fixedGrid: true })).rejects.toThrow(/frame count|frames object/i);
-      const timeout = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake), maxPixels: 64, timeoutMs: 10, atlasPacker: () => new Promise(() => undefined) });
-      await expect(timeout.atlasPack({ inputs: [CYAN], output: join(root, 'timeout.png'), maxSize: 4 })).rejects.toThrow(/deadline/i);
+      const controller = new AbortController();
+      const cancelled = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake), maxPixels: 64, signal: controller.signal, atlasPacker: () => new Promise(() => undefined) });
+      const pending = cancelled.atlasPack({ inputs: [CYAN], output: join(root, 'cancelled.png'), maxSize: 4 });
+      setTimeout(() => controller.abort(), 10);
+      await expect(pending).rejects.toThrow(/cancelled/);
+      expect(await Bun.file(join(root, 'cancelled.png')).exists()).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

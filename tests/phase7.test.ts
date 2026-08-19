@@ -1097,7 +1097,7 @@ describe('Windows release gate foundations', () => {
       const dshExecutable = await findDshExecutable(join(program, 'runtime', 'dsh'), 'win32');
       expect(dshExecutable).toBeDefined();
       const launchRunner = async (command: string, args: string[], options: { cwd?: string; env?: Record<string, string | undefined>; platform?: string; timeoutMs?: number }) => {
-        if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: agent-presets\n', stderr: '' };
+        if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n', stderr: '' };
         return runner(command, args, options);
       };
       const launchOptions = {

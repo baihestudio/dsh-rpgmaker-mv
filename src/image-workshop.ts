@@ -35,7 +35,6 @@ import {
 } from './image-toolchain';
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { commandFailure, runCommand, withoutCredentials, type CommandRunner } from './process';
-import { writeImageDiagnostic, type ImageDiagnosticContext } from './image-diagnostics';
 
 export {
   ASSET_WORKSHOP_PRESET_ID,
@@ -70,13 +69,14 @@ export type {
 };
 
 const DEFAULT_MAX_PIXELS = 16_777_216;
-const DEFAULT_TIMEOUT_MS = 120_000;
+// ImageMagick and native runner backstops stay above the 180-second DSH mutation budget.
+const DEFAULT_TIMEOUT_MS = 240_000;
 const FREE_TEX_PACKAGE = 'free-tex-packer-core';
 const RESOURCE_ARGS = [
   '-limit', 'memory', '256MiB',
   '-limit', 'map', '512MiB',
   '-limit', 'area', '128MP',
-  '-limit', 'time', '120'
+  '-limit', 'time', '240'
 ];
 const PNG_DETERMINISM_ARGS = ['-define', 'png:exclude-chunk=date,time'];
 
@@ -96,7 +96,6 @@ export interface ImageWorkshopDependencies {
   maxPixels?: number;
   /** Test-owned seam; production resolves the pinned helper from helperRoot. */
   atlasPacker?: AtlasPackAsync;
-  diagnostics?: ImageDiagnosticContext;
 }
 
 export interface ImageMetadata {
@@ -294,6 +293,9 @@ interface FileOperation {
   finalParent: string;
   tempDir: string;
   finalPaths: string[];
+  committedPaths: string[];
+  committedDirectory?: string;
+  cleanupFailures: string[];
 }
 
 async function beginFileOperation(outputs: string[], inputs: string[]): Promise<FileOperation> {
@@ -310,7 +312,7 @@ async function beginFileOperation(outputs: string[], inputs: string[]): Promise<
     await rm(tempDir, { recursive: true, force: true });
     throw new ImageWorkshopError('Operation temporary directory resolves through a symlink or junction.');
   }
-  return { finalParent: parents[0], tempDir, finalPaths };
+  return { finalParent: parents[0], tempDir, finalPaths, committedPaths: [], cleanupFailures: [] };
 }
 
 async function beginDirectoryOperation(outputDirInput: string, inputs: string[]): Promise<FileOperation & { outputDir: string }> {
@@ -331,7 +333,7 @@ async function beginDirectoryOperation(outputDirInput: string, inputs: string[])
     await rm(tempDir, { recursive: true, force: true });
     throw new ImageWorkshopError('Operation temporary directory resolves through a symlink or junction.');
   }
-  return { finalParent: parent, tempDir, finalPaths: [], outputDir };
+  return { finalParent: parent, tempDir, finalPaths: [], committedPaths: [], cleanupFailures: [], outputDir };
 }
 
 async function assertOperationParent(operation: FileOperation, label: string): Promise<void> {
@@ -348,8 +350,45 @@ function assertNotCancelled(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new ImageWorkshopError('Image operation was cancelled.');
 }
 
+function cancellationCleanupError(operation: FileOperation): ImageWorkshopError {
+  const uncertain = operation.cleanupFailures.length > 0
+    ? operation.cleanupFailures
+    : [operation.committedDirectory, ...operation.committedPaths, operation.tempDir].filter((path): path is string => Boolean(path));
+  return new ImageWorkshopError(`Image operation cancellation cleanup-unconfirmed; cleanup could not be confirmed for: ${uncertain.join(', ')}.`);
+}
+
+function noteCleanupFailure(operation: FileOperation, path: string): void {
+  if (!operation.cleanupFailures.includes(path)) operation.cleanupFailures.push(path);
+}
+
+async function removeOperation(operation: FileOperation): Promise<boolean> {
+  let confirmed = true;
+  for (const path of [...operation.committedPaths].reverse()) {
+    try {
+      await rm(path, { force: true });
+    } catch {
+      confirmed = false;
+      noteCleanupFailure(operation, path);
+    }
+  }
+  if (operation.committedDirectory) {
+    try {
+      await rm(operation.committedDirectory, { recursive: true, force: true });
+    } catch {
+      confirmed = false;
+      noteCleanupFailure(operation, operation.committedDirectory);
+    }
+  }
+  try {
+    await rm(operation.tempDir, { recursive: true, force: true });
+  } catch {
+    confirmed = false;
+    noteCleanupFailure(operation, operation.tempDir);
+  }
+  return confirmed;
+}
+
 async function commitFiles(operation: FileOperation, entries: Array<{ finalPath: string; stagedPath: string }>, signal?: AbortSignal): Promise<void> {
-  const committed: string[] = [];
   try {
     await assertOperationParent(operation, 'Output');
     for (const entry of entries) {
@@ -367,13 +406,15 @@ async function commitFiles(operation: FileOperation, entries: Array<{ finalPath:
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new ImageWorkshopError(`Output appeared during commit; refusing to overwrite the racing path: ${entry.finalPath}`);
         throw error;
       }
-      committed.push(entry.finalPath);
+      operation.committedPaths.push(entry.finalPath);
       await unlink(entry.stagedPath);
+      assertNotCancelled(signal);
     }
     await rm(operation.tempDir, { recursive: true, force: true });
+    assertNotCancelled(signal);
   } catch (error) {
-    for (const path of committed.reverse()) await rm(path, { force: true }).catch(() => undefined);
-    await rm(operation.tempDir, { recursive: true, force: true });
+    const cleanupConfirmed = await removeOperation(operation);
+    if (signal?.aborted && !cleanupConfirmed) throw cancellationCleanupError(operation);
     throw error;
   }
 }
@@ -397,26 +438,18 @@ async function commitDirectory(operation: FileOperation & { outputDir: string },
       }
       throw error;
     }
+    operation.committedDirectory = operation.outputDir;
+    assertNotCancelled(signal);
   } catch (error) {
-    await rm(operation.tempDir, { recursive: true, force: true });
+    const cleanupConfirmed = await removeOperation(operation);
+    if (signal?.aborted && !cleanupConfirmed) throw cancellationCleanupError(operation);
     throw error;
-  }
-}
-
-async function removeOperation(operation: FileOperation): Promise<boolean> {
-  try {
-    await rm(operation.tempDir, { recursive: true, force: true });
-    return true;
-  } catch {
-    return false;
   }
 }
 
 async function failAfterOperationCleanup(operation: FileOperation, error: unknown, signal?: AbortSignal): Promise<never> {
   const cleanupConfirmed = await removeOperation(operation);
-  if (signal?.aborted && !cleanupConfirmed) {
-    throw new ImageWorkshopError(`Image operation cancellation cleanup-unconfirmed; staging was retained at ${operation.tempDir}.`);
-  }
+  if (signal?.aborted && !cleanupConfirmed) throw cancellationCleanupError(operation);
   throw error;
 }
 
@@ -554,26 +587,6 @@ async function jsonMetadata(path: string, finalPath: string): Promise<FileArtifa
 
 async function writeManifestInStage(path: string, manifest: ImageOperationManifest): Promise<void> {
   await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' });
-}
-
-async function recordOperationStaging(context: ImageDiagnosticContext | undefined, stagingLocation: string): Promise<void> {
-  if (!context) return;
-  await writeImageDiagnostic(context, { event: 'stage', stage: 'operation-staging', executable: 'filesystem', stagingLocation, outcome: 'spawned' });
-}
-
-async function runDiagnosticStage<T>(context: ImageDiagnosticContext | undefined, stage: string, executable: string, action: () => Promise<T>): Promise<T> {
-  if (!context) return action();
-  const startedAt = new Date().toISOString();
-  const startedTime = Date.now();
-  await writeImageDiagnostic(context, { event: 'start', stage, executable, startedAt });
-  try {
-    const value = await action();
-    await writeImageDiagnostic(context, { event: 'terminal', stage, executable, startedAt, finishedAt: new Date().toISOString(), elapsedMs: Date.now() - startedTime, outcome: 'completed' });
-    return value;
-  } catch (error) {
-    await writeImageDiagnostic(context, { event: 'terminal', stage, executable, startedAt, finishedAt: new Date().toISOString(), elapsedMs: Date.now() - startedTime, outcome: 'failed', error: error instanceof Error ? error.message : String(error) });
-    throw error;
-  }
 }
 
 async function readJsonFile(path: string): Promise<JsonObject> {
@@ -715,6 +728,7 @@ export class ImageWorkshop {
     await writeManifestInStage(manifestStage, manifest);
     assertNotCancelled(this.dependencies.signal);
     await commitFiles(operation, [...stagedOutputs.map((entry) => ({ finalPath: entry.finalPath, stagedPath: entry.stagedPath })), { finalPath: manifestPath, stagedPath: manifestStage }], this.dependencies.signal);
+    assertNotCancelled(this.dependencies.signal);
     return { operation: name, outputPaths: stagedOutputs.map((entry) => entry.finalPath), manifestPath, manifest };
   }
 
@@ -741,7 +755,6 @@ export class ImageWorkshop {
     if ((options.width !== undefined && options.width !== expectedWidth) || (options.height !== undefined && options.height !== expectedHeight)) throw new ImageWorkshopError('Pixel resize width/height do not match the integer scale.');
     const operation = await beginFileOperation([output, manifestPathForOutput(output)], [input]);
     const staged = join(operation.tempDir, basename(output));
-    await recordOperationStaging(this.dependencies.diagnostics, operation.tempDir);
     try {
       // `-sample` performs exact integer nearest-neighbour scaling and, unlike
       // `-filter point -resize`, preserves the hidden RGB values under fully
@@ -786,7 +799,6 @@ export class ImageWorkshop {
     const operation = await beginFileOperation([output, manifestPathForOutput(output)], [input]);
     const staged = join(operation.tempDir, basename(output));
     const rawPath = join(operation.tempDir, 'composed.raw');
-    await recordOperationStaging(this.dependencies.diagnostics, operation.tempDir);
     try {
       const channels = outputHasAlpha ? 4 : 3;
       const rawBytes = Buffer.alloc(expectedGrid.pixels.length * channels);
@@ -828,7 +840,6 @@ export class ImageWorkshop {
     const outputs = frames.map((frame) => join(outputDir, `frame-${String(frame.index).padStart(4, '0')}.png`));
     const stagedOutputs = frames.map((frame) => join(operation.tempDir, `frame-${String(frame.index).padStart(4, '0')}.png`));
     const manifestPath = join(outputDir, 'manifest.json');
-    await recordOperationStaging(this.dependencies.diagnostics, operation.tempDir);
     try {
       // `+repage` before -crop normalizes any virtual-canvas page geometry the
       // input may carry (assembled sheets and editor exports can embed a
@@ -858,6 +869,7 @@ export class ImageWorkshop {
       assertNotCancelled(this.dependencies.signal);
       await writeManifestInStage(join(operation.tempDir, 'manifest.json'), manifest);
       await commitDirectory(operation, this.dependencies.signal);
+      assertNotCancelled(this.dependencies.signal);
       return { operation: 'sheet-slice', outputPaths: outputs, manifestPath, manifest };
     } catch (error) {
       return failAfterOperationCleanup(operation, error, this.dependencies.signal);
@@ -884,7 +896,6 @@ export class ImageWorkshop {
     const staged = join(operation.tempDir, basename(output));
     const rows = join(operation.tempDir, 'rows');
     await mkdir(rows, { recursive: true });
-    await recordOperationStaging(this.dependencies.diagnostics, operation.tempDir);
     try {
       const rowPaths: string[] = [];
       for (let row = 0; row < inputs.length / columns; row += 1) {
@@ -931,7 +942,6 @@ export class ImageWorkshop {
     const stagedJson = join(operation.tempDir, basename(outputPaths.json));
     const stagedManifest = join(operation.tempDir, basename(outputPaths.manifest));
     let stage = 'atlas helper packing';
-    await recordOperationStaging(this.dependencies.diagnostics, operation.tempDir);
     try {
       let packAsync = this.dependencies.atlasPacker;
       if (!packAsync) {
@@ -941,23 +951,6 @@ export class ImageWorkshop {
       }
       if (!packAsync) throw new ImageWorkshopError(`Pinned ${FREE_TEX_PACKAGE}@${FREE_TEX_PACKER_VERSION} does not expose packAsync.`);
       const packFiles = await Promise.all(inputs.map(async (path) => ({ path: basename(path), contents: await readFile(path) })));
-      const packPromise = runDiagnosticStage(this.dependencies.diagnostics, 'atlas-helper', FREE_TEX_PACKAGE, () => packAsync!(packFiles, {
-        textureName: outputPaths.textureName,
-        width: maxSize,
-        height: maxSize,
-        padding,
-        extrude: extrusion,
-        allowRotation: false,
-        allowTrim: options.fixedGrid ? false : true,
-        detectIdentical: false,
-        removeFileExtension: false,
-        prependFolderName: false,
-        scaleMethod: 'NEAREST_NEIGHBOR',
-        exporter: 'JsonHash',
-        textureFormat: 'png'
-      }));
-      const deadline = this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
       let abortHandler: (() => void) | undefined;
       let files: Array<{ name: string; buffer: Buffer }>;
       try {
@@ -969,13 +962,26 @@ export class ImageWorkshop {
             if (this.dependencies.signal!.aborted) abortHandler();
           })
           : undefined;
+        const packPromise = packAsync(packFiles, {
+          textureName: outputPaths.textureName,
+          width: maxSize,
+          height: maxSize,
+          padding,
+          extrude: extrusion,
+          allowRotation: false,
+          allowTrim: options.fixedGrid ? false : true,
+          detectIdentical: false,
+          removeFileExtension: false,
+          prependFolderName: false,
+          scaleMethod: 'NEAREST_NEIGHBOR',
+          exporter: 'JsonHash',
+          textureFormat: 'png'
+        });
         files = await Promise.race([
           packPromise,
-          new Promise<never>((_, reject) => { deadlineTimer = setTimeout(() => reject(new ImageWorkshopError(`Atlas packing exceeded the ${deadline}ms operation deadline.`)), deadline); }),
           ...(abortPromise ? [abortPromise] : [])
         ]);
       } finally {
-        if (deadlineTimer) clearTimeout(deadlineTimer);
         if (abortHandler) this.dependencies.signal?.removeEventListener('abort', abortHandler);
       }
       const pngFile = files.find((file) => /\.png$/i.test(file.name));
@@ -1047,12 +1053,11 @@ export class ImageWorkshop {
       for (const stagedArtifact of [stagedPng, stagedJson, stagedManifest]) await assertStageFile(stagedArtifact);
       await readJsonFile(stagedManifest);
       await commitDirectory(operation, this.dependencies.signal);
+      assertNotCancelled(this.dependencies.signal);
       return { operation: 'atlas-pack', outputPaths: [outputPaths.png, outputPaths.json], manifestPath: outputPaths.manifest, manifest };
     } catch (error) {
       const cleanupConfirmed = await removeOperation(operation);
-      if (this.dependencies.signal?.aborted && !cleanupConfirmed) {
-        throw new ImageWorkshopError(`Image operation cancellation cleanup-unconfirmed; staging was retained at ${operation.tempDir}.`);
-      }
+      if (this.dependencies.signal?.aborted && !cleanupConfirmed) throw cancellationCleanupError(operation);
       if (error instanceof ImageWorkshopError) throw error;
       throw new ImageWorkshopError(`Atlas packing failed during ${stage}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1070,7 +1075,6 @@ export class ImageWorkshop {
     if (level > 6) throw new ImageWorkshopError('oxipng optimization level must be between 0 and 6.');
     const operation = await beginFileOperation([output, manifestPathForOutput(output)], [input]);
     const staged = join(operation.tempDir, basename(output));
-    await recordOperationStaging(this.dependencies.diagnostics, operation.tempDir);
     try {
       const runner = this.dependencies.commandRunner ?? runCommand;
       const env = this.dependencies.env ?? process.env;

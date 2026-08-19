@@ -16,7 +16,7 @@ import {
   prepareImageWorkshopPlugin,
   verifyImageWorkshopPlugin
 } from '../src/image-plugin';
-import { CUSTOM_AGENT_PRESET_IDS, installPreset, renderPresetOnlyPatch, verifyTimeoutPolicyComposition } from '../src/rpgmaker';
+import { CUSTOM_AGENT_PRESET_IDS, installPreset, renderPresetOnlyPatch, validatePresetComposition, verifyTimeoutPolicyComposition } from '../src/rpgmaker';
 import { WORKSPACE_MCP_AGENT_ROW_ID, WORKSPACE_MCP_PACKAGE } from '../src/workspace-mcp';
 import { buildReleaseZip, inspectReleaseZip } from '../src/release-gate';
 import { validateRelativePath, resolveWorkspacePath } from '../bundle/dsh-image-workshop/lib/workspace.js';
@@ -477,6 +477,7 @@ describe('image tool adapter seam', () => {
       expect(spawnOptions!.detached).toBe(process.platform !== 'win32');
       controller.abort();
       expect(terminated).toContain(child);
+      child.exitCode = 0;
       child.emit('close', null);
       await expect(promise).rejects.toThrow(/cancelled/);
     } finally {
@@ -905,13 +906,132 @@ describe('release bundle', () => {
       const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal);
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
       controller.abort();
-      setTimeout(() => child.emit('close', null), 20);
+      setTimeout(() => {
+        child.exitCode = 0;
+        child.emit('close', null);
+      }, 20);
       await expect(promise).rejects.toThrow(/cancelled/);
       expect(child.listenerCount('close')).toBe(0);
       expect(child.listenerCount('error')).toBe(0);
+      expect(child.listenerCount('exit')).toBe(0);
+      expect(child.stdout.listenerCount('data')).toBe(0);
+      expect(child.stderr.listenerCount('data')).toBe(0);
     } finally {
       clearChildSpawner();
       clearTreeTerminator();
+    }
+  });
+
+  test('does not treat exit without close as confirmed cleanup', async () => {
+    clearWorkshopRunner();
+    clearChildSpawner();
+    clearTreeTerminator();
+    const child = new EventEmitter() as EventEmitter & {
+      pid?: number;
+      exitCode: number | null;
+      signalCode: string | null;
+      kill: (signal?: string) => boolean;
+      stdout: PassThrough;
+      stderr: PassThrough;
+    };
+    child.pid = 4244;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = () => true;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    setChildSpawner(() => child);
+    setTreeTerminator(() => undefined);
+    const controller = new AbortController();
+    try {
+      const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+      controller.abort();
+      child.exitCode = 0;
+      child.emit('exit', 0, null);
+      await expect(promise).rejects.toMatchObject({ code: 'CLEANUP_UNCONFIRMED' });
+      expect(child.listenerCount('close')).toBe(0);
+      expect(child.listenerCount('exit')).toBe(0);
+    } finally {
+      clearChildSpawner();
+      clearTreeTerminator();
+    }
+  }, 7000);
+
+  test('bounds ignored graceful termination, escalates once, and reports unconfirmed Windows cleanup', async () => {
+    clearWorkshopRunner();
+    clearChildSpawner();
+    clearTreeTerminator();
+    const child = new EventEmitter() as EventEmitter & {
+      pid?: number;
+      platform?: string;
+      exitCode: number | null;
+      signalCode: string | null;
+      kill: (signal?: string) => boolean;
+      stdout: PassThrough;
+      stderr: PassThrough;
+    };
+    child.pid = 4245;
+    child.platform = 'win32';
+    child.exitCode = null;
+    child.signalCode = null;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    const killSignals: Array<string | undefined> = [];
+    child.kill = (signal) => {
+      killSignals.push(signal);
+      return true;
+    };
+    const spawner = ((
+      _bun: string,
+      _args: string[],
+      options: Record<string, unknown>
+    ) => {
+      expect(options.detached).toBe(false);
+      return child;
+    }) as ((bun: string, args: string[], options: Record<string, unknown>) => typeof child) & { platform?: string };
+    spawner.platform = 'win32';
+    setChildSpawner(spawner);
+    let terminationOptions: { platform?: string; timeoutMs?: number } | undefined;
+    setTreeTerminator((_child, options) => {
+      terminationOptions = options;
+      return new Promise<void>(() => undefined);
+    });
+    const controller = new AbortController();
+    try {
+      const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+      controller.abort();
+      await expect(promise).rejects.toMatchObject({ code: 'CLEANUP_UNCONFIRMED' });
+      expect(terminationOptions).toMatchObject({ platform: 'win32', timeoutMs: 1000 });
+      expect(killSignals).toEqual([undefined]);
+      expect(child.listenerCount('close')).toBe(0);
+      expect(child.listenerCount('error')).toBe(0);
+      expect(child.listenerCount('exit')).toBe(0);
+    } finally {
+      clearChildSpawner();
+      clearTreeTerminator();
+    }
+  }, 7000);
+
+  test('late injected completion cannot publish a result after cancellation', async () => {
+    clearWorkshopRunner();
+    const controller = new AbortController();
+    let completed = false;
+    setWorkshopRunner(async () => {
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+      completed = true;
+      return JSON.stringify({ path: 'hero.png' });
+    });
+    try {
+      const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { BUN_EXECUTABLE: 'bun' }, controller.signal);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+      controller.abort();
+      await expect(promise).rejects.toMatchObject({ code: 'TOOL_CANCELLED' });
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 35));
+      expect(completed).toBe(true);
+    } finally {
+      clearWorkshopRunner();
     }
   });
 
@@ -932,6 +1052,23 @@ describe('release bundle', () => {
       const composition = await readFile(verified.hostCompositionPath, 'utf8');
       expect((composition.match(/id: timeout-policy/g) ?? [])).toHaveLength(1);
       expect((composition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('requires exactly one official timeout row in the effective composition dump', async () => {
+    const root = await temp('effective-timeout-policy');
+    try {
+      const dshHome = join(root, 'dsh-home');
+      const compositionPath = join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
+      await mkdir(dirname(compositionPath), { recursive: true });
+      await writeFile(compositionPath, renderPresetOnlyPatch(join(dshHome, '.agent-presets'), 'asset-workshop'));
+      const valid = '- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n';
+      const validate = (stdout: string) => validatePresetComposition('dsh', compositionPath, root, 'win32', {}, async () => ({ exitCode: 0, stdout, stderr: '' }));
+      await expect(validate(valid)).resolves.toBeUndefined();
+      await expect(validate('- id: agent-presets\n')).rejects.toThrow(/exactly one effective timeout-policy row; found 0/);
+      await expect(validate(`${valid}- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n`)).rejects.toThrow(/exactly one effective timeout-policy row; found 2/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

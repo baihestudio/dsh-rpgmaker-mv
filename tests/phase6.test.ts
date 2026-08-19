@@ -412,7 +412,7 @@ describe('build-release preset mount', () => {
           if (args[0] === 'add') await makeMcpRuntime(options.cwd!);
           if (args.includes('--dump-config')) {
             dumpCalls += 1;
-            return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: agent-presets\n', stderr: '' };
+            return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n', stderr: '' };
           }
           return { exitCode: 0, stdout: '', stderr: '' };
         },
