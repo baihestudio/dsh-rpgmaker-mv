@@ -97,9 +97,17 @@ export function acquireWorkspaceServer(paths, canonical, definition) {
   const promise = (async () => {
     const runtime = await getHostRuntime(paths)
     if (closed) throw new Error('dsh-workspace-mcp: the Host closed during workspace server acquisition')
-    runtime.registerDefinition(definition, { overwrite: false })
-    const tools = await runtime.listTools(definition.name, { includeSchema: true, disableOAuth: true })
-    return { name: definition.name, canonical, tools }
+    try {
+      runtime.registerDefinition(definition, { overwrite: false })
+      const tools = await runtime.listTools(definition.name, { includeSchema: true, disableOAuth: true })
+      if (closed) throw new Error('dsh-workspace-mcp: the Host closed during workspace server acquisition')
+      return { name: definition.name, canonical, tools }
+    } finally {
+      // Host shutdown may close the Runtime before this listing establishes
+      // its child. Close this capability after listing settles so a late
+      // connection cannot outlive the Host.
+      if (closed) await runtime.close(definition.name).catch(() => undefined)
+    }
   })()
   workspaceServers.set(canonical, { promise })
   return promise

@@ -14,7 +14,26 @@
  * server, and no home/project config discovery of any kind.
  */
 import { spawn } from 'node:child_process'
+import { access, appendFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline'
+
+async function waitForRelease(path) {
+  while (true) {
+    try {
+      await access(path)
+      return
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+  }
+}
+
+async function traceRuntimeClose(server, name) {
+  const path = server.definition.env?.FIXTURE_RUNTIME_CLOSE_TRACE
+  if (typeof path === 'string' && path.length > 0) {
+    await appendFile(path, `${JSON.stringify({ name })}\n`)
+  }
+}
 
 class FixtureServer {
   constructor(definition) {
@@ -117,6 +136,11 @@ class FixtureServer {
   }
 
   async listTools() {
+    const gate = this.definition.env?.FIXTURE_LIST_TOOLS_GATE
+    if (typeof gate === 'string' && gate.length > 0) {
+      await appendFile(`${gate}.entered`, `${JSON.stringify({ name: this.definition.name })}\n`)
+      await waitForRelease(gate)
+    }
     await this.start()
     const message = await this.request('tools/list', {})
     return message.result?.tools ?? []
@@ -197,10 +221,16 @@ export function createRuntime({ servers = [], clientInfo, logger } = {}) {
     async close(name) {
       if (name !== undefined) {
         const server = serversByName.get(name)
-        if (server) await server.killChild()
+        if (server) {
+          await server.killChild()
+          await traceRuntimeClose(server, name)
+        }
         return
       }
-      await Promise.all([...serversByName.values()].map((server) => server.killChild()))
+      await Promise.all([...serversByName.entries()].map(async ([serverName, server]) => {
+        await server.killChild()
+        await traceRuntimeClose(server, serverName)
+      }))
     }
   }
 }

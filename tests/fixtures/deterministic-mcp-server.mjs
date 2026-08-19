@@ -87,6 +87,15 @@ if (args.subset !== undefined) {
 
 const startedPath = join(contextDir, 'started.jsonl')
 await appendFile(startedPath, `${JSON.stringify({ at: Date.now(), pid: process.pid, argv: process.argv })}\n`)
+const stopTrace = process.env.FIXTURE_STOP_TRACE
+if (stopTrace) {
+  process.once('SIGTERM', () => {
+    void appendFile(stopTrace, `${JSON.stringify({ at: Date.now(), pid: process.pid })}\n`).then(
+      () => process.exit(0),
+      () => process.exit(1)
+    )
+  })
+}
 
 let counter = 0
 const store = new Map()

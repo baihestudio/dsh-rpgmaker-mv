@@ -32,6 +32,18 @@ async function countLines(path: string): Promise<number> {
   }
 }
 
+async function waitForFile(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await readFile(path);
+      return;
+    } catch {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+    }
+  }
+  throw new Error(`Timed out waiting for test fixture file ${path}`);
+}
+
 function harnessPaths(root: string) {
   return {
     dshHome: join(root, 'home'),
@@ -576,6 +588,64 @@ describe('disposable MCPorter probe', () => {
         await expect(host.getHostRuntime(paths)).rejects.toThrow(/closed/);
       } finally {
         await host.closeHost().catch(() => undefined);
+        host.resetHostState();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('closes a child created after Host shutdown starts', async () => {
+    const shared = await sharedFixtureRuntimes();
+    const root = await temp('ws-mcp-shutdown-race');
+    try {
+      const host = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const contextDir = join(root, 'server-context');
+      const serverCwd = join(root, 'server-cwd');
+      const gate = join(root, 'list-tools.release');
+      const closeTrace = join(root, 'runtime-closes.jsonl');
+      const stopTrace = join(root, 'stopped.jsonl');
+      await mkdir(contextDir, { recursive: true });
+      await mkdir(serverCwd, { recursive: true });
+
+      const paths = { mcporterRuntime: shared.mcporter };
+      const canonical = resolve(join(root, 'workspace-race'));
+      const definition = {
+        name: 'rpgmaker-ws-shutdown-race',
+        command: { kind: 'stdio', command: process.execPath, args: [FIXTURE_SERVER, '--context', contextDir], cwd: serverCwd },
+        env: {
+          FIXTURE_LIST_TOOLS_GATE: gate,
+          FIXTURE_RUNTIME_CLOSE_TRACE: closeTrace,
+          FIXTURE_STOP_TRACE: stopTrace
+        }
+      };
+
+      host.resetHostState();
+      let shutdown: Promise<void> | undefined;
+      const acquisition = host.acquireWorkspaceServer(paths, canonical, definition);
+      try {
+        // Hold the fixture immediately before it establishes its child, then
+        // prove Host shutdown's first Runtime close has already happened.
+        await waitForFile(`${gate}.entered`);
+        shutdown = host.closeHost();
+        await waitForFile(closeTrace);
+
+        // The gated fixture now establishes a child after Runtime.close(). The
+        // acquisition boundary must close that late capability before Host
+        // shutdown resolves rather than relying on Runtime.close() to block it.
+        await writeFile(gate, 'release\n');
+        await expect(acquisition).rejects.toThrow(/closed during workspace server acquisition/);
+        await shutdown;
+
+        expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(1);
+        expect(await countLines(stopTrace)).toBe(1);
+        expect(await countLines(closeTrace)).toBe(2);
+        expect(host.hostState().closed).toBe(true);
+        expect(host.hostState().workspaces).toEqual([]);
+      } finally {
+        await writeFile(gate, 'release\n').catch(() => undefined);
+        if (shutdown) await shutdown.catch(() => undefined);
+        await acquisition.catch(() => undefined);
         host.resetHostState();
       }
     } finally {
