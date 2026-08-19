@@ -112,8 +112,8 @@ afterAll(async () => {
   if (sharedRootForCleanup) await rm(sharedRootForCleanup, { recursive: true, force: true });
 });
 
-async function makeMvProject(root: string, title = 'Probe Game'): Promise<string> {
-  const project = join(root, '选择 project with spaces');
+async function makeMvProject(root: string, title = 'Probe Game', folder = '选择 project with spaces'): Promise<string> {
+  const project = join(root, folder);
   await mkdir(join(project, 'data'), { recursive: true });
   await mkdir(join(project, 'js'), { recursive: true });
   await writeFile(join(project, 'Game.rpgproject'), '{}\n');
@@ -126,10 +126,9 @@ async function makeMvProject(root: string, title = 'Probe Game'): Promise<string
 
 async function withBundleEnv(env: Record<string, string>, fn: () => Promise<void>): Promise<void> {
   const saved: Array<[string, string | undefined]> = [];
-  const keys = [MCPORTER_RUNTIME_ENV, XEROLO_RUNTIME_ENV, JS_RUNNER_ENV];
-  for (const key of keys) {
+  for (const [key, value] of Object.entries(env)) {
     saved.push([key, process.env[key]]);
-    process.env[key] = env[key];
+    process.env[key] = value;
   }
   try {
     await fn();
@@ -677,6 +676,215 @@ describe('real DSH Agent seam', () => {
             expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
 
             // Host shutdown closes the one MCPorter Runtime and every child.
+            await shutdown();
+            expect(bundle.hostState().closed).toBe(true);
+          } finally {
+            await shutdown().catch(() => undefined);
+            bundle.resetHostState();
+          }
+        }
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('isolates two canonical workspaces while all RPG Maker presets share warm servers', async () => {
+    const shared = await sharedFixtureRuntimes();
+    const root = await temp('ws-mcp-isolation');
+    try {
+      const projectA = await makeMvProject(root, 'Workspace A', 'workspace-a');
+      const projectB = await makeMvProject(root, 'Workspace B', 'workspace-b');
+      const canonicalA = await realpath(projectA);
+      const canonicalB = await realpath(projectB);
+      const tracePath = join(root, 'xerolo-starts.jsonl');
+      await writeFile(tracePath, '');
+      const bundle = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/index.js')>('index.js');
+      const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
+      const expectedNames = contract.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort();
+
+      bundle.resetHostState();
+      await withBundleEnv(
+        {
+          [MCPORTER_RUNTIME_ENV]: shared.mcporter,
+          [XEROLO_RUNTIME_ENV]: shared.xerolo,
+          [JS_RUNNER_ENV]: process.execPath,
+          XEROLO_FIXTURE_TRACE: tracePath
+        },
+        async () => {
+          const hostCtx = new HarnessScope('host-isolation');
+          const shutdown = await bundle.apply(hostCtx);
+          try {
+            // All four shipped RPG Maker presets are active capabilities. They
+            // intentionally share the same canonical workspace server.
+            const shippedPresetIds = ['rpgmaker', 'playtest-debug', 'asset-workshop', 'build-release'] as const;
+            expect(bundle.RPG_PRESETS).toEqual(shippedPresetIds);
+            const agentsA = shippedPresetIds.map((agentPreset, index) => createHarnessAgent(`workspace-a-${index}`, {
+              cwd: projectA,
+              agentPreset
+            }));
+            const agentB = createHarnessAgent('workspace-b', { cwd: projectB, agentPreset: 'rpgmaker' });
+            for (const agent of [...agentsA, agentB]) hostCtx.emit('agent/created', { agent });
+
+            const [assembliesA, assemblyB] = await Promise.all([
+              Promise.all(agentsA.map((agent) => agent.ctx.assemble())),
+              agentB.ctx.assemble()
+            ]);
+            for (const assembly of assembliesA) expect(assembly.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
+            expect(assemblyB.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
+            expect(bundle.hostState().workspaces.sort()).toEqual([canonicalA, canonicalB].sort());
+
+            // The trace is a child-process observation at the real Agent seam:
+            // concurrent Agents in A start one pooled child, and B starts one
+            // different child with its own project root.
+            const starts = (await readFile(tracePath, 'utf8')).trim().split(/\r?\n/).filter(Boolean)
+              .map((line) => JSON.parse(line) as { projectRoot: string; pid: number });
+            expect(starts).toHaveLength(2);
+            expect(starts.map((entry) => entry.projectRoot).sort()).toEqual([canonicalA, canonicalB].sort());
+            expect(new Set(starts.map((entry) => entry.pid)).size).toBe(2);
+
+            // Calls through different Agents in A share state, while B's
+            // separate process has no access to A's in-memory state or files.
+            await agentsA[0].ctx.tools.get('rpgmaker_create_record')!.execute(
+              { type: 'actors', data: { name: 'Hero A' } },
+              { signal: new AbortController().signal }
+            );
+            const recordsA = await agentsA[1].ctx.tools.get('rpgmaker_list_records')!.execute(
+              { type: 'actors' },
+              { signal: new AbortController().signal }
+            ) as Array<{ name: string }>;
+            const recordsB = await agentB.ctx.tools.get('rpgmaker_list_records')!.execute(
+              { type: 'actors' },
+              { signal: new AbortController().signal }
+            ) as Array<{ name: string }>;
+            expect(recordsA.some((record) => record.name === 'Hero A')).toBe(true);
+            expect(recordsB).toEqual([]);
+
+            await agentsA[2].ctx.tools.get('rpgmaker_update_system')!.execute(
+              { data: { gameTitle: 'Workspace A changed' } },
+              { signal: new AbortController().signal }
+            );
+            const infoA = await agentsA[3].ctx.tools.get('rpgmaker_get_project_info')!.execute(
+              {},
+              { signal: new AbortController().signal }
+            ) as { gameTitle: string };
+            const infoB = await agentB.ctx.tools.get('rpgmaker_get_project_info')!.execute(
+              {},
+              { signal: new AbortController().signal }
+            ) as { gameTitle: string };
+            expect(infoA.gameTitle).toBe('Workspace A changed');
+            expect(infoB.gameTitle).toBe('Workspace B');
+
+            // Agent disposal removes only that Agent's registrations. The A
+            // server stays warm even after A's last Agent leaves, and B stays
+            // independently usable throughout.
+            agentsA[0].ctx.dispose();
+            expect(agentsA[0].ctx.tools.schemas()).toEqual([]);
+            const warmA = await agentsA[1].ctx.tools.get('rpgmaker_get_project_info')!.execute(
+              {},
+              { signal: new AbortController().signal }
+            ) as { gameTitle: string };
+            expect(warmA.gameTitle).toBe('Workspace A changed');
+            for (const agent of agentsA.slice(1)) agent.ctx.dispose();
+            expect(bundle.hostState().workspaces.sort()).toEqual([canonicalA, canonicalB].sort());
+            const agentAAfterLast = createHarnessAgent('workspace-a-after-last', { cwd: join(projectA, '.'), agentPreset: 'rpgmaker' });
+            hostCtx.emit('agent/created', { agent: agentAAfterLast });
+            const assemblyAAfterLast = await agentAAfterLast.ctx.assemble();
+            expect(assemblyAAfterLast.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
+            const warmAfterLast = await agentAAfterLast.ctx.tools.get('rpgmaker_get_project_info')!.execute(
+              {},
+              { signal: new AbortController().signal }
+            ) as { gameTitle: string };
+            expect(warmAfterLast.gameTitle).toBe('Workspace A changed');
+            const startsAfterLast = (await readFile(tracePath, 'utf8')).trim().split(/\r?\n/).filter(Boolean);
+            expect(startsAfterLast).toHaveLength(2);
+            agentAAfterLast.ctx.dispose();
+            const warmB = await agentB.ctx.tools.get('rpgmaker_get_project_info')!.execute(
+              {},
+              { signal: new AbortController().signal }
+            ) as { gameTitle: string };
+            expect(warmB.gameTitle).toBe('Workspace B');
+
+            await shutdown();
+            expect(bundle.hostState().closed).toBe(true);
+            expect(bundle.hostState().workspaces).toEqual([]);
+          } finally {
+            await shutdown().catch(() => undefined);
+            bundle.resetHostState();
+          }
+        }
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('contains one pooled workspace failure without affecting another workspace or restarting it', async () => {
+    const shared = await sharedFixtureRuntimes();
+    const root = await temp('ws-mcp-failure-containment');
+    try {
+      const failedProject = await makeMvProject(root, 'Failed workspace', 'failed-workspace');
+      const healthyProject = await makeMvProject(root, 'Healthy workspace', 'healthy-workspace');
+      const canonicalFailed = await realpath(failedProject);
+      const canonicalHealthy = await realpath(healthyProject);
+      const tracePath = join(root, 'xerolo-starts.jsonl');
+      await writeFile(tracePath, '');
+      const bundle = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/index.js')>('index.js');
+      const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
+      const expectedNames = contract.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort();
+
+      bundle.resetHostState();
+      await withBundleEnv(
+        {
+          [MCPORTER_RUNTIME_ENV]: shared.mcporter,
+          [XEROLO_RUNTIME_ENV]: shared.xerolo,
+          [JS_RUNNER_ENV]: process.execPath,
+          XEROLO_FIXTURE_TRACE: tracePath,
+          XEROLO_FIXTURE_FAIL_PROJECT: canonicalFailed
+        },
+        async () => {
+          const hostCtx = new HarnessScope('host-failure-containment');
+          const shutdown = await bundle.apply(hostCtx);
+          try {
+            const failedAgent = createHarnessAgent('failed-agent', { cwd: failedProject, agentPreset: 'rpgmaker' });
+            const healthyAgent = createHarnessAgent('healthy-agent', { cwd: healthyProject, agentPreset: 'playtest-debug' });
+            hostCtx.emit('agent/created', { agent: failedAgent });
+            hostCtx.emit('agent/created', { agent: healthyAgent });
+
+            // Manifest tools remain synchronously present for the failed Agent,
+            // but its first request fails closed when the live server drifts.
+            expect(failedAgent.ctx.tools.schemas().map((tool) => tool.name).sort()).toEqual(expectedNames);
+            const failedExpectation = expect(failedAgent.ctx.assemble()).rejects.toThrow(/tools\/list returned no tools/);
+            const healthyAssembly = await healthyAgent.ctx.assemble();
+            await failedExpectation;
+            expect(healthyAssembly.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
+            expect(bundle.hostState().workspaces.sort()).toEqual([canonicalFailed, canonicalHealthy].sort());
+
+            const healthyInfo = await healthyAgent.ctx.tools.get('rpgmaker_get_project_info')!.execute(
+              {},
+              { signal: new AbortController().signal }
+            ) as { gameTitle: string };
+            expect(healthyInfo.gameTitle).toBe('Healthy workspace');
+
+            // A failed acquisition is cached for this Host generation: a later
+            // Agent observes the same failure, with no automatic Xerolo restart.
+            const retryAgent = createHarnessAgent('failed-retry', { cwd: failedProject, agentPreset: 'asset-workshop' });
+            hostCtx.emit('agent/created', { agent: retryAgent });
+            expect(retryAgent.ctx.tools.schemas().map((tool) => tool.name).sort()).toEqual(expectedNames);
+            await expect(retryAgent.ctx.assemble()).rejects.toThrow(/tools\/list returned no tools/);
+            const starts = (await readFile(tracePath, 'utf8')).trim().split(/\r?\n/).filter(Boolean)
+              .map((line) => JSON.parse(line) as { projectRoot: string; pid: number });
+            expect(starts).toHaveLength(2);
+            expect(starts.map((entry) => entry.projectRoot).sort()).toEqual([canonicalFailed, canonicalHealthy].sort());
+
+            failedAgent.ctx.dispose();
+            retryAgent.ctx.dispose();
+            const stillHealthy = await healthyAgent.ctx.tools.get('rpgmaker_get_project_info')!.execute(
+              {},
+              { signal: new AbortController().signal }
+            ) as { gameTitle: string };
+            expect(stillHealthy.gameTitle).toBe('Healthy workspace');
+
             await shutdown();
             expect(bundle.hostState().closed).toBe(true);
           } finally {

@@ -96,6 +96,7 @@ export function acquireWorkspaceServer(paths, canonical, definition) {
   if (existing) return existing.promise
   const promise = (async () => {
     const runtime = await getHostRuntime(paths)
+    if (closed) throw new Error('dsh-workspace-mcp: the Host closed during workspace server acquisition')
     runtime.registerDefinition(definition, { overwrite: false })
     const tools = await runtime.listTools(definition.name, { includeSchema: true, disableOAuth: true })
     return { name: definition.name, canonical, tools }
@@ -172,6 +173,7 @@ export async function closeHost() {
   closed = true
   const pending = runtimePromise
   const runtime = settledRuntime
+  const entries = [...workspaceServers.values()]
   runtimePromise = undefined
   settledRuntime = undefined
   runtimeDir = undefined
@@ -179,6 +181,11 @@ export async function closeHost() {
   const created = pending ? await pending.catch(() => undefined) : undefined
   const targets = new Set([runtime, created].filter(Boolean))
   for (const target of targets) await target.close().catch(() => undefined)
+  // A workspace acquisition can still be between registration and tools/list
+  // when Host shutdown begins. The Runtime close above terminates its pooled
+  // children; await the cached promises so no in-flight server survives the
+  // Host generation or produces an unhandled rejection after shutdown.
+  await Promise.allSettled(entries.map((entry) => entry.promise))
 }
 
 /** pi-fabric result normalization: text projection, MCP errors as failures. */

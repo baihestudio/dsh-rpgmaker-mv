@@ -11,7 +11,7 @@
  *
  * The __XEROLO_MANIFEST__ placeholder below is replaced with the manifest JSON.
  */
-import { readFile } from 'node:fs/promises'
+import { appendFile, readFile, writeFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 
@@ -29,6 +29,9 @@ function parseArgs(argv) {
 }
 
 const projectRoot = parseArgs(process.argv) ?? process.cwd()
+const tracePath = process.env.XEROLO_FIXTURE_TRACE
+if (tracePath) await appendFile(tracePath, `${JSON.stringify({ projectRoot, pid: process.pid })}\n`)
+const tools = process.env.XEROLO_FIXTURE_FAIL_PROJECT === projectRoot ? [] : XEROLO_MANIFEST.tools
 const store = new Map() // type -> records[]
 
 async function handleCall(toolName, params) {
@@ -41,6 +44,18 @@ async function handleCall(toolName, params) {
       // The disposable project may not exist yet; the fixture stays deterministic.
     }
     const value = { gameTitle }
+    return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value }
+  }
+  if (toolName === 'update_system') {
+    let system = {}
+    try {
+      system = JSON.parse(await readFile(join(projectRoot, 'data', 'System.json'), 'utf8'))
+    } catch {
+      // The disposable project fixture starts with a minimal System.json.
+    }
+    const data = params?.data && typeof params.data === 'object' && !Array.isArray(params.data) ? params.data : {}
+    const value = { ...system, ...data }
+    await writeFile(join(projectRoot, 'data', 'System.json'), `${JSON.stringify(value)}\n`)
     return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value }
   }
   if (toolName === 'create_record') {
@@ -83,7 +98,7 @@ readline.on('line', (line) => {
   }
   if (message.method === 'notifications/initialized') return
   if (message.method === 'tools/list') {
-    process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { tools: XEROLO_MANIFEST.tools } })}\n`)
+    process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { tools } })}\n`)
     return
   }
   if (message.method === 'tools/call') {

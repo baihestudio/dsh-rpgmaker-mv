@@ -21,7 +21,7 @@ export const WORKSPACE_MCP_ENTRYPOINT = 'lib/index.js';
 export const WORKSPACE_MCP_BUNDLE_PATCH = './cordis.patch.yml';
 export const WORKSPACE_MCP_ROW_ID = 'workspace-mcp';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const WORKSPACE_MCP_SHA256 = '54e2e86f209b2242c4d8ef82d29852a3ebc26ef611e0176cac063b9a1ff82df0';
+export const WORKSPACE_MCP_SHA256 = 'ea4d4a7a23c5a207658318f8b9315d914110d18e3bbd0df4cedab5ebb7263171';
 export const WORKSPACE_MCP_BUNDLE_RELATIVE = join('bundle', 'dsh-workspace-mcp');
 
 /** Host env contract consumed by the prebuilt workspace bundle. */
