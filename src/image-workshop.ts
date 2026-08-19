@@ -682,12 +682,16 @@ export class ImageWorkshop {
     const operation = await beginFileOperation([output, manifestPathForOutput(output)], [input]);
     const staged = join(operation.tempDir, basename(output));
     try {
-      await this.magick('pixel resize', [input, ...alphaOption(inputInfo.hasAlpha), '-filter', 'point', '-resize', `${expectedWidth}x${expectedHeight}!`, ...PNG_DETERMINISM_ARGS, staged]);
+      // `-sample` performs exact integer nearest-neighbour scaling and, unlike
+      // `-filter point -resize`, preserves the hidden RGB values under fully
+      // transparent pixels (alpha 0), so the strict full-RGBA fidelity check
+      // below passes for transparent-white faces/icons as well as opaque art.
+      await this.magick('pixel resize', [input, ...alphaOption(inputInfo.hasAlpha), '-sample', `${expectedWidth}x${expectedHeight}!`, ...PNG_DETERMINISM_ARGS, staged]);
       const outputInfo = await this.inspect(staged);
       if (outputInfo.width !== expectedWidth || outputInfo.height !== expectedHeight) throw new ImageWorkshopError('Pixel resize output dimensions did not match the requested integer scale.');
       if (outputInfo.hasAlpha !== inputInfo.hasAlpha) throw new ImageWorkshopError('Pixel resize changed the source alpha channel.');
       assertSameGrid(await this.pixels(staged), resizeGrid(sourceGrid, scale), 'Pixel resize');
-      return await this.finish(operation, 'resize-pixel', [inputInfo], [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { scale, filter: 'point', sourceOverwrite: false }, { dimensions: true, alphaPreserved: true, nearestNeighbor: true, pixelsMatch: true }, 'decoded-pixels', true);
+      return await this.finish(operation, 'resize-pixel', [inputInfo], [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { scale, operator: 'sample', sourceOverwrite: false }, { dimensions: true, alphaPreserved: true, nearestNeighbor: true, pixelsMatch: true }, 'decoded-pixels', true);
     } catch (error) {
       await removeOperation(operation);
       throw error;

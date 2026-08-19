@@ -248,8 +248,8 @@ class FakeImageTools {
     const source = input ? this.virtual(input) : undefined;
     const output = this.outputPath(args);
     if (!source || !output) return { exitCode: 1, stdout: '', stderr: 'fake ImageMagick could not identify input/output' };
-    if (args.includes('-resize')) {
-      const match = args[args.indexOf('-resize') + 1].match(/^(\d+)x(\d+)!$/)!;
+    if (args.includes('-sample') || args.includes('-resize')) {
+      const match = args[args.indexOf(args.includes('-sample') ? '-sample' : '-resize') + 1].match(/^(\d+)x(\d+)!$/)!;
       const scale = Number(match[1]) / source.width;
       const pixels: string[] = [];
       for (let y = 0; y < source.height; y += 1) for (let sy = 0; sy < scale; sy += 1) for (let x = 0; x < source.width; x += 1) for (let sx = 0; sx < scale; sx += 1) pixels.push(source.pixels[y * source.width + x]);
@@ -553,6 +553,31 @@ describe('Asset Workshop trust and safe outputs', () => {
       expect(manifest.verificationLevel).toBe('decoded-pixels');
       expect(await readFile(source, 'utf8')).toBe('fixture png');
       expect(await readFile(join(root, 'img', 'faces', 'nannvzhu.ticket02-scale2.png.manifest.json'), 'utf8')).toContain('resize-pixel');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('pixel-safe scale 2 preserves hidden RGB under fully transparent pixels and uses sample semantics', async () => {
+    const root = await temp('phase4-transparent-resize');
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const source = join(root, 'img', 'faces', 'transparent-white.png');
+      await mkdir(dirname(source), { recursive: true });
+      await writeFile(source, 'fixture png');
+      const fake = new FakeImageTools();
+      const transparentWhite = 'FFFFFF00';
+      fake.grids.set(resolve(source), grid(2, 1, [transparentWhite, RED]));
+      const workshop = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake) });
+      const output = join(root, 'img', 'faces', 'transparent-white-scale2.png');
+      const result = await workshop.resizePixel({ input: source, output, scale: 2 });
+      expect(result.manifest.outputs[0]).toMatchObject({ width: 4, height: 2 });
+      const resized = [...fake.grids.values()].find((entry) => entry.width === 4 && entry.height === 2);
+      expect(resized?.pixels[0]).toBe(transparentWhite);
+      expect(fake.calls.some((call) => call.args.includes('-sample') && !call.args.includes('-resize'))).toBe(true);
+      expect(result.manifest.options).toMatchObject({ scale: 2, operator: 'sample' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
