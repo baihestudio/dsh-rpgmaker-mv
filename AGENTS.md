@@ -23,7 +23,7 @@ Tests use `bun:test`. Name test files `phase<N>.test.ts` and test observable beh
 
 ### Expensive Acceptance Gates
 
-Run `phase*:real`, simulated fresh/disposable installations, native Windows install or repair gates, and external runtime/provider downloads only when the user explicitly requests that exact class of test in the current conversation. “Verify” or “continue” alone is not authorization. Before an expensive gate, state what it provisions, expected duration, and external services used.
+Run `phase*:real`, simulated fresh/disposable installations, clean-machine Windows installation or repair gates, full integration suites, and external runtime/provider downloads only when the user explicitly requests that exact class of test in the current conversation. “Verify” or “continue” alone is not authorization. Routine incremental deployment of the current build to the existing NUC and a focused regression check are not expensive gates and may proceed as part of the active NUC workflow. Before an expensive gate, state what it provisions, expected duration, and external services used.
 
 ## Commit & Pull Request Guidelines
 
