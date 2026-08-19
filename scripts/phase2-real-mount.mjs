@@ -38,7 +38,7 @@ const xeroloEntry = process.env.XEROLO_ENTRY
 if (!project || !neutralLanding || !xeroloEntry) throw new Error('PROJECT_PATH, NEUTRAL_LANDING_DIR, and XEROLO_ENTRY are required')
 const [actualNeutralLanding, expectedNeutralLanding] = await Promise.all([realpath(process.cwd()), realpath(neutralLanding)])
 if (actualNeutralLanding !== expectedNeutralLanding) throw new Error(`DSH did not start from the neutral landing directory: ${process.cwd()}`)
-if (!project.includes('选择') || !project.includes('spaces')) throw new Error(`CJK/space project fixture was lost: ${project}`)
+if (!/[\u4e00-\u9fff]/.test(project) || !project.includes(' ')) throw new Error(`CJK/space project fixture was lost: ${project}`)
 if (process.argv.some((argument) => argument === '--project' || argument.startsWith('--project='))) {
   throw new Error('project-neutral acceptance received an unexpected --project argument')
 }
