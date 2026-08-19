@@ -36,6 +36,8 @@ export interface PromptAssembly {
 }
 
 type Listener = (...args: unknown[]) => unknown;
+type Disposer = () => void | Promise<void>;
+type EffectSetup = () => void | Disposer | Promise<void | Disposer>;
 
 class ToolRegistry {
   readonly entries: HarnessToolDefinition[] = [];
@@ -79,6 +81,7 @@ export class HarnessScope {
   readonly tools: ToolRegistry;
   readonly logger: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void };
   disposed = false;
+  private disposalPromise: Promise<void> | undefined;
 
   constructor(label: string, logger: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void } = { info() {}, error() {} }) {
     this.logger = logger;
@@ -91,16 +94,39 @@ export class HarnessScope {
     listeners.push(listener);
     this.listeners.set(event, listeners);
     let removed = false;
-    return () => {
+    const disposer = () => {
       if (removed) return;
       removed = true;
       const current = this.listeners.get(event) ?? [];
       const index = current.indexOf(listener);
       if (index >= 0) current.splice(index, 1);
     };
+    this.effects.push(disposer);
+    return disposer;
   }
 
-  effect(disposer: () => void): () => void {
+  /** Mirror Cordis: effect setup runs now; its return value is cleanup. */
+  effect(setup: EffectSetup, _label?: string): Disposer {
+    let active = true;
+    let cleanup: Disposer | undefined;
+    let setupPromise: Promise<void> | undefined;
+    const collect = (value: void | Disposer): void => {
+      if (typeof value !== 'function') return;
+      if (active) cleanup = value;
+      else void value();
+    };
+    const result = setup();
+    if (typeof (result as any)?.then === 'function') {
+      setupPromise = Promise.resolve(result as Promise<void | Disposer>).then((value) => collect(value));
+    } else {
+      collect(result as void | Disposer);
+    }
+    const disposer = () => {
+      if (!active) return setupPromise;
+      active = false;
+      if (setupPromise) return setupPromise.then(() => cleanup?.());
+      return cleanup?.();
+    };
     this.effects.push(disposer);
     return disposer;
   }
@@ -131,12 +157,21 @@ export class HarnessScope {
     return next();
   }
 
-  dispose(): void {
-    if (this.disposed) return;
+  dispose(): Promise<void> | void {
+    if (this.disposed) return this.disposalPromise;
     this.disposed = true;
-    for (const disposer of [...this.effects].reverse()) disposer();
+    let pending: Promise<void> | undefined;
+    for (const disposer of [...this.effects].reverse()) {
+      const result: void | Promise<void> = disposer();
+      if (typeof (result as any)?.then === 'function') {
+        const cleanup = result as unknown as Promise<void>;
+        pending = pending ? pending.then(() => cleanup) : cleanup;
+      }
+    }
     this.listeners.clear();
     this.effects.length = 0;
+    this.disposalPromise = pending;
+    return pending;
   }
 }
 

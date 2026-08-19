@@ -483,7 +483,8 @@ describe('disposable MCPorter probe', () => {
     const shared = await sharedFixtureRuntimes();
     const root = await temp('ws-mcp-probe');
     try {
-      const host = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const hostModule = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const host = hostModule.createHost();
       const env = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/env.js')>('env.js');
       const paths = { mcporterRuntime: shared.mcporter };
 
@@ -621,7 +622,8 @@ describe('disposable MCPorter probe', () => {
     const shared = await sharedFixtureRuntimes();
     const root = await temp('ws-mcp-cancel-close');
     try {
-      const host = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const hostModule = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const host = hostModule.createHost();
       const workspace = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/workspace.js')>('workspace.js');
       const paths = { mcporterRuntime: shared.mcporter };
       const affectedContext = join(root, 'affected-context');
@@ -702,7 +704,8 @@ describe('disposable MCPorter probe', () => {
     const shared = await sharedFixtureRuntimes();
     const root = await temp('ws-mcp-cancel-timeout');
     try {
-      const host = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const hostModule = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const host = hostModule.createHost();
       const paths = { mcporterRuntime: shared.mcporter };
       const contextDir = join(root, 'context');
       const serverCwd = join(root, 'cwd');
@@ -748,7 +751,8 @@ describe('disposable MCPorter probe', () => {
     const shared = await sharedFixtureRuntimes();
     const root = await temp('ws-mcp-cancel-failure');
     try {
-      const host = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const hostModule = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const host = hostModule.createHost();
       const paths = { mcporterRuntime: shared.mcporter };
       const contextDir = join(root, 'context');
       const serverCwd = join(root, 'cwd');
@@ -793,7 +797,8 @@ describe('disposable MCPorter probe', () => {
     const shared = await sharedFixtureRuntimes();
     const root = await temp('ws-mcp-shutdown-race');
     try {
-      const host = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const hostModule = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const host = hostModule.createHost();
       const contextDir = join(root, 'server-context');
       const serverCwd = join(root, 'server-cwd');
       const gate = join(root, 'list-tools.release');
@@ -849,6 +854,98 @@ describe('disposable MCPorter probe', () => {
 });
 
 describe('real DSH Agent seam', () => {
+  test('does not close Host state during plugin apply before the first Agent initializes', async () => {
+    const shared = await sharedFixtureRuntimes();
+    const root = await temp('ws-mcp-apply-lifecycle');
+    try {
+      const project = await makeMvProject(root);
+      const bundle = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/index.js')>('index.js');
+      await withBundleEnv(
+        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [XEROLO_RUNTIME_ENV]: shared.xerolo, [JS_RUNNER_ENV]: process.execPath },
+        async () => {
+          const hostCtx = new HarnessScope('host-apply-lifecycle');
+          bundle.apply(hostCtx);
+          try {
+            const agent = createHarnessAgent('apply-lifecycle', { cwd: project, agentPreset: 'rpgmaker' });
+            hostCtx.emit('agent/created', { agent });
+            await expect(agent.ctx.assemble()).resolves.toMatchObject({ tools: expect.any(Array) });
+          } finally {
+            await hostCtx.dispose();
+          }
+        }
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('isolates Host generations and makes duplicate shutdown ownership idempotent', async () => {
+    const shared = await sharedFixtureRuntimes();
+    const root = await temp('ws-mcp-host-generations');
+    try {
+      const project = await makeMvProject(root, 'Host generations');
+      const canonical = await realpath(project);
+      const tracePath = join(root, 'xerolo-starts.jsonl');
+      await writeFile(tracePath, '');
+      const bundle = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/index.js')>('index.js');
+      await withBundleEnv(
+        {
+          [MCPORTER_RUNTIME_ENV]: shared.mcporter,
+          [XEROLO_RUNTIME_ENV]: shared.xerolo,
+          [JS_RUNNER_ENV]: process.execPath,
+          XEROLO_FIXTURE_TRACE: tracePath
+        },
+        async () => {
+          const oldCtx = new HarnessScope('host-generation-old');
+          const newCtx = new HarnessScope('host-generation-new');
+          const rootContext = {};
+          Object.defineProperty(oldCtx, 'root', { value: rootContext });
+          Object.defineProperty(newCtx, 'root', { value: rootContext });
+          try {
+            bundle.apply(oldCtx);
+            const oldAgent = createHarnessAgent('host-generation-old-agent', { cwd: project, agentPreset: 'rpgmaker' });
+            oldCtx.emit('agent/created', { agent: oldAgent });
+            await oldAgent.ctx.assemble();
+
+            bundle.apply(newCtx);
+            const newAgent = createHarnessAgent('host-generation-new-agent', { cwd: project, agentPreset: 'rpgmaker' });
+            newCtx.emit('agent/created', { agent: newAgent });
+            await newAgent.ctx.assemble();
+
+            const starts = (await readFile(tracePath, 'utf8')).trim().split(/\r?\n/).filter(Boolean)
+              .map((line) => JSON.parse(line) as { projectRoot: string; pid: number });
+            expect(starts).toHaveLength(2);
+            expect(starts.map((entry) => entry.projectRoot)).toEqual([canonical, canonical]);
+            expect(new Set(starts.map((entry) => entry.pid)).size).toBe(2);
+            expect(bundle.hostState(oldCtx).closed).toBe(false);
+            expect(bundle.hostState(newCtx).closed).toBe(false);
+
+            const oldDisposal = oldCtx.dispose();
+            const duplicateOldDisposal = oldCtx.dispose();
+            await Promise.all([oldDisposal, duplicateOldDisposal]);
+            expect(bundle.hostState(oldCtx).closed).toBe(true);
+            expect(bundle.hostState(newCtx).closed).toBe(false);
+            const info = await newAgent.ctx.tools.get('rpgmaker_get_project_info')!.execute(
+              {},
+              { signal: new AbortController().signal }
+            ) as { gameTitle: string };
+            expect(info.gameTitle).toBe('Host generations');
+
+            const newDisposal = newCtx.dispose();
+            const duplicateNewDisposal = newCtx.dispose();
+            await Promise.all([newDisposal, duplicateNewDisposal]);
+            expect(bundle.hostState(newCtx).closed).toBe(true);
+          } finally {
+            await Promise.resolve(oldCtx.dispose()).catch(() => undefined);
+            await Promise.resolve(newCtx.dispose()).catch(() => undefined);
+          }
+        }
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('first prompt assembly waits for discovery, exposes stable rpgmaker_* tools, shares one server, and fails closed', async () => {
     const shared = await sharedFixtureRuntimes();
     const root = await temp('ws-mcp-seam');
@@ -859,12 +956,11 @@ describe('real DSH Agent seam', () => {
       const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
       const expectedNames = contract.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort();
 
-      bundle.resetHostState();
       await withBundleEnv(
         { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [XEROLO_RUNTIME_ENV]: shared.xerolo, [JS_RUNNER_ENV]: process.execPath },
         async () => {
           const hostCtx = new HarnessScope('host');
-          const shutdown = await bundle.apply(hostCtx);
+          bundle.apply(hostCtx);
           try {
             // One valid RPG Maker Agent: its first assembly carries every
             // generated stable tool synchronously (the manifest was registered
@@ -894,7 +990,7 @@ describe('real DSH Agent seam', () => {
             hostCtx.emit('agent/created', { agent: agentB });
             const assemblyB = await agentB.ctx.assemble();
             expect(assemblyB.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
-            expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
+            expect(bundle.hostState(hostCtx).workspaces).toEqual([canonicalProject]);
             await agentA.ctx.tools.get('rpgmaker_create_record')!.execute({ type: 'actors', data: { name: 'Hero' } }, { signal: new AbortController().signal });
             const records = await agentB.ctx.tools.get('rpgmaker_list_records')!.execute({ type: 'actors' }, { signal: new AbortController().signal }) as Array<{ name: string }>;
             expect(records.some((record) => record.name === 'Hero')).toBe(true);
@@ -906,14 +1002,14 @@ describe('real DSH Agent seam', () => {
             expect(agentA.ctx.listeners.has('system-prompt/assemble')).toBe(false);
             const stillWarm = await agentB.ctx.tools.get('rpgmaker_get_project_info')!.execute({}, { signal: new AbortController().signal }) as { gameTitle: string };
             expect(stillWarm.gameTitle).toBe('Probe Game');
-            expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
+            expect(bundle.hostState(hostCtx).workspaces).toEqual([canonicalProject]);
 
             // A non-RPG preset registers neither a server nor RPG Maker tools.
             const agentCode = createHarnessAgent('agent-code', { cwd: project, agentPreset: 'code' });
             hostCtx.emit('agent/created', { agent: agentCode });
             const assemblyCode = await agentCode.ctx.assemble();
             expect(assemblyCode.tools.filter((tool) => tool.name.startsWith('rpgmaker_'))).toEqual([]);
-            expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
+            expect(bundle.hostState(hostCtx).workspaces).toEqual([canonicalProject]);
 
             // An invalid workspace registers no server and fails its first
             // request naming the missing project markers, even though its
@@ -924,7 +1020,7 @@ describe('real DSH Agent seam', () => {
             hostCtx.emit('agent/created', { agent: agentInvalid });
             expect(agentInvalid.ctx.tools.schemas().map((tool) => tool.name).sort()).toEqual(expectedNames);
             await expect(agentInvalid.ctx.assemble()).rejects.toThrow(/Game\.rpgproject/);
-            expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
+            expect(bundle.hostState(hostCtx).workspaces).toEqual([canonicalProject]);
 
             const partialWorkspace = join(root, 'partial-workspace');
             await mkdir(join(partialWorkspace, 'data'), { recursive: true });
@@ -932,20 +1028,19 @@ describe('real DSH Agent seam', () => {
             const agentPartial = createHarnessAgent('agent-partial', { cwd: partialWorkspace, agentPreset: 'rpgmaker' });
             hostCtx.emit('agent/created', { agent: agentPartial });
             await expect(agentPartial.ctx.assemble()).rejects.toThrow(/js/);
-            expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
+            expect(bundle.hostState(hostCtx).workspaces).toEqual([canonicalProject]);
 
             // A missing session cwd fails closed before any server is touched.
             const agentNoCwd = createHarnessAgent('agent-nocwd', { agentPreset: 'rpgmaker' });
             hostCtx.emit('agent/created', { agent: agentNoCwd });
             await expect(agentNoCwd.ctx.assemble()).rejects.toThrow(/no workspace cwd/);
-            expect(bundle.hostState().workspaces).toEqual([canonicalProject]);
+            expect(bundle.hostState(hostCtx).workspaces).toEqual([canonicalProject]);
 
             // Host shutdown closes the one MCPorter Runtime and every child.
-            await shutdown();
-            expect(bundle.hostState().closed).toBe(true);
+            await hostCtx.dispose();
+            expect(bundle.hostState(hostCtx).closed).toBe(true);
           } finally {
-            await shutdown().catch(() => undefined);
-            bundle.resetHostState();
+            await Promise.resolve(hostCtx.dispose()).catch(() => undefined);
           }
         }
       );
@@ -968,7 +1063,6 @@ describe('real DSH Agent seam', () => {
       const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
       const expectedNames = contract.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort();
 
-      bundle.resetHostState();
       await withBundleEnv(
         {
           [MCPORTER_RUNTIME_ENV]: shared.mcporter,
@@ -978,7 +1072,7 @@ describe('real DSH Agent seam', () => {
         },
         async () => {
           const hostCtx = new HarnessScope('host-isolation');
-          const shutdown = await bundle.apply(hostCtx);
+          bundle.apply(hostCtx);
           try {
             // All four shipped RPG Maker presets are active capabilities. They
             // intentionally share the same canonical workspace server.
@@ -997,7 +1091,7 @@ describe('real DSH Agent seam', () => {
             ]);
             for (const assembly of assembliesA) expect(assembly.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
             expect(assemblyB.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
-            expect(bundle.hostState().workspaces.sort()).toEqual([canonicalA, canonicalB].sort());
+            expect(bundle.hostState(hostCtx).workspaces.sort()).toEqual([canonicalA, canonicalB].sort());
 
             // The trace is a child-process observation at the real Agent seam:
             // concurrent Agents in A start one pooled child, and B starts one
@@ -1051,7 +1145,7 @@ describe('real DSH Agent seam', () => {
             ) as { gameTitle: string };
             expect(warmA.gameTitle).toBe('Workspace A changed');
             for (const agent of agentsA.slice(1)) agent.ctx.dispose();
-            expect(bundle.hostState().workspaces.sort()).toEqual([canonicalA, canonicalB].sort());
+            expect(bundle.hostState(hostCtx).workspaces.sort()).toEqual([canonicalA, canonicalB].sort());
             const agentAAfterLast = createHarnessAgent('workspace-a-after-last', { cwd: join(projectA, '.'), agentPreset: 'rpgmaker' });
             hostCtx.emit('agent/created', { agent: agentAAfterLast });
             const assemblyAAfterLast = await agentAAfterLast.ctx.assemble();
@@ -1070,12 +1164,11 @@ describe('real DSH Agent seam', () => {
             ) as { gameTitle: string };
             expect(warmB.gameTitle).toBe('Workspace B');
 
-            await shutdown();
-            expect(bundle.hostState().closed).toBe(true);
-            expect(bundle.hostState().workspaces).toEqual([]);
+            await hostCtx.dispose();
+            expect(bundle.hostState(hostCtx).closed).toBe(true);
+            expect(bundle.hostState(hostCtx).workspaces).toEqual([]);
           } finally {
-            await shutdown().catch(() => undefined);
-            bundle.resetHostState();
+            await Promise.resolve(hostCtx.dispose()).catch(() => undefined);
           }
         }
       );
@@ -1098,7 +1191,6 @@ describe('real DSH Agent seam', () => {
       const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
       const expectedNames = contract.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort();
 
-      bundle.resetHostState();
       await withBundleEnv(
         {
           [MCPORTER_RUNTIME_ENV]: shared.mcporter,
@@ -1109,7 +1201,7 @@ describe('real DSH Agent seam', () => {
         },
         async () => {
           const hostCtx = new HarnessScope('host-failure-containment');
-          const shutdown = await bundle.apply(hostCtx);
+          bundle.apply(hostCtx);
           try {
             const failedAgent = createHarnessAgent('failed-agent', { cwd: failedProject, agentPreset: 'rpgmaker' });
             const healthyAgent = createHarnessAgent('healthy-agent', { cwd: healthyProject, agentPreset: 'playtest-debug' });
@@ -1123,7 +1215,7 @@ describe('real DSH Agent seam', () => {
             const healthyAssembly = await healthyAgent.ctx.assemble();
             await failedExpectation;
             expect(healthyAssembly.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
-            expect(bundle.hostState().workspaces.sort()).toEqual([canonicalFailed, canonicalHealthy].sort());
+            expect(bundle.hostState(hostCtx).workspaces.sort()).toEqual([canonicalFailed, canonicalHealthy].sort());
 
             const healthyInfo = await healthyAgent.ctx.tools.get('rpgmaker_get_project_info')!.execute(
               {},
@@ -1150,11 +1242,10 @@ describe('real DSH Agent seam', () => {
             ) as { gameTitle: string };
             expect(stillHealthy.gameTitle).toBe('Healthy workspace');
 
-            await shutdown();
-            expect(bundle.hostState().closed).toBe(true);
+            await hostCtx.dispose();
+            expect(bundle.hostState(hostCtx).closed).toBe(true);
           } finally {
-            await shutdown().catch(() => undefined);
-            bundle.resetHostState();
+            await Promise.resolve(hostCtx.dispose()).catch(() => undefined);
           }
         }
       );
@@ -1176,24 +1267,21 @@ describe('real DSH Agent seam', () => {
       await withBundleEnv(
         { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [XEROLO_RUNTIME_ENV]: shared.xerolo, [JS_RUNNER_ENV]: process.execPath },
         async () => {
-          bundle.resetHostState();
           const noLoggerScope = new HarnessScope('host-without-logger');
           const noLoggerCtx = {
             on: noLoggerScope.on.bind(noLoggerScope),
             effect: noLoggerScope.effect.bind(noLoggerScope),
             emit: noLoggerScope.emit.bind(noLoggerScope)
           };
-          let noLoggerShutdown: (() => Promise<void>) | undefined;
           try {
-            noLoggerShutdown = await bundle.apply(noLoggerCtx);
+            bundle.apply(noLoggerCtx);
             const noLoggerAgent = createHarnessAgent('without-logger', { cwd: project, agentPreset: 'rpgmaker' });
             noLoggerCtx.emit('agent/created', { agent: noLoggerAgent });
             const noLoggerAssembly = await noLoggerAgent.ctx.assemble();
             expect(noLoggerAssembly.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
             noLoggerAgent.ctx.dispose();
           } finally {
-            await noLoggerShutdown?.().catch(() => undefined);
-            bundle.resetHostState();
+            await noLoggerScope.dispose();
           }
 
           const logs: unknown[][] = [];
@@ -1201,9 +1289,8 @@ describe('real DSH Agent seam', () => {
             info: (...args) => logs.push(args),
             error: (...args) => logs.push(['error', ...args])
           });
-          let loggerShutdown: (() => Promise<void>) | undefined;
           try {
-            loggerShutdown = await bundle.apply(loggerScope);
+            bundle.apply(loggerScope);
             const loggerAgent = createHarnessAgent('with-logger', { cwd: project, agentPreset: 'rpgmaker' });
             loggerScope.emit('agent/created', { agent: loggerAgent });
             const loggerAssembly = await loggerAgent.ctx.assemble();
@@ -1219,8 +1306,7 @@ describe('real DSH Agent seam', () => {
             ))).toBe(true);
             loggerAgent.ctx.dispose();
           } finally {
-            await loggerShutdown?.().catch(() => undefined);
-            bundle.resetHostState();
+            await loggerScope.dispose();
           }
         }
       );

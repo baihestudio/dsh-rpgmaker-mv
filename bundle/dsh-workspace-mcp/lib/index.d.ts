@@ -1,11 +1,18 @@
+import type { HostState } from './mcport-host.js';
+
+type Disposer = () => void | Promise<void>;
+type EffectSetup = () => void | Disposer | Promise<void | Disposer>;
+
 export declare const name: string;
 export declare const inject: readonly string[];
 export declare const RPG_PRESETS: readonly ['rpgmaker', 'playtest-debug', 'asset-workshop', 'build-release'];
 export declare function apply(ctx: {
-  on: (event: string, listener: (payload: unknown) => void) => void;
-  effect: (disposer: () => void, label?: string) => void;
+  root?: object;
+  on: (event: string, listener: (payload: any) => void) => void;
+  effect: (setup: EffectSetup, label?: string) => Disposer;
   logger?: { info?: (...args: unknown[]) => void; error?: (...args: unknown[]) => void };
-}): Promise<() => Promise<void>>;
+}): void;
+export declare function hostState(ctx: object): HostState;
 export { resolveRuntimePaths, neutralizedServerEnv, SECRET_MARKER, MCPORTER_RUNTIME_ENV, XEROLO_RUNTIME_ENV, JS_RUNNER_ENV } from './env.js';
 export {
   canonicalWorkspace,
@@ -29,7 +36,10 @@ export {
   validateModelNames
 } from './contract.js';
 export {
-  hostState,
+  Host,
+  HostState,
+  AcquiredWorkspaceServer,
+  createHost,
   resetHostState,
   getHostRuntime,
   registerServer,

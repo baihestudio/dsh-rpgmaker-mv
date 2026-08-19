@@ -11,7 +11,7 @@
  * executed through the Agent shell.
  */
 import { resolveRuntimePaths } from './env.js'
-import { acquireWorkspaceServer, closeHost } from './mcport-host.js'
+import { createHost } from './mcport-host.js'
 import { XEROLO_MANIFEST, validateDiscoveredTools, validateModelNames, verifyManifest } from './contract.js'
 import { createMcpTool, toModelName } from './tools.js'
 import { buildWorkspaceDefinition, canonicalWorkspace, validateWorkspace } from './workspace.js'
@@ -25,7 +25,7 @@ const RPG_PRESET_SET = new Set(RPG_PRESETS)
 
 // Testable narrow surface re-exported for disposable probes and the Agent seam.
 export {
-  hostState,
+  createHost,
   resetHostState,
   getHostRuntime,
   registerServer,
@@ -40,6 +40,19 @@ export {
   canonicalMcpValue,
   MCPORTER_CANCELLATION_CLEANUP_GRACE_MS
 } from './mcport-host.js'
+
+const hostByContext = new WeakMap()
+
+function hostOwner(ctx) {
+  return ctx?.root && typeof ctx.root === 'object' ? ctx.root : ctx
+}
+
+/** Inspect the Host capability owned by an applied context. */
+export function hostState(ctx) {
+  const host = hostByContext.get(ctx) ?? hostByContext.get(hostOwner(ctx))
+  if (!host) throw new Error('dsh-workspace-mcp: no Host capability is bound to this context')
+  return host.hostState()
+}
 export {
   XEROLO_MANIFEST,
   XEROLO_TOOL_NAMES,
@@ -71,8 +84,11 @@ export {
 } from './workspace.js'
 export { toModelName, createMcpTool } from './tools.js'
 
-/** Host plugin entry: one Host-lifetime runtime and per-Agent initialization. */
+/** Host plugin entry: one generation-owned runtime and per-Agent initialization. */
 export function apply(ctx) {
+  const host = createHost()
+  hostByContext.set(ctx, host)
+  hostByContext.set(hostOwner(ctx), host)
   ctx.on('agent/created', ({ agent }) => {
     const preset = agent?.session?.header?.agentPreset
     if (!RPG_PRESET_SET.has(preset)) return
@@ -83,7 +99,7 @@ export function apply(ctx) {
     // started first assembly already carries every stable rpgmaker_* tool.
     // One registration factory copies the pinned manifest's descriptions and
     // input schemas; no per-tool wrapper is hand-written.
-    const init = initializeAgent(ctx, agent)
+    const init = initializeAgent(host, ctx, agent)
     const disposers = XEROLO_MANIFEST.tools.map((rawTool) => agentCtx.tools.register(createMcpTool(rawTool, { init })))
     ctx.logger?.info?.('dsh-workspace-mcp synchronously registered %d manifest tools for agent %s', disposers.length, agent?.id ?? 'unknown')
     // Gate the Agent's first prompt assembly on initialization so the first
@@ -95,12 +111,11 @@ export function apply(ctx) {
       return next()
     })
   })
-  const shutdown = () => closeHost()
-  ctx.effect(shutdown, 'dsh-workspace-mcp.closeHost()')
-  return shutdown
+  const shutdown = () => host.closeHost()
+  ctx.effect(() => shutdown, 'dsh-workspace-mcp.closeHost()')
 }
 
-async function initializeAgent(ctx, agent) {
+async function initializeAgent(host, ctx, agent) {
   // The pinned manifest is verified like a runtime lock fact before any
   // workspace server is acquired or any tool may execute.
   const manifest = verifyManifest()
@@ -115,12 +130,12 @@ async function initializeAgent(ctx, agent) {
   }
   const paths = resolveRuntimePaths(process.env)
   const definition = await buildWorkspaceDefinition(canonical, paths)
-  const acquired = await acquireWorkspaceServer(paths, canonical, definition)
+  const acquired = await host.acquireWorkspaceServer(paths, canonical, definition)
   const contract = validateDiscoveredTools(acquired.tools)
   if (contract.errors.length > 0) throw new Error(contract.errors.join('; '))
   const modelNames = acquired.tools.map((tool) => toModelName(tool.name))
   const names = validateModelNames(modelNames)
   if (names.errors.length > 0) throw new Error(names.errors.join('; '))
   ctx.logger?.info?.('dsh-workspace-mcp initialized workspace server %s (%d tools matched the pinned manifest)', acquired.name, acquired.tools.length)
-  return { canonical, paths, serverName: acquired.name }
+  return { host, canonical, paths, serverName: acquired.name }
 }

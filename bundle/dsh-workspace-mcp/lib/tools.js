@@ -36,8 +36,8 @@ export function createMcpTool(rawTool, workspace) {
     parameters: normalizeSchema(rawTool.inputSchema),
     output: { schema: {}, render: renderResult },
     execute: async (args, exec) => {
-      const { canonical, paths } = await workspace.init
-      const result = await callWorkspaceTool(paths, canonical, rawTool.name, args ?? {}, {
+      const { host, canonical, paths } = await workspace.init
+      const result = await host.callWorkspaceTool(paths, canonical, rawTool.name, args ?? {}, {
         signal: exec?.signal
       })
       return canonicalMcpValue(result)

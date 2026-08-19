@@ -7,9 +7,9 @@
  * descriptor cache, stale revalidation, management API, or daemon surface is
  * copied here.
  *
- * State is Host-lifetime and shared by every RPG Maker preset mount: the
- * plugin row is a host-level bundle layer, so this module holds exactly one
- * Runtime and one per-workspace server cache for the process.
+ * Each apply() creates one Host capability. Runtime and workspace state live on
+ * that capability rather than in this module, so a loader reload can never
+ * close or reuse a different live Host generation.
  */
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -27,28 +27,54 @@ const QUIET_LOGGER = {
   debug() {}
 }
 
-let runtimePromise
-let settledRuntime
-let runtimeDir
-let closed = false
-const workspaceServers = new Map() // canonical -> { promise }
-
-/** Test/ops introspection: never model-facing. */
-export function hostState() {
+/** Create the capability for one live Host generation. */
+export function createHost() {
+  const state = createHostState()
   return {
-    closed,
-    runtimeDir: runtimeDir ?? undefined,
-    workspaces: [...workspaceServers.keys()]
+    hostState: () => hostState(state),
+    resetHostState: () => resetHostState(state),
+    getHostRuntime: (paths) => getHostRuntime(state, paths),
+    registerServer: (paths, definition) => registerServer(state, paths, definition),
+    acquireWorkspaceServer: (paths, canonical, definition) => acquireWorkspaceServer(state, paths, canonical, definition),
+    listWorkspaceTools: (paths, canonical) => listWorkspaceTools(state, paths, canonical),
+    callWorkspaceTool: (paths, canonical, toolName, args, options) => callWorkspaceTool(state, paths, canonical, toolName, args, options),
+    callServerTool: (paths, serverName, toolName, args, options) => callServerTool(state, paths, serverName, toolName, args, options),
+    closeWorkspaceServer: (paths, canonical) => closeWorkspaceServer(state, paths, canonical),
+    closeServer: (paths, serverName) => closeServer(state, paths, serverName),
+    closeHost: () => closeHost(state),
+    normalizeMcpResult,
+    canonicalMcpValue
   }
 }
 
-/** Test seam: reset all Host-lifetime state between scenarios. */
-export function resetHostState() {
-  runtimePromise = undefined
-  settledRuntime = undefined
-  runtimeDir = undefined
-  closed = false
-  workspaceServers.clear()
+function createHostState() {
+  return {
+    runtimePromise: undefined,
+    settledRuntime: undefined,
+    runtimeDir: undefined,
+    closed: false,
+    closePromise: undefined,
+    workspaceServers: new Map()
+  }
+}
+
+/** Test/ops introspection: never model-facing. */
+export function hostState(host) {
+  return {
+    closed: host.closed,
+    runtimeDir: host.runtimeDir ?? undefined,
+    workspaces: [...host.workspaceServers.keys()]
+  }
+}
+
+/** Test seam: reset one disposable Host capability between scenarios. */
+export function resetHostState(host) {
+  host.runtimePromise = undefined
+  host.settledRuntime = undefined
+  host.runtimeDir = undefined
+  host.closed = false
+  host.closePromise = undefined
+  host.workspaceServers.clear()
 }
 
 async function loadRuntime(paths) {
@@ -62,28 +88,28 @@ async function loadRuntime(paths) {
   return module.createRuntime({ servers: [], clientInfo: CLIENT_INFO, logger: QUIET_LOGGER })
 }
 
-/** Lazy single-flight Runtime creation from the owned mcporter package. */
-export async function getHostRuntime(paths) {
-  if (closed) throw new Error('dsh-workspace-mcp: the Host MCPorter runtime is closed')
-  if (settledRuntime) return settledRuntime
-  if (!runtimePromise) {
-    runtimeDir = paths.mcporterRuntime
-    runtimePromise = loadRuntime(paths)
-  } else if (runtimeDir !== paths.mcporterRuntime) {
+/** Lazy single-flight Runtime creation for one Host capability. */
+export async function getHostRuntime(host, paths) {
+  if (host.closed) throw new Error('dsh-workspace-mcp: the Host MCPorter runtime is closed')
+  if (host.settledRuntime) return host.settledRuntime
+  if (!host.runtimePromise) {
+    host.runtimeDir = paths.mcporterRuntime
+    host.runtimePromise = loadRuntime(paths)
+  } else if (host.runtimeDir !== paths.mcporterRuntime) {
     throw new Error('dsh-workspace-mcp: the app-owned MCPorter runtime changed during the Host lifetime')
   }
-  const runtime = await runtimePromise
-  if (closed) {
+  const runtime = await host.runtimePromise
+  if (host.closed) {
     await runtime.close().catch(() => undefined)
     throw new Error('dsh-workspace-mcp: the Host MCPorter runtime was closed during creation')
   }
-  settledRuntime = runtime
+  host.settledRuntime = runtime
   return runtime
 }
 
 /** Register one dynamic stdio definition; a duplicate name fails closed. */
-export async function registerServer(paths, definition) {
-  const runtime = await getHostRuntime(paths)
+export async function registerServer(host, paths, definition) {
+  const runtime = await getHostRuntime(host, paths)
   runtime.registerDefinition(definition, { overwrite: false })
   return definition.name
 }
@@ -91,35 +117,36 @@ export async function registerServer(paths, definition) {
 /**
  * Single-flight per-workspace acquisition: the first caller registers the
  * server and lists its tools; concurrent and later callers await the same
- * promise. A failed acquisition stays failed for the Host lifetime.
+ * promise. A failed acquisition stays failed for this Host generation.
  */
-export function acquireWorkspaceServer(paths, canonical, definition) {
-  const existing = workspaceServers.get(canonical)
+export function acquireWorkspaceServer(host, paths, canonical, definition) {
+  if (host.closed) return Promise.reject(new Error('dsh-workspace-mcp: the Host MCPorter runtime is closed'))
+  const existing = host.workspaceServers.get(canonical)
   if (existing) return existing.promise
   const promise = (async () => {
-    const runtime = await getHostRuntime(paths)
-    if (closed) throw new Error('dsh-workspace-mcp: the Host closed during workspace server acquisition')
+    const runtime = await getHostRuntime(host, paths)
+    if (host.closed) throw new Error('dsh-workspace-mcp: the Host closed during workspace server acquisition')
     try {
       runtime.registerDefinition(definition, { overwrite: false })
       const tools = await runtime.listTools(definition.name, { includeSchema: true, disableOAuth: true })
-      if (closed) throw new Error('dsh-workspace-mcp: the Host closed during workspace server acquisition')
+      if (host.closed) throw new Error('dsh-workspace-mcp: the Host closed during workspace server acquisition')
       return { name: definition.name, canonical, tools }
     } finally {
       // Host shutdown may close the Runtime before this listing establishes
       // its child. Close this capability after listing settles so a late
-      // connection cannot outlive the Host.
-      if (closed) await runtime.close(definition.name).catch(() => undefined)
+      // connection cannot outlive the Host generation.
+      if (host.closed) await runtime.close(definition.name).catch(() => undefined)
     }
   })()
-  workspaceServers.set(canonical, { promise })
+  host.workspaceServers.set(canonical, { promise })
   return promise
 }
 
 /** Schema-bearing tool listing for one registered workspace server. */
-export async function listWorkspaceTools(paths, canonical) {
-  const entry = workspaceServers.get(canonical)
+export async function listWorkspaceTools(host, paths, canonical) {
+  const entry = host.workspaceServers.get(canonical)
   if (!entry) throw new Error(`dsh-workspace-mcp: no workspace server is registered for ${canonical}`)
-  const runtime = await getHostRuntime(paths)
+  const runtime = await getHostRuntime(host, paths)
   const { name } = await entry.promise
   return runtime.listTools(name, { includeSchema: true, disableOAuth: true })
 }
@@ -129,15 +156,15 @@ export async function listWorkspaceTools(paths, canonical) {
  * contained by closing that server (killing its pooled child), mirroring the
  * pi-fabric provider; mcporter reconnects on the next call.
  */
-export async function callWorkspaceTool(paths, canonical, toolName, args, options = {}) {
-  const entry = workspaceServers.get(canonical)
+export async function callWorkspaceTool(host, paths, canonical, toolName, args, options = {}) {
+  const entry = host.workspaceServers.get(canonical)
   if (!entry) throw new Error(`dsh-workspace-mcp: no workspace server is registered for ${canonical}`)
   const { name } = await entry.promise
-  return callServerTool(paths, name, toolName, args, options)
+  return callServerTool(host, paths, name, toolName, args, options)
 }
 
-function closeServerForCancellation(paths, serverName) {
-  const cleanup = getHostRuntime(paths).then((runtime) => runtime.close(serverName))
+function closeServerForCancellation(host, paths, serverName) {
+  const cleanup = getHostRuntime(host, paths).then((runtime) => runtime.close(serverName))
   return new Promise((resolve, reject) => {
     let finished = false
     let timer
@@ -156,7 +183,7 @@ function closeServerForCancellation(paths, serverName) {
 }
 
 /** Pooled call with cancellation containment and MCPorter's fixed timeout, by server name. */
-export function callServerTool(paths, serverName, toolName, args, options = {}) {
+export function callServerTool(host, paths, serverName, toolName, args, options = {}) {
   return new Promise((resolve, reject) => {
     const signal = options.signal
     let settled = false
@@ -176,7 +203,7 @@ export function callServerTool(paths, serverName, toolName, args, options = {}) 
     const beginCancellation = () => {
       if (cancelling || settled) return
       cancelling = true
-      void closeServerForCancellation(paths, serverName).then(
+      void closeServerForCancellation(host, paths, serverName).then(
         () => settle(reject, new Error('RPG Maker MCP call cancelled')),
         (error) => settle(reject, new Error(`RPG Maker MCP call cancellation cleanup-unconfirmed for workspace server ${serverName}: ${error instanceof Error ? error.message : String(error)}`))
       )
@@ -199,7 +226,7 @@ export function callServerTool(paths, serverName, toolName, args, options = {}) 
     // Keep this continuation attached even after cancellation. MCPorter may
     // resolve or reject the old call after close; the result is intentionally
     // ignored so it cannot create a second settlement or an unhandled rejection.
-    const call = getHostRuntime(paths).then((runtime) => {
+    const call = getHostRuntime(host, paths).then((runtime) => {
       if (cancelling) return undefined
       return runtime.callTool(serverName, toolName, { args, timeoutMs: MCPORTER_CALL_TIMEOUT_MS, disableOAuth: true })
     })
@@ -211,37 +238,41 @@ export function callServerTool(paths, serverName, toolName, args, options = {}) 
 }
 
 /** Per-server close: the definition stays registered; the pooled child is gone. */
-export async function closeWorkspaceServer(paths, canonical) {
-  const entry = workspaceServers.get(canonical)
+export async function closeWorkspaceServer(host, paths, canonical) {
+  const entry = host.workspaceServers.get(canonical)
   if (!entry) return
   const { name } = await entry.promise
-  await closeServer(paths, name)
+  await closeServer(host, paths, name)
 }
 
-export async function closeServer(paths, serverName) {
-  const runtime = await getHostRuntime(paths)
+export async function closeServer(host, paths, serverName) {
+  const runtime = await getHostRuntime(host, paths)
   await runtime.close(serverName).catch(() => undefined)
 }
 
 /** Final Host shutdown: closes the one Runtime and every pooled child. */
-export async function closeHost() {
-  if (closed && !runtimePromise && !settledRuntime) return
-  closed = true
-  const pending = runtimePromise
-  const runtime = settledRuntime
-  const entries = [...workspaceServers.values()]
-  runtimePromise = undefined
-  settledRuntime = undefined
-  runtimeDir = undefined
-  workspaceServers.clear()
-  const created = pending ? await pending.catch(() => undefined) : undefined
-  const targets = new Set([runtime, created].filter(Boolean))
-  for (const target of targets) await target.close().catch(() => undefined)
-  // A workspace acquisition can still be between registration and tools/list
-  // when Host shutdown begins. The Runtime close above terminates its pooled
-  // children; await the cached promises so no in-flight server survives the
-  // Host generation or produces an unhandled rejection after shutdown.
-  await Promise.allSettled(entries.map((entry) => entry.promise))
+export function closeHost(host) {
+  if (host.closePromise) return host.closePromise
+  host.closed = true
+  const pending = host.runtimePromise
+  const runtime = host.settledRuntime
+  const entries = [...host.workspaceServers.values()]
+  host.runtimePromise = undefined
+  host.settledRuntime = undefined
+  host.runtimeDir = undefined
+  host.workspaceServers.clear()
+  const closing = (async () => {
+    const created = pending ? await pending.catch(() => undefined) : undefined
+    const targets = new Set([runtime, created].filter(Boolean))
+    for (const target of targets) await target.close().catch(() => undefined)
+    // A workspace acquisition can still be between registration and tools/list
+    // when Host shutdown begins. The Runtime close above terminates its pooled
+    // children; await the cached promises so no in-flight server survives the
+    // Host generation or produces an unhandled rejection after shutdown.
+    await Promise.allSettled(entries.map((entry) => entry.promise))
+  })()
+  host.closePromise = closing
+  return closing
 }
 
 /** pi-fabric result normalization: text projection, MCP errors as failures. */
