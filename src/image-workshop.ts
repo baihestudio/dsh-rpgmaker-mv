@@ -708,29 +708,42 @@ export class ImageWorkshop {
     const height = numberOption(options.height, 'Canvas height');
     if ((width === undefined) !== (height === undefined)) throw new ImageWorkshopError('Canvas width and height must be supplied together.');
     const bounds = trim && inputInfo.hasAlpha ? alphaBounds(sourceGrid) : undefined;
-    const effectiveTrim = trim && inputInfo.hasAlpha && bounds !== undefined;
     const trimmedWidth = bounds ? bounds.right - bounds.left + 1 : inputInfo.width;
     const trimmedHeight = bounds ? bounds.bottom - bounds.top + 1 : inputInfo.height;
     if (width !== undefined && (width < trimmedWidth || height! < trimmedHeight)) throw new ImageWorkshopError(`Transparent padding canvas ${width}x${height} is smaller than the ${trimmedWidth}x${trimmedHeight} trimmed image.`);
     const maxPixels = this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS;
     if (width !== undefined && width * height! > maxPixels) throw new ImageWorkshopError(`Trim/pad output would exceed the ${maxPixels}-pixel resource limit.`);
+    const outputHasAlpha = width !== undefined || inputInfo.hasAlpha;
+    // Compose the exact trimmed/padded grid from the decoded source pixels
+    // instead of asking ImageMagick to -trim/-extent. Geometry operators such
+    // as -extent normalize the hidden RGB values under fully transparent
+    // pixels (alpha 0) to black, silently destroying data that the strict
+    // fidelity check and downstream consumers expect to survive. Composing the
+    // grid here keeps those bytes intact and lets ImageMagick only encode them.
+    const expectedTrimmed = bounds ? cropGrid(sourceGrid, bounds.left, bounds.top, trimmedWidth, trimmedHeight) : sourceGrid;
+    const expectedGrid = width !== undefined ? placeGrid(expectedTrimmed, width, height!, options.gravity ?? 'center') : expectedTrimmed;
     const operation = await beginFileOperation([output, manifestPathForOutput(output)], [input]);
     const staged = join(operation.tempDir, basename(output));
-    const outputHasAlpha = width !== undefined || inputInfo.hasAlpha;
+    const rawPath = join(operation.tempDir, 'composed.raw');
     try {
-      const args = [input, ...alphaOption(outputHasAlpha)];
-      if (effectiveTrim) args.push('-trim', '+repage');
-      if (width !== undefined) args.push('-background', 'none', '-gravity', options.gravity ?? 'center', '-extent', `${width}x${height}`);
-      args.push(...PNG_DETERMINISM_ARGS, staged);
-      await this.magick('trim/pad', args);
+      const channels = outputHasAlpha ? 4 : 3;
+      const rawBytes = Buffer.alloc(expectedGrid.pixels.length * channels);
+      for (let index = 0; index < expectedGrid.pixels.length; index += 1) {
+        const pixel = expectedGrid.pixels[index];
+        const offset = index * channels;
+        rawBytes[offset] = (pixel >>> 24) & 0xff;
+        rawBytes[offset + 1] = (pixel >>> 16) & 0xff;
+        rawBytes[offset + 2] = (pixel >>> 8) & 0xff;
+        if (channels === 4) rawBytes[offset + 3] = pixel & 0xff;
+      }
+      await writeFile(rawPath, rawBytes);
+      await this.magick('trim/pad encode', ['-size', `${expectedGrid.width}x${expectedGrid.height}`, '-depth', '8', channels === 4 ? `RGBA:${rawPath}` : `RGB:${rawPath}`, ...PNG_DETERMINISM_ARGS, staged]);
       const outputInfo = await this.inspect(staged);
       if (width !== undefined && (outputInfo.width !== width || outputInfo.height !== height)) throw new ImageWorkshopError('Trim/pad output dimensions did not match the requested transparent canvas.');
       if (outputInfo.hasAlpha !== outputHasAlpha) throw new ImageWorkshopError('Trim/pad output alpha semantics did not match the requested operation.');
-      const expectedTrimmed = bounds ? cropGrid(sourceGrid, bounds.left, bounds.top, trimmedWidth, trimmedHeight) : sourceGrid;
-      const expectedGrid = width !== undefined ? placeGrid(expectedTrimmed, width, height!, options.gravity ?? 'center') : expectedTrimmed;
       assertSameGrid(await this.pixels(staged), expectedGrid, 'Trim/pad');
       const transparentPadding = width !== undefined && (outputHasAlpha && (width > trimmedWidth || height! > trimmedHeight));
-      return await this.finish(operation, 'trim-pad', [inputInfo], [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { trim, canvas: width !== undefined ? { width, height } : undefined, gravity: options.gravity ?? 'center', sourceOverwrite: false, fullyTransparentTrim: trim && inputInfo.hasAlpha && bounds === undefined ? 'preserve-source-canvas' : undefined }, { dimensions: true, alphaPreserved: true, alphaChannelAddedForPadding: !inputInfo.hasAlpha && width !== undefined, sourceAlphaBounds: bounds ?? null, trimmedSize: { width: trimmedWidth, height: trimmedHeight }, transparentPadding }, 'decoded-pixels', true);
+      return await this.finish(operation, 'trim-pad', [inputInfo], [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { trim, canvas: width !== undefined ? { width, height } : undefined, gravity: options.gravity ?? 'center', sourceOverwrite: false, composer: 'decoded-grid', fullyTransparentTrim: trim && inputInfo.hasAlpha && bounds === undefined ? 'preserve-source-canvas' : undefined }, { dimensions: true, alphaPreserved: true, alphaChannelAddedForPadding: !inputInfo.hasAlpha && width !== undefined, sourceAlphaBounds: bounds ?? null, trimmedSize: { width: trimmedWidth, height: trimmedHeight }, transparentPadding }, 'decoded-pixels', true);
     } catch (error) {
       await removeOperation(operation);
       throw error;
@@ -754,7 +767,11 @@ export class ImageWorkshop {
     const stagedOutputs = frames.map((frame) => join(operation.tempDir, `frame-${String(frame.index).padStart(4, '0')}.png`));
     const manifestPath = join(outputDir, 'manifest.json');
     try {
-      await this.magick('sheet slicing', [input, ...alphaOption(inputInfo.hasAlpha), '-crop', `${cellWidth}x${cellHeight}`, '+repage', ...PNG_DETERMINISM_ARGS, join(operation.tempDir, 'frame-%04d.png')]);
+      // `+repage` before -crop normalizes any virtual-canvas page geometry the
+      // input may carry (assembled sheets and editor exports can embed a
+      // leftover page smaller than the image), so -crop tiles the whole sheet
+      // instead of yielding a single frame at the stale page offset.
+      await this.magick('sheet slicing', [input, ...alphaOption(inputInfo.hasAlpha), '+repage', '-crop', `${cellWidth}x${cellHeight}`, '+repage', ...PNG_DETERMINISM_ARGS, join(operation.tempDir, 'frame-%04d.png')]);
       const sourceGrid = await this.pixels(input);
       const metadata: ImageMetadata[] = [];
       for (const frame of frames) {
@@ -810,7 +827,11 @@ export class ImageWorkshop {
         rowPaths.push(rowPath);
         await this.magick('sheet row assembly', [...inputs.slice(row * columns, (row + 1) * columns), ...alphaOption(inputInfo[0].hasAlpha), '+append', ...PNG_DETERMINISM_ARGS, rowPath]);
       }
-      await this.magick('sheet assembly', [...rowPaths, ...alphaOption(inputInfo[0].hasAlpha), '-append', ...PNG_DETERMINISM_ARGS, staged]);
+      // `+repage` after -append clears the virtual canvas that the append
+      // operators would otherwise leak into the assembled PNG (the page stays
+      // at the first cell's size). A stale page makes later sheet slicing or
+      // editor imports treat the sheet as a single frame at an offset.
+      await this.magick('sheet assembly', [...rowPaths, ...alphaOption(inputInfo[0].hasAlpha), '-append', '+repage', ...PNG_DETERMINISM_ARGS, staged]);
       const outputInfo = await this.inspect(staged);
       const sourceGrids = await Promise.all(inputs.map((path) => this.pixels(path)));
       assertSameGrid(await this.pixels(staged), assembleGrid(sourceGrids, columns), 'Sheet assembly');
@@ -844,6 +865,7 @@ export class ImageWorkshop {
     const stagedPng = join(operation.tempDir, basename(outputPaths.png));
     const stagedJson = join(operation.tempDir, basename(outputPaths.json));
     const stagedManifest = join(operation.tempDir, basename(outputPaths.manifest));
+    let stage = 'atlas helper packing';
     try {
       let packAsync = this.dependencies.atlasPacker;
       if (!packAsync) {
@@ -882,10 +904,13 @@ export class ImageWorkshop {
       const pngFile = files.find((file) => /\.png$/i.test(file.name));
       const jsonFile = files.find((file) => /\.json$/i.test(file.name));
       if (!pngFile || !jsonFile) throw new ImageWorkshopError('Atlas helper did not return both PNG and JSON outputs.');
+      stage = 'atlas artifact writing';
       await writeFile(stagedPng, pngFile.buffer, { flag: 'wx' });
       await writeFile(stagedJson, jsonFile.buffer, { flag: 'wx' });
+      stage = 'atlas output inspection';
       const atlasInfo = await this.inspect(stagedPng);
       if (atlasInfo.width > maxSize || atlasInfo.height > maxSize || atlasInfo.width * atlasInfo.height > maxPixels) throw new ImageWorkshopError(`Atlas output ${atlasInfo.width}x${atlasInfo.height} exceeds the configured resource limit.`);
+      stage = 'atlas frame verification';
       const atlasGrid = await this.pixels(stagedPng);
       const parsed = await readJsonFile(stagedJson);
       const frameObject = asObject(parsed.frames);
@@ -928,6 +953,7 @@ export class ImageWorkshop {
         }
       }
       const jsonArtifact = await jsonMetadata(stagedJson, outputPaths.json);
+      stage = 'atlas commit';
       const manifest: ImageOperationManifest = {
         schemaVersion: 2,
         operation: 'atlas-pack',
@@ -947,7 +973,7 @@ export class ImageWorkshop {
     } catch (error) {
       await removeOperation(operation);
       if (error instanceof ImageWorkshopError) throw error;
-      throw new ImageWorkshopError(`Atlas packing failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new ImageWorkshopError(`Atlas packing failed during ${stage}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

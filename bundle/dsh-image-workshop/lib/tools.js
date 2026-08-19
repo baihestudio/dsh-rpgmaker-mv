@@ -204,7 +204,7 @@ export function createImageTrimPadTool() {
 export function createImageSheetSliceTool() {
   return {
     name: 'image_sheet_slice',
-    description: 'Slice a sprite sheet inside the current workspace into equal cell frames using a fixed cell width and height. The sheet dimensions must be divisible by the cell size. Writes frame-0001.png… and manifest.json into a new output directory. The source is never overwritten and the output directory must not already exist. Paths are project-relative to the workspace.',
+    description: 'Slice a sprite sheet inside the current workspace into equal cell frames using a fixed cell width and height. The sheet dimensions must be divisible by the cell size. Writes frame-0000.png… (zero-based) and manifest.json into a new output directory. The source is never overwritten and the output directory must not already exist. Paths are project-relative to the workspace.',
     parameters: {
       type: 'object',
       additionalProperties: false,

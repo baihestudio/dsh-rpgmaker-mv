@@ -33,7 +33,7 @@ scoped to this Agent only. Use them instead of constructing commands:
   `output` must not exist and the source is never overwritten.
 - `image_sheet_slice` — slice a sprite sheet into equal `cellWidth` ×
   `cellHeight` frames into a new `outputDir` (must not exist), writing
-  `frame-0001.png`… and `manifest.json`.
+  `frame-0000.png`… (zero-based) and `manifest.json`.
 - `image_sheet_assemble` — assemble equal-sized images (`inputs` array) into
   one sprite sheet with `columns`; the input count must be divisible by
   `columns`. `output` must not exist and sources are never overwritten.

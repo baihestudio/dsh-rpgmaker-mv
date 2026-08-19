@@ -225,15 +225,15 @@ describe('image tool adapter seam', () => {
         calls.push({ args });
         const outputDir = args[args.indexOf('--output-dir') + 1];
         return JSON.stringify({ schemaVersion: 2, operation: 'sheet-slice', toolchain: {}, inputs: [], outputs: [
-          { kind: 'image', path: join(outputDir, 'frame-0001.png'), width: 32, height: 32 },
-          { kind: 'image', path: join(outputDir, 'frame-0002.png'), width: 32, height: 32 }
+          { kind: 'image', path: join(outputDir, 'frame-0000.png'), width: 32, height: 32 },
+          { kind: 'image', path: join(outputDir, 'frame-0001.png'), width: 32, height: 32 }
         ], options: {}, fidelity: { frames: [] }, verificationLevel: 'decoded-pixels', lossless: true });
       });
       try {
         const tool = createImageSheetSliceTool();
         const result = await tool.execute({ input: 'sheet.png', outputDir: 'frames', cellWidth: 32, cellHeight: 32 }, agentExec(workspace));
         expect(result.operation).toBe('sheet-slice');
-        expect(result.outputPaths).toEqual(['frames/frame-0001.png', 'frames/frame-0002.png']);
+        expect(result.outputPaths).toEqual(['frames/frame-0000.png', 'frames/frame-0001.png']);
         expect(result.manifestPath).toBe('frames/manifest.json');
         expect(calls[0].args[0]).toBe('sheet-slice');
         expect(calls[0].args).toEqual(['sheet-slice', '--input', join(workspace, 'sheet.png'), '--output-dir', join(workspace, 'frames'), '--cell-width', '32', '--cell-height', '32']);
