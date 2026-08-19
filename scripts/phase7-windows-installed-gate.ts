@@ -11,7 +11,12 @@ import { verifyMcpRuntime } from '../src/rpgmaker';
 import { verifyMcporterRuntime } from '../src/mcport';
 import { PNPM_VERSION } from '../src/vision-toolkit';
 import { resolveExecutable } from '../src/executable';
-import { verifyWorkspaceMcpBundle } from '../src/workspace-mcp';
+import {
+  JS_RUNNER_ENV,
+  MCPORTER_RUNTIME_ENV,
+  XEROLO_RUNTIME_ENV,
+  verifyWorkspaceMcpBundle
+} from '../src/workspace-mcp';
 import { probeLoopbackPort } from '../src/windows';
 import { observeLauncherProcesses } from './process-observation.mjs';
 
@@ -247,10 +252,10 @@ async function runInstalledMount(
     PROJECT_PATH: workspace,
     NEUTRAL_LANDING_DIR: neutralLanding,
     COMPOSITION_FILE: join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml'),
-    MCPORTER_RUNTIME: join(installedRoot, 'runtime', 'mcporter'),
-    XEROLO_RUNTIME: mcpRuntime,
+    [MCPORTER_RUNTIME_ENV]: join(installedRoot, 'runtime', 'mcporter'),
+    [XEROLO_RUNTIME_ENV]: mcpRuntime,
     XEROLO_ENTRY: mcp.executable,
-    JS_RUNNER: env.BUN_EXECUTABLE,
+    [JS_RUNNER_ENV]: env.BUN_EXECUTABLE,
     WORKSPACE_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js')
   };
   const mountScript = join(installedRoot, 'scripts', 'phase2-real-mount.mjs');

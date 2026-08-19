@@ -8,6 +8,7 @@ import { bootstrapRuntime, findDshExecutable } from '../src/bootstrap';
 import { DSH_VERSION } from '../src/config';
 import { launchRpgmakerProject, prepareRpgMakerLaunch } from '../src/rpgmaker';
 import { redactSensitive, runCommand } from '../src/process';
+import { JS_RUNNER_ENV, MCPORTER_RUNTIME_ENV, XEROLO_RUNTIME_ENV } from '../src/workspace-mcp';
 
 const DATABASE_TYPES = ['Actors', 'Classes', 'Skills', 'Items', 'Weapons', 'Armors', 'Enemies', 'Troops', 'States', 'Animations', 'Tilesets', 'CommonEvents'];
 
@@ -118,9 +119,9 @@ try {
       PROFILE_FILE: join(dshLib, profileFile),
       ENVIRONMENT_MODULE: profileEnvironmentModule,
       COMPOSITION_FILE: preparation.compositionPath,
-      MCPORTER_RUNTIME: preparation.mcporterRuntimeDir,
-      XEROLO_RUNTIME: preparation.xeroloRuntimeDir,
-      JS_RUNNER: preparation.jsRunner,
+      [MCPORTER_RUNTIME_ENV]: preparation.mcporterRuntimeDir,
+      [XEROLO_RUNTIME_ENV]: preparation.xeroloRuntimeDir,
+      [JS_RUNNER_ENV]: preparation.jsRunner,
       XEROLO_ENTRY: preparation.xeroloScript,
       WORKSPACE_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js')
     },

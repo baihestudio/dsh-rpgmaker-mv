@@ -8,6 +8,7 @@ import { installPreset, prepareRpgMakerDeployment, launchRpgmakerProject, RpgMak
 import { runCommand } from '../src/process';
 import { DSH_VERSION } from '../src/config';
 import { backupIgnoreGuidance } from '../src/project';
+import { JS_RUNNER_ENV, MCPORTER_RUNTIME_ENV, XEROLO_RUNTIME_ENV } from '../src/workspace-mcp';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -72,7 +73,22 @@ async function makePhase2MountFixture(root: string): Promise<{
   await writeFile(join(runtime, 'package.json'), JSON.stringify({ type: 'module' }));
   await writeFile(dshAgent, 'export function assembleContextFor(agent) { return agent; }\n');
   await writeFile(environmentModule, 'export function createLaunchEnvironmentSnapshot(layers) { return Object.assign({}, ...layers.map((layer) => layer.values)); }\n');
-  await writeFile(bundleEntry, 'export const XEROLO_TOOL_NAMES = [];\n');
+  await writeFile(bundleEntry, `
+export const MCPORTER_RUNTIME_ENV = ${JSON.stringify(MCPORTER_RUNTIME_ENV)};
+export const XEROLO_RUNTIME_ENV = ${JSON.stringify(XEROLO_RUNTIME_ENV)};
+export const JS_RUNNER_ENV = ${JSON.stringify(JS_RUNNER_ENV)};
+export function resolveRuntimePaths(env = process.env) {
+  const values = {
+    [MCPORTER_RUNTIME_ENV]: env[MCPORTER_RUNTIME_ENV],
+    [XEROLO_RUNTIME_ENV]: env[XEROLO_RUNTIME_ENV],
+    [JS_RUNNER_ENV]: env[JS_RUNNER_ENV]
+  };
+  const missing = Object.entries(values).filter(([, value]) => !value).map(([key]) => key);
+  if (missing.length > 0) throw new Error('dsh-workspace-mcp: the app-owned runtime environment is incomplete; missing ' + missing.join(', '));
+  return { mcporterRuntime: values[MCPORTER_RUNTIME_ENV], xeroloRuntime: values[XEROLO_RUNTIME_ENV], runner: values[JS_RUNNER_ENV] };
+}
+export const XEROLO_TOOL_NAMES = [];
+`);
   await writeFile(profileFile, `
 import { appendFile } from 'node:fs/promises';
 
@@ -382,6 +398,9 @@ describe('RPG Maker MCP deployment', () => {
           PROFILE_FILE: fixture.profileFile,
           ENVIRONMENT_MODULE: fixture.environmentModule,
           COMPOSITION_FILE: join(root, 'composition.yml'),
+          [MCPORTER_RUNTIME_ENV]: join(root, 'mcporter-runtime'),
+          [XEROLO_RUNTIME_ENV]: join(root, 'xerolo-runtime'),
+          [JS_RUNNER_ENV]: process.execPath,
           XEROLO_ENTRY: join(root, 'xerolo-entry.mjs'),
           WORKSPACE_BUNDLE_ENTRY: fixture.bundleEntry,
           TRACE_FILE: fixture.traceFile
@@ -398,6 +417,37 @@ describe('RPG Maker MCP deployment', () => {
         { profile: 'web', args: ['--port', '0'] },
         { shutdown: 0 }
       ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects the old unprefixed runtime names before mounting the real probe', async () => {
+    const root = await temp('phase2-runtime-contract');
+    try {
+      const project = await realpath(await makeProject(root));
+      const fixture = await makePhase2MountFixture(root);
+      const result = await runCommand(process.execPath, [join(process.cwd(), 'scripts', 'phase2-real-mount.mjs')], {
+        cwd: fixture.neutralLanding,
+        env: {
+          PATH: process.env.PATH ?? '',
+          PROJECT_PATH: project,
+          NEUTRAL_LANDING_DIR: fixture.neutralLanding,
+          PROFILE_FILE: fixture.profileFile,
+          ENVIRONMENT_MODULE: fixture.environmentModule,
+          COMPOSITION_FILE: join(root, 'composition.yml'),
+          MCPORTER_RUNTIME: join(root, 'old-mcporter-runtime'),
+          XEROLO_RUNTIME: join(root, 'old-xerolo-runtime'),
+          JS_RUNNER: process.execPath,
+          XEROLO_ENTRY: join(root, 'xerolo-entry.mjs'),
+          WORKSPACE_BUNDLE_ENTRY: fixture.bundleEntry,
+          TRACE_FILE: fixture.traceFile
+        },
+        platform: process.platform,
+        timeoutMs: 30_000
+      });
+      expect(result.exitCode).toBe(1);
+      expect(`${result.stderr}\n${result.stdout}`).toMatch(/missing DSH_RPGMAKER_MCPORTER_RUNTIME, DSH_RPGMAKER_XEROLO_RUNTIME, DSH_RPGMAKER_JS_RUNNER/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

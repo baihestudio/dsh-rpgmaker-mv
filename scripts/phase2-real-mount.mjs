@@ -5,6 +5,7 @@ import { observeXeroloChildren } from './process-observation.mjs'
 const profileModule = await import(pathToFileURL(process.env.PROFILE_FILE).href)
 const environmentModule = await import(pathToFileURL(process.env.ENVIRONMENT_MODULE).href)
 const bundle = await import(pathToFileURL(process.env.WORKSPACE_BUNDLE_ENTRY).href)
+const runtimePaths = bundle.resolveRuntimePaths(process.env)
 const { assembleContextFor } = await import(new URL('../../dsh-agent/lib/index.js', pathToFileURL(process.env.PROFILE_FILE)).href)
 const environment = environmentModule.createLaunchEnvironmentSnapshot([{
   source: 'process',
@@ -97,7 +98,7 @@ try {
 
   const stateAfterAgents = bundle.hostState()
   const canonicalProject = await realpath(project)
-  if (stateAfterAgents.runtimeDir !== process.env.MCPORTER_RUNTIME) {
+  if (stateAfterAgents.runtimeDir !== runtimePaths.mcporterRuntime) {
     throw new Error(`Host used an unexpected MCPorter runtime: ${stateAfterAgents.runtimeDir}`)
   }
   if (stateAfterAgents.workspaces.length !== 1 || stateAfterAgents.workspaces[0] !== canonicalProject) {
@@ -127,7 +128,7 @@ try {
   if (infoA?.gameTitle !== 'Workspace MCP real acceptance') throw new Error(`unexpected project info: ${JSON.stringify(infoA)}`)
   assertValidation('real workspace', await call(second, 'validate_project', {}))
   const stateAfterCalls = bundle.hostState()
-  if (stateAfterCalls.runtimeDir !== process.env.MCPORTER_RUNTIME || stateAfterCalls.workspaces.length !== 1) {
+  if (stateAfterCalls.runtimeDir !== runtimePaths.mcporterRuntime || stateAfterCalls.workspaces.length !== 1) {
     throw new Error('pooled workspace calls did not remain on the single Host runtime/server')
   }
 
