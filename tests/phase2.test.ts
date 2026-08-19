@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { installPreset, prepareRpgMakerDeployment, launchRpgmakerProject, RpgMakerStartupError, resolveMcpRunner, verifyMcpRuntime, type McpToolDefinition } from '../src/rpgmaker';
+import { runCommand } from '../src/process';
 import { DSH_VERSION } from '../src/config';
 import { backupIgnoreGuidance } from '../src/project';
 
@@ -49,6 +50,48 @@ async function makeMcpRuntime(runtime: string): Promise<void> {
   await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist', 'index.js'), '#!/usr/bin/env bun\n');
   await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'bin', 'server.cmd'), '@echo off\r\n');
   await writeFile(join(runtime, 'node_modules', '.bin', 'rpgmaker-mv-mcp.cmd'), '@echo off\r\n');
+}
+
+async function makePhase2MountFixture(root: string): Promise<{
+  profileFile: string;
+  environmentModule: string;
+  bundleEntry: string;
+  neutralLanding: string;
+  traceFile: string;
+}> {
+  const runtime = join(root, 'phase2-runtime');
+  const profileFile = join(runtime, 'dsh', 'lib', 'profile-boot-fixture.mjs');
+  const environmentModule = join(runtime, 'environment.mjs');
+  const bundleEntry = join(runtime, 'workspace-bundle.mjs');
+  const dshAgent = join(runtime, 'dsh-agent', 'lib', 'index.js');
+  const neutralLanding = join(root, 'neutral');
+  const traceFile = join(root, 'mount-trace.jsonl');
+  await mkdir(join(runtime, 'dsh', 'lib'), { recursive: true });
+  await mkdir(join(runtime, 'dsh-agent', 'lib'), { recursive: true });
+  await mkdir(neutralLanding, { recursive: true });
+  await writeFile(join(runtime, 'package.json'), JSON.stringify({ type: 'module' }));
+  await writeFile(dshAgent, 'export function assembleContextFor(agent) { return agent; }\n');
+  await writeFile(environmentModule, 'export function createLaunchEnvironmentSnapshot(layers) { return Object.assign({}, ...layers.map((layer) => layer.values)); }\n');
+  await writeFile(bundleEntry, 'export const XEROLO_TOOL_NAMES = [];\n');
+  await writeFile(profileFile, `
+import { appendFile } from 'node:fs/promises';
+
+export async function runProfile(options) {
+  await appendFile(process.env.TRACE_FILE, JSON.stringify({ profile: options.profile, args: options.args }) + '\\n');
+  if (JSON.stringify(options.args) !== JSON.stringify(['--port', '0'])) {
+    throw new Error('listen EADDRINUSE 127.0.0.1:3080');
+  }
+  return {
+    ctx: { get() { return undefined; } },
+    shutdown: {
+      async shutdown(code) {
+        await appendFile(process.env.TRACE_FILE, JSON.stringify({ shutdown: code }) + '\\n');
+      }
+    }
+  };
+}
+`);
+  return { profileFile, environmentModule, bundleEntry, neutralLanding, traceFile };
 }
 
 function toolNames(): McpToolDefinition[] {
@@ -319,6 +362,42 @@ describe('RPG Maker MCP deployment', () => {
         },
         schemaProbe: async () => ({ tools: [] })
       })).rejects.toBeInstanceOf(RpgMakerStartupError);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the real Agent probe off the default Web port and shuts down a mounted Host', async () => {
+    const root = await temp('phase2-real-mount');
+    try {
+      const project = await realpath(await makeProject(root));
+      const fixture = await makePhase2MountFixture(root);
+      const safeEnv: Record<string, string> = { PATH: process.env.PATH ?? '' };
+      const result = await runCommand(process.execPath, [join(process.cwd(), 'scripts', 'phase2-real-mount.mjs')], {
+        cwd: fixture.neutralLanding,
+        env: {
+          ...safeEnv,
+          PROJECT_PATH: project,
+          NEUTRAL_LANDING_DIR: fixture.neutralLanding,
+          PROFILE_FILE: fixture.profileFile,
+          ENVIRONMENT_MODULE: fixture.environmentModule,
+          COMPOSITION_FILE: join(root, 'composition.yml'),
+          XEROLO_ENTRY: join(root, 'xerolo-entry.mjs'),
+          WORKSPACE_BUNDLE_ENTRY: fixture.bundleEntry,
+          TRACE_FILE: fixture.traceFile
+        },
+        platform: process.platform,
+        timeoutMs: 30_000
+      });
+      const diagnostics = `${result.stderr}\n${result.stdout}`;
+      expect(result.exitCode).toBe(1);
+      expect(diagnostics).toMatch(/official DSH agent preset service did not mount/);
+      expect(diagnostics).not.toMatch(/EADDRINUSE|127\.0\.0\.1:3080/);
+      const trace = (await readFile(fixture.traceFile, 'utf8')).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+      expect(trace).toEqual([
+        { profile: 'web', args: ['--port', '0'] },
+        { shutdown: 0 }
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

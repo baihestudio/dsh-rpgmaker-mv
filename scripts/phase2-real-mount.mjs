@@ -45,7 +45,10 @@ try {
   mounted = await profileModule.runProfile({
     profile: 'web',
     patchFiles: [process.env.COMPOSITION_FILE],
-    args: [],
+    // The Agent/Xerolo probe needs rc.7's Web profile services, not its
+    // default listener. rc.7 accepts port 0 as an OS-assigned port, so this
+    // disposable mount stays off 3080.
+    args: ['--port', '0'],
     environment
   })
   const presets = mounted.ctx.get('agentPresets')
