@@ -4,6 +4,11 @@
 
 Windows is release-blocking. macOS is best effort and does not overturn this decision.
 
+> Integration note: the original DSH MCP-client examples later in this research
+> record describe the pre-workspace integration. The shipped Host bundle now
+> exposes stable Agent-scoped `rpgmaker_*` names and chooses the workspace from
+> DSH Web; internal server names and transport prefixes are never model-facing.
+
 ## Why this is the decision
 
 The raw-capability winner is `rpgmaker-mv-mcp` / RPG Maker MV Ultimate 5.14.2, but its actual consolidated schemas advertise `type: ["number", "string"]` for IDs. DSH's official raw-schema validator accepts only one type string and explicitly rejects type arrays. The MCP bridge passes the server's `inputSchema` directly to DSH's tool registry. Therefore the 5.14.2 server is not safe to ship through the official DSH client without an upstream schema fix; maximum feature count is irrelevant if discovery fails.

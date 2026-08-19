@@ -3,24 +3,33 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
-import { findDshExecutable } from './bootstrap';
+import { bootstrapRuntime, findDshExecutable, type BootstrapOptions, type BootstrapResult } from './bootstrap';
 import { resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
 import { commandFailure, prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, withoutCredentials, type CommandRunner } from './process';
 import { assertValidMvProject, backupIgnoreGuidance, type BackupIgnoreGuidance, pathExists } from './project';
 import { withHarnessOperationLock } from './lock';
-import { addFixedWebBinding, ensureLaunchPort, launchProject, resolveLaunchProjectPath, type LaunchOptions, type LaunchResult } from './launcher';
+import { addFixedWebBinding, ensureLaunchPort, launchProject, type LaunchOptions, type LaunchResult } from './launcher';
 import {
   ASSET_WORKSHOP_PRESET_ID,
   prepareImageToolchain,
+  resolveImageToolchain,
   type ImageArchiveDownloader,
   type ImageArchiveExtractor,
   type ImageToolRenamePath,
   type ImageToolchain,
   type ImageToolchainPreparationOptions
 } from './image-workshop';
-import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_PLUGIN_ROW_ID, type ImageWorkshopPluginOptions } from './image-plugin';
-import { prepareVisionToolkit, type VisionToolkitOptions, type VisionToolkitVerification } from './vision-toolkit';
+import { IMAGE_WORKSHOP_PLUGIN_ROW_ID } from './image-plugin';
+import { prepareMcporterRuntime, mcporterRuntimeDirFor, type McporterRuntimeOptions, type McporterRuntimeVerification } from './mcport';
+import {
+  JS_RUNNER_ENV,
+  MCPORTER_RUNTIME_ENV,
+  XEROLO_RUNTIME_ENV,
+  prepareWorkspaceMcpBundle,
+  type WorkspaceMcpBundleOptions,
+  type WorkspaceMcpBundleVerification
+} from './workspace-mcp';
 
 export const RPGMAKER_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
 export const RPGMAKER_MCP_VERSION = '0.1.0';
@@ -79,6 +88,7 @@ export interface RpgMakerDeploymentOptions extends PathOptions {
   projectPath: string;
   sourceRoot?: string;
   mcpRuntimeDir?: string;
+  mcporterRuntimeDir?: string;
   dshExecutable?: string;
   bunExecutable?: string;
   jsExecutable?: string;
@@ -121,14 +131,28 @@ export interface RpgMakerDeployment {
 }
 
 export type RpgMakerLaunchOptions = LaunchOptions & Omit<RpgMakerDeploymentOptions, 'projectPath' | 'dshHome' | 'runtimeDir' | 'platform' | 'env' | 'commandRunner' | 'lockTimeoutMs' | 'lockRetryMs'> & {
-  sourceRoot?: string;
-  mcpRuntimeDir?: string;
   npmExecutable?: string;
   pnpmExecutable?: string;
-  visionToolkitPreparer?: (options: VisionToolkitOptions) => Promise<VisionToolkitVerification>;
-  imageWorkshopPluginPreparer?: (options: ImageWorkshopPluginOptions) => Promise<unknown>;
-  schemaProbe?: McpSchemaProbe;
+  pnpmRuntimeDir?: string;
+  dshRuntimePreparer?: (options: BootstrapOptions) => Promise<BootstrapResult>;
+  mcporterRuntimePreparer?: (options: McporterRuntimeOptions, runtimeDir: string) => Promise<McporterRuntimeVerification>;
+  mcpRuntimePreparer?: typeof prepareRpgMakerMcpRuntime;
+  workspaceMcpBundlePreparer?: (options: WorkspaceMcpBundleOptions) => Promise<WorkspaceMcpBundleVerification>;
 };
+
+export interface RpgMakerLaunchPreparation {
+  dshExecutable: string;
+  mcporterRuntimeDir: string;
+  xeroloRuntimeDir: string;
+  xeroloScript: string;
+  jsRunner: string;
+  presetRoot: string;
+  presetDir: string;
+  codePresetPath: string;
+  compositionPath: string;
+  agentPreset: string;
+  workspaceMcpBundle: WorkspaceMcpBundleVerification;
+}
 
 export interface McpVerification {
   valid: boolean;
@@ -534,7 +558,7 @@ async function defaultSchemaProbe(request: McpSchemaProbeRequest): Promise<McpSc
   }
 }
 
-export async function resolveMcpRunner(options: RpgMakerDeploymentOptions, platform: string, env: Record<string, string | undefined>): Promise<string> {
+export async function resolveMcpRunner(options: Pick<RpgMakerDeploymentOptions, 'jsExecutable' | 'bunExecutable'> & Partial<Pick<RpgMakerDeploymentOptions, 'projectPath'>>, platform: string, env: Record<string, string | undefined>): Promise<string> {
   const candidate = options.jsExecutable ?? options.bunExecutable ?? env.BUN_EXECUTABLE;
   const direct = candidate ? await resolveExecutable(candidate, { platform, env }) : undefined;
   const expectedBasename = (value: string | undefined): value is string => {
@@ -662,65 +686,210 @@ export async function prepareRpgMakerDeployment(options: RpgMakerDeploymentOptio
   });
 }
 
+async function existingImageEnvironment(
+  options: RpgMakerLaunchOptions,
+  paths: ReturnType<typeof resolveHarnessPaths>,
+  platform: string,
+  env: Record<string, string | undefined>
+): Promise<Record<string, string | undefined>> {
+  const toolchainRoot = options.imageToolchainRoot ?? join(paths.programRoot, 'tools', 'image-workshop');
+  if (!(await pathExists(join(toolchainRoot, 'toolchain.json')))) return {};
+  try {
+    const toolchain = await resolveImageToolchain({
+      platform,
+      env,
+      dshHome: paths.dshHome,
+      programRoot: paths.programRoot,
+      mutableRoot: paths.mutableRoot,
+      toolchainRoot,
+      imageMagickExecutable: options.imageMagickExecutable,
+      imageMagickSha256: options.imageMagickSha256,
+      imageMagickUrl: options.imageMagickUrl,
+      imageMagickRelease: options.imageMagickRelease,
+      helperRoot: options.imageHelperRuntimeDir,
+      oxipngExecutable: options.oxipngExecutable,
+      oxipngSha256: options.oxipngSha256,
+      oxipngUrl: options.oxipngUrl,
+      oxipngRelease: options.oxipngRelease,
+      installOxipng: true,
+      commandRunner: options.commandRunner
+    });
+    return {
+      DSH_IMAGE_WORKSHOP_ROOT: toolchain.toolchainRoot,
+      DSH_IMAGE_WORKSHOP_MANIFEST: toolchain.manifestPath,
+      DSH_IMAGE_MAGICK: toolchain.imageMagick,
+      DSH_IMAGE_HELPER_ROOT: toolchain.helperRoot,
+      ...(toolchain.oxipng ? { DSH_OXIPNG: toolchain.oxipng } : {})
+    };
+  } catch {
+    // A normal launch must not turn an optional image dependency into a Host
+    // startup requirement. The image command will report or prepare it when
+    // the asset-workshop Agent actually requests an operation.
+    return {};
+  }
+}
+
+async function validatePresetComposition(
+  dshExecutable: string,
+  compositionPath: string,
+  cwd: string,
+  platform: string,
+  env: Record<string, string | undefined>,
+  commandRunner: CommandRunner
+): Promise<void> {
+  let result;
+  try {
+    result = await commandRunner(dshExecutable, ['--profile', RPGMAKER_DSH_PROFILE, '--patch', compositionPath, '--dump-config'], {
+      cwd,
+      env: withoutCredentials(env),
+      platform,
+      timeoutMs: 60_000
+    });
+  } catch (error) {
+    throw new RpgMakerStartupError(`DSH composition validation could not start: ${redactSensitive(error instanceof Error ? error.message : String(error), env)}`);
+  }
+  if (result.exitCode !== 0) throw new RpgMakerStartupError(`DSH composition validation failed: ${redactSensitive(result.stderr || result.stdout, env)}`);
+  const dumpedIds = topLevelIds(result.stdout);
+  if (!/id: agent-presets/.test(result.stdout) || dumpedIds.filter((id) => id === 'agent-presets').length !== 1) {
+    throw new RpgMakerStartupError('DSH composition validation did not expose exactly one agent-presets row.');
+  }
+  if (dumpedIds.includes('mcp-rpgmaker-mv')) {
+    throw new RpgMakerStartupError('DSH composition validation still contains the obsolete project-scoped RPG Maker MCP row.');
+  }
+}
+
+export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Promise<RpgMakerLaunchPreparation> {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const paths = resolveHarnessPaths({ ...options, platform, env });
+  const agentPreset = options.agentPreset ?? RPGMAKER_PRESET_ID;
+  if (![RPGMAKER_PRESET_ID, PLAYTEST_DEBUG_PRESET_ID, ASSET_WORKSHOP_PRESET_ID, BUILD_RELEASE_PRESET_ID].includes(agentPreset)) {
+    throw new RpgMakerStartupError(`Unknown RPG Maker agent preset: ${agentPreset}`);
+  }
+
+  const prepareDsh = options.dshRuntimePreparer ?? bootstrapRuntime;
+  const dshBootstrap = await prepareDsh({
+    platform,
+    env,
+    dshHome: paths.dshHome,
+    programRoot: paths.programRoot,
+    mutableRoot: paths.mutableRoot,
+    runtimeDir: paths.runtimeDir,
+    bunExecutable: options.bunExecutable,
+    commandRunner: options.commandRunner,
+    lockTimeoutMs: options.lockTimeoutMs,
+    lockRetryMs: options.lockRetryMs
+  });
+  if (!dshBootstrap.verification.valid) {
+    throw new RpgMakerStartupError(`Pinned DSH runtime is not usable: ${dshBootstrap.verification.errors.join('; ')}`);
+  }
+  const dshExecutable = options.dshExecutable ?? dshBootstrap.verification.dshExecutable ?? await findDshExecutable(paths.runtimeDir, platform);
+  if (!dshExecutable) throw new RpgMakerStartupError('Pinned DSH executable was not found; refusing to launch an unverified project-neutral Host.');
+  if (!(await pathExists(dshExecutable))) throw new RpgMakerStartupError(`DSH executable does not exist: ${dshExecutable}. Run bootstrap, then retry.`);
+
+  const mcporterRuntimeDir = resolve(options.mcporterRuntimeDir ?? mcporterRuntimeDirFor(paths));
+  const prepareMcporter = options.mcporterRuntimePreparer ?? prepareMcporterRuntime;
+  const mcporter = await prepareMcporter({
+    platform,
+    env,
+    dshHome: paths.dshHome,
+    programRoot: paths.programRoot,
+    mutableRoot: paths.mutableRoot,
+    runtimeDir: paths.runtimeDir,
+    bunExecutable: options.bunExecutable,
+    commandRunner: options.commandRunner,
+    lockTimeoutMs: options.lockTimeoutMs,
+    lockRetryMs: options.lockRetryMs
+  }, mcporterRuntimeDir);
+  if (!mcporter.valid) throw new RpgMakerStartupError(`Pinned MCPorter runtime is not usable: ${mcporter.errors.join('; ')}`);
+
+  const xeroloRuntimeDir = resolve(options.mcpRuntimeDir ?? join(paths.programRoot, 'runtime', 'mcp'));
+  const prepareMcp = options.mcpRuntimePreparer ?? prepareRpgMakerMcpRuntime;
+  const mcp = await prepareMcp({
+    platform,
+    env,
+    bunExecutable: options.bunExecutable,
+    commandRunner: options.commandRunner
+  }, xeroloRuntimeDir);
+  if (!mcp.valid || !mcp.executable) throw new RpgMakerStartupError(`Pinned RPG Maker MCP runtime is not usable: ${mcp.errors.join('; ')}`);
+  const jsRunner = await resolveMcpRunner(options, platform, withoutCredentials(env));
+
+  const prepareBundle = options.workspaceMcpBundlePreparer ?? prepareWorkspaceMcpBundle;
+  const workspaceMcpBundle = await prepareBundle({
+    platform,
+    env,
+    dshHome: paths.dshHome,
+    programRoot: paths.programRoot,
+    mutableRoot: paths.mutableRoot,
+    runtimeDir: paths.runtimeDir,
+    dshExecutable,
+    npmExecutable: options.npmExecutable,
+    pnpmExecutable: options.pnpmExecutable,
+    pnpmRuntimeDir: options.pnpmRuntimeDir,
+    commandRunner: options.commandRunner
+  });
+  if (!workspaceMcpBundle.valid) throw new RpgMakerStartupError(`App-owned workspace MCP bundle is not usable: ${workspaceMcpBundle.errors.join('; ')}`);
+
+  const codePresetPath = await findCodeComposition(paths.runtimeDir);
+  const sourceRoot = options.sourceRoot ?? defaultSourceRoot(RPGMAKER_PRESET_ID);
+  const installed = await installPreset(sourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
+  await installPreset(defaultSourceRoot(PLAYTEST_DEBUG_PRESET_ID), paths.dshHome, codePresetPath, PLAYTEST_DEBUG_PRESET_ID);
+  await installPreset(defaultSourceRoot(ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
+  await installPreset(defaultSourceRoot(BUILD_RELEASE_PRESET_ID), paths.dshHome, codePresetPath, BUILD_RELEASE_PRESET_ID);
+
+  await mkdir(paths.neutralLandingDir, { recursive: true });
+  const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
+  await mkdir(dirname(compositionPath), { recursive: true });
+  await writeFile(compositionPath, renderPresetOnlyPatch(installed.presetRoot, agentPreset));
+  await validatePresetComposition(dshExecutable, compositionPath, paths.neutralLandingDir, platform, env, options.commandRunner ?? runCommand);
+
+  return {
+    dshExecutable,
+    mcporterRuntimeDir,
+    xeroloRuntimeDir,
+    xeroloScript: mcp.executable,
+    jsRunner,
+    presetRoot: installed.presetRoot,
+    presetDir: join(installed.presetRoot, agentPreset),
+    codePresetPath,
+    compositionPath,
+    agentPreset,
+    workspaceMcpBundle
+  };
+}
+
 export interface RpgMakerLaunchResult extends LaunchResult {
-  deployment: RpgMakerDeployment;
+  deployment: RpgMakerLaunchPreparation;
 }
 
 export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Promise<RpgMakerLaunchResult> {
   if (options.webHost !== undefined && options.webHost !== WINDOWS_DSH_HOST) throw new RpgMakerStartupError(`The DSH web binding is fixed at ${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}.`);
   if (options.webPort !== undefined && options.webPort !== WINDOWS_DSH_PORT) throw new RpgMakerStartupError(`The DSH web binding is fixed at ${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}.`);
+  if (options.dshArgs?.some((argument) => argument === '--project' || argument.startsWith('--project='))) {
+    throw new RpgMakerStartupError('The project-neutral launch does not accept --project; choose a workspace in DSH Web.');
+  }
   if (options.dshArgs) addFixedWebBinding(options.dshArgs);
-  const projectPath = await resolveLaunchProjectPath(options);
-  const visionToolkitPreparer = options.visionToolkitPreparer ?? prepareVisionToolkit;
-  await visionToolkitPreparer({
-    platform: options.platform,
-    env: options.env,
-    dshHome: options.dshHome,
-    programRoot: options.programRoot,
-    runtimeDir: options.runtimeDir,
-    dshExecutable: options.dshExecutable,
-    npmExecutable: options.npmExecutable,
-    pnpmExecutable: options.pnpmExecutable,
-    commandRunner: options.commandRunner
-  });
-  const imageWorkshopPluginPreparer = options.imageWorkshopPluginPreparer ?? prepareImageWorkshopPlugin;
-  await imageWorkshopPluginPreparer({
-    platform: options.platform,
-    env: options.env,
-    dshHome: options.dshHome,
-    programRoot: options.programRoot,
-    runtimeDir: options.runtimeDir,
-    dshExecutable: options.dshExecutable,
-    npmExecutable: options.npmExecutable,
-    pnpmExecutable: options.pnpmExecutable,
-    commandRunner: options.commandRunner
-  });
-  await ensureLaunchPort({ ...options, projectPath, bindWeb: true, webHost: '127.0.0.1', webPort: 3081 });
-  const deployment = await prepareRpgMakerDeployment({
-    ...options,
-    projectPath,
-    sourceRoot: options.sourceRoot,
-    mcpRuntimeDir: options.mcpRuntimeDir,
-    schemaProbe: options.schemaProbe
-  });
-  if (options.notify) options.notify(`${deployment.backupGuidance.message}\n`);
-  const imageEnvironment = deployment.imageToolchain ? {
-    DSH_IMAGE_WORKSHOP_ROOT: deployment.imageToolchain.toolchainRoot,
-    DSH_IMAGE_WORKSHOP_MANIFEST: deployment.imageToolchain.manifestPath,
-    DSH_IMAGE_WORKSHOP_CLI: fileURLToPath(new URL('./cli.ts', import.meta.url)),
-    DSH_IMAGE_MAGICK: deployment.imageToolchain.imageMagick,
-    DSH_IMAGE_HELPER_ROOT: deployment.imageToolchain.helperRoot,
-    ...(deployment.imageToolchain.oxipng ? { DSH_OXIPNG: deployment.imageToolchain.oxipng } : {})
-  } : undefined;
-  const releaseEnvironment = { DSH_RPGMAKER_RELEASE_CLI: fileURLToPath(new URL('./cli.ts', import.meta.url)) };
+  await ensureLaunchPort({ ...options, bindWeb: true, webHost: WINDOWS_DSH_HOST, webPort: WINDOWS_DSH_PORT });
+  const deployment = await prepareRpgMakerLaunch(options);
+  const paths = resolveHarnessPaths(options);
+  const imageEnvironment = await existingImageEnvironment(options, paths, options.platform ?? process.platform, options.env ?? process.env);
+  const releaseEnvironment = {
+    DSH_RPGMAKER_RELEASE_CLI: fileURLToPath(new URL('./cli.ts', import.meta.url)),
+    DSH_IMAGE_WORKSHOP_CLI: fileURLToPath(new URL('./cli.ts', import.meta.url))
+  };
+  const ownedEnvironment = {
+    [MCPORTER_RUNTIME_ENV]: deployment.mcporterRuntimeDir,
+    [XEROLO_RUNTIME_ENV]: deployment.xeroloRuntimeDir,
+    [JS_RUNNER_ENV]: deployment.jsRunner
+  };
   const result = await launchProject({
     ...options,
-    projectPath,
+    dshExecutable: deployment.dshExecutable,
     bindWeb: true,
     portAlreadyChecked: true,
-    webHost: '127.0.0.1',
-    webPort: 3081,
-    extraEnv: { ...(options.extraEnv ?? {}), ...(imageEnvironment ?? {}), ...releaseEnvironment },
+    webHost: WINDOWS_DSH_HOST,
+    webPort: WINDOWS_DSH_PORT,
+    extraEnv: { ...(options.extraEnv ?? {}), ...releaseEnvironment, ...imageEnvironment, ...ownedEnvironment },
     dshArgs: ['--profile', RPGMAKER_DSH_PROFILE, ...(options.dshArgs ?? []), '--patch', deployment.compositionPath]
   });
   return { ...result, deployment };

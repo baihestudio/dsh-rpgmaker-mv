@@ -61,6 +61,7 @@ export interface VisionToolkitOptions extends PathOptions {
   dshExecutable?: string;
   pnpmExecutable?: string;
   pnpmRuntimeDir?: string;
+  useAppOwnedPnpm?: boolean;
   npmExecutable?: string;
   commandRunner?: CommandRunner;
   profile?: string;
@@ -344,8 +345,12 @@ async function warmVisionToolkitRuntime(options: VisionToolkitOptions, paths: Ha
 async function preparePnpmRuntime(options: VisionToolkitOptions, paths: HarnessPaths): Promise<PnpmRuntime> {
   const platform = options.platform ?? process.platform;
   const env = pluginEnvironment(options.env ?? process.env);
-  const explicit = options.pnpmExecutable ?? env.PNPM_EXECUTABLE;
-  const direct = explicit ? await resolveExecutable(explicit, { platform, env }) : await resolveExecutable('pnpm', { platform, env });
+  const explicit = options.pnpmExecutable ?? (options.useAppOwnedPnpm ? undefined : env.PNPM_EXECUTABLE);
+  const direct = explicit
+    ? await resolveExecutable(explicit, { platform, env })
+    : options.useAppOwnedPnpm
+      ? undefined
+      : await resolveExecutable('pnpm', { platform, env });
   if (direct) return { executable: direct, env: prependPath(env, dirname(direct), platform) };
 
   const runtimeDir = resolve(options.pnpmRuntimeDir ?? join(paths.programRoot, PNPM_RUNTIME_RELATIVE));

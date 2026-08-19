@@ -21,7 +21,7 @@ export const WORKSPACE_MCP_ENTRYPOINT = 'lib/index.js';
 export const WORKSPACE_MCP_BUNDLE_PATCH = './cordis.patch.yml';
 export const WORKSPACE_MCP_ROW_ID = 'workspace-mcp';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const WORKSPACE_MCP_SHA256 = 'ec80c552c252e92046849a5ca6a34e82f245f68381b9d09310293a8f9ca0525e';
+export const WORKSPACE_MCP_SHA256 = 'e3c4674f0f05d3c1a87ba42eaef498cee581ccc1bbc6b2abbcba9cf1616513e6';
 export const WORKSPACE_MCP_BUNDLE_RELATIVE = join('bundle', 'dsh-workspace-mcp');
 
 /** Host env contract consumed by the prebuilt workspace bundle. */
@@ -36,6 +36,7 @@ export interface WorkspaceMcpBundleOptions extends PathOptions {
   dshExecutable?: string;
   npmExecutable?: string;
   pnpmExecutable?: string;
+  pnpmRuntimeDir?: string;
   profile?: string;
   bundleDir?: string;
 }
@@ -262,7 +263,7 @@ export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOption
 }
 
 async function linkWorkspaceMcpBundle(options: WorkspaceMcpBundleOptions, paths: HarnessPaths, bundleDir: string, platform: string, env: Record<string, string | undefined>): Promise<void> {
-  const pnpm = await preparePnpmRuntime(options, paths);
+  const pnpm = await preparePnpmRuntime({ ...options, useAppOwnedPnpm: true }, paths);
   const dsh = options.dshExecutable ?? env.DSH_EXECUTABLE ?? await findDshExecutable(paths.runtimeDir, platform);
   if (!dsh) throw new Error('Pinned DSH executable was not found; cannot link the app-owned workspace MCP bundle into the profile.');
   const profile = options.profile ?? WORKSPACE_MCP_PROFILE;
@@ -306,6 +307,10 @@ export async function prepareWorkspaceMcpBundle(options: WorkspaceMcpBundleOptio
   const profileDir = profileDirFor(paths, profile);
   const snapshot = await snapshotWorkspaceMcpProfile(paths, profileDir);
   try {
+    // A file: dependency with the same path/version may be reused by pnpm;
+    // remove the exact profile entry so a stale copied bundle cannot survive a
+    // repair. The snapshot above restores it if linking fails.
+    await rm(profilePackageDir(profileDir), { recursive: true, force: true });
     await linkWorkspaceMcpBundle(options, paths, target, platform, env);
     const installed = await verifyWorkspaceMcpBundle({ ...options, bundleDir: target });
     if (!installed.valid) throw new Error(`Workspace MCP bundle installation completed but verification failed: ${installed.errors.join('; ')}`);

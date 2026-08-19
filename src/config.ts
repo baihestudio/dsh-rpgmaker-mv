@@ -19,7 +19,7 @@ export interface HarnessPaths {
   dshHome: string;
   logsDir: string;
   cacheDir: string;
-  recentProjectsPath: string;
+  neutralLandingDir: string;
   startMenuShortcutPath: string;
   runtimeDir: string;
   lockDir: string;
@@ -63,7 +63,7 @@ export function resolveHarnessPaths(options: PathOptions = {}): HarnessPaths {
     : join(dirname(dshHome), 'program')));
   const logsDir = join(mutableRoot, 'logs');
   const cacheDir = join(mutableRoot, 'cache');
-  const recentProjectsPath = join(mutableRoot, 'recent-projects.json');
+  const neutralLandingDir = join(programRoot, 'neutral');
   const appData = env.APPDATA ?? join(env.USERPROFILE ?? homedir(), 'AppData', 'Roaming');
   const startMenuShortcutPath = resolve(options.startMenuShortcutPath ?? join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', PRODUCT_VENDOR, `${START_MENU_NAME}.lnk`));
   const runtimeDir = resolve(options.runtimeDir ?? env.DSH_RPGMAKER_RUNTIME ?? join(programRoot, 'runtime', 'dsh'));
@@ -73,7 +73,7 @@ export function resolveHarnessPaths(options: PathOptions = {}): HarnessPaths {
     dshHome,
     logsDir,
     cacheDir,
-    recentProjectsPath,
+    neutralLandingDir,
     startMenuShortcutPath,
     runtimeDir,
     lockDir: `${runtimeDir}.lock`,

@@ -5,7 +5,7 @@ DeepSeek for RPG Maker MV
 
 For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs Python 3.13 through WinGet for Vision Toolkit's isolated managed environment, installs the pinned DSH, RPG Maker MCP, build-packager, and Vision Toolkit dependencies plus the complete image toolchain, and creates the per-user Start Menu shortcut **DSH for RPG Maker MV**. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for the pinned community package notice.
 
-The full first-run, repair, port-conflict, project-switching, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata and preserves rollback/recovery state, mutable state, credentials, logs, recent projects, and projects; `uninstall.ps1 -Purge` is explicit.
+The full first-run, repair, port-conflict, workspace-selection, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata and preserves rollback/recovery state, mutable state, credentials, logs, and projects; `uninstall.ps1 -Purge` is explicit.
 
 Contributors can still run the underlying bootstrap and doctor scripts from PowerShell:
 
@@ -22,19 +22,32 @@ The harness keeps the official DeepSeek Harness runtime in an app-owned tree and
 
 On Windows, program-owned DSH/MCP/tool runtimes default under `%LOCALAPPDATA%\\Programs\\BaiheStudio\\DSH-RPGMaker-MV`; mutable DSH state defaults under `%LOCALAPPDATA%\\BaiheStudio\\DSH-RPGMaker-MV\\state`. Set `DSH_HOME`, `DSH_RPGMAKER_PROGRAM_ROOT`, `DSH_RPGMAKER_DATA_ROOT`, or `DSH_RPGMAKER_RUNTIME` for a test-owned or alternate location. The doctor checks the actual executable paths and versions visible to the launcher, rather than trusting package-manager metadata.
 
-### Launch a project
+### Launch DSH Web
 
 ```powershell
 ./launch.ps1
-# or skip the picker:
-./launch.ps1 --project 'C:\Games\My RPG 游戏'
+# optionally choose the default Agent preset:
+./launch.ps1 --preset playtest-debug
 ```
 
-The Windows launcher uses a native folder picker, accepts a path containing spaces or CJK characters, requires `Game.rpgproject` plus `data` and `js` directories, and starts official DSH with the selected project as its process working directory. Paths are passed as process arguments/cwd values; they are not placed into a shell command string.
+The Windows launcher is project-neutral: it never opens a folder picker, reads
+recent projects, writes app-owned project-selection state, or accepts
+`launch --project`. It prepares and verifies the pinned DSH, MCPorter, and
+RPG Maker runtimes, the four presets, the effective composition, and the
+app-owned `dsh-workspace-mcp` bundle before starting official DSH. DSH starts in
+an app-owned neutral landing directory; choose and switch RPG Maker folders in
+DSH Web. `rpgmaker` is the default when `--preset` is omitted.
+
+The workspace bundle validates `Game.rpgproject`, `data`, and `js` directly
+under the DSH Web workspace. Each Agent receives stable names such as
+`rpgmaker_validate_project`; workspace hashes, session identifiers, and MCP
+transport names never appear in prompts or history. Agents in one workspace
+share one warm connection, while different workspaces remain isolated.
 
 The launcher always shows this editing contract:
 
-- The agent and RPG Maker MCP are the sole writers while the session is running.
+- The agent and its `rpgmaker_*` tools are the sole writers while the session is running.
+- Do not have multiple Agents write to the same project at the same time.
 - If the RPG Maker MV editor is open, it is read-only; do not save from it.
 - Reopen the project in the editor before inspecting agent changes.
 
@@ -57,25 +70,40 @@ Tests use disposable runtime, DSH home, credential, and MV project directories. 
 
 ## Phase 2: RPG Maker Agent and MCP editing loop
 
-`launch.ps1` now prepares the pinned `@xerolo44/rpgmaker-mv-mcp@0.1.0` in an app-owned staging runtime, probes its `tools/list` schema, installs the four Chinese-named specialist presets (`rpgmaker`, `playtest-debug`, `asset-workshop`, and `build-release`) as Code-derived compositions, validates the generated overlay through the pinned DSH `web --dump-config` path, and launches the official `web` profile with a generated `--patch` overlay. The fresh-state default is RPG Maker MV 开发助手; each preset keeps PTC/Code Mode and adds a domain persona while existing user defaults remain authoritative. The overlay supplies an app-contained Bun/Node JavaScript MCP entry as argv, the selected project as both `--project` and child cwd, `serverName: rpgmaker_mv`, and `failOnStartupError: true`; schema or project failures stop launch instead of presenting a tool-less session.
+`launch.ps1` prepares the exact-pinned app-owned MCPorter and Xerolo runtimes,
+the local `dsh-workspace-mcp` Host bundle, all four Chinese-named specialist
+presets (`rpgmaker`, `playtest-debug`, `asset-workshop`, and `build-release`),
+and a project-neutral `web --dump-config` composition before launch. The
+fresh-state default is RPG Maker MV 开发助手; `--preset` selects the default
+Agent preset without selecting a project. The bundle supplies stable
+`rpgmaker_<raw Xerolo name>` Agent tools synchronously and validates the live
+workspace connection before the first request. Invalid workspaces fail before
+a server starts, and non-RPG presets receive no RPG Maker tools.
 
-The RPG Maker preset treats the MCP/agent as the sole writer. Database, event/dialogue, map-metadata, plugin, and restore mutations use a targeted reread followed by `validate_project` before success is returned. The `.mcp-backups/` guidance is read-only: the harness reports the suggested `.gitignore` entry but never edits an existing project ignore file without user consent.
+The RPG Maker preset treats the MCP/agent as the sole writer. Database,
+event/dialogue, map-metadata, plugin, and restore mutations use stable
+`rpgmaker_*` names, a targeted reread followed by `rpgmaker_validate_project`,
+and visible warnings before success is returned. The `.mcp-backups/` guidance
+is read-only: the harness reports the suggested `.gitignore` entry but never
+edits an existing project ignore file without user consent.
 
-The generated preset and patch live under `DSH_HOME`; they contain executable paths and project-independent `process.cwd()` references only, never credentials. The pinned DSH Code preset is read from the installed runtime and is not edited.
+The generated preset and patch live under `DSH_HOME`; they contain owned
+runtime paths and no credentials. The pinned DSH Code preset is read from the
+installed runtime and is not edited.
 
 ## Phase 3: 游戏测试与调试助手
 
-Select `--preset playtest-debug` when creating a session. The Debug skill directly sequences the existing `mcp__rpgmaker_mv__*` tools: static validation, idle status preflight, bounded Steam App ID `363890` discovery, NW.js launch when `nwjs-win\Game.exe` exists, browser-mode fallback otherwise, bounded status/log observation, MCP stop, and post-stop status. It never recursively scans disks, refuses an already-running Playtest, never adopts a PID or invokes OS process controls, and reports cleanup as unverified when MCP status cannot confirm it. Browser fallback returns a playable URL but cannot capture browser DevTools console output through `playtest_log`.
+Select `--preset playtest-debug` when creating a session. The Debug skill directly sequences the stable `rpgmaker_*` tools: static validation, idle status preflight, bounded Steam App ID `363890` discovery, NW.js launch when `nwjs-win\Game.exe` exists, browser-mode fallback otherwise, bounded status/log observation, MCP stop, and post-stop status. It never recursively scans disks, refuses an already-running Playtest, never adopts a PID or invokes OS process controls, and reports cleanup as unverified when MCP status cannot confirm it. Browser fallback returns a playable URL but cannot capture browser DevTools console output through `rpgmaker_playtest_log`.
 
 Reports distinguish static validation, process launch, crash/log evidence, cleanup confirmation, and behavior/visual gameplay verification. A launched process and clean log are not behavior verification. Harness-owned process-tree cleanup belongs to the separate automated-playtest capability; screenshot/input/gameplay automation is out of scope here.
 
 ## Phase 4: 游戏图片素材助手
 
-Select the deterministic image preset when launching a project:
+Select the deterministic image preset when creating a DSH Web Agent:
 
 ```powershell
-./launch.ps1 --project 'C:\Games\My RPG 游戏' --preset asset-workshop
-# For an explicit override, also pass --image-magick-sha256 <64-hex-digest>
+./launch.ps1 --preset asset-workshop
+# For an explicit image operation override, also pass --image-magick-sha256 <64-hex-digest>
 ```
 
 `Install.cmd` provisions the complete app-owned image toolchain for every agent: ImageMagick `7.1.2-29`, `free-tex-packer-core@0.3.9`, and `oxipng@10.2.0`. Downloads are staged, checked against the pinned archive and executable hashes, verified by version, and installed atomically. Re-running the installer or launcher verifies and reuses a valid installation instead of downloading it again. Every launched session receives the resolved image workflow environment, so selecting 游戏图片素材助手 in the Web UI does not depend on which preset originally started DSH. Explicit overrides must still supply their expected SHA-256 and PATH aliases or `convert` are never accepted. `oxipng` is installed for readiness but is invoked only by an explicit `optimize-png` operation with a distinct output path.
@@ -106,16 +134,17 @@ bun src/cli.ts image atlas-pack --inputs-json '["a.png","b.png"]' --output atlas
 
 All launcher, preset, Windows shell, MCP, image, and Playtest contracts are mounted and checked against the official `@deepseek-ai/dsh@0.1.0-rc.7` runtime. The staged runtime verifies Bun installation/trust, the exact top-level package version and npm integrity, the DSH executable, and `koffi` before an atomic swap. Post-swap verification restores the prior runtime on failure and preserves the unverified tree for inspection; no live runtime is mutated in place.
 
-The Xerolo MCP lock check is deliberately limited to its stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata and unrelated Bun lock internals are not pinned. The production editing contract is the mounted RPG Maker skill plus direct MCP tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, schema rejection, and the `rpgmaker`, `playtest-debug`, and asset-only preset boundaries.
+The Xerolo MCP lock check is deliberately limited to its stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata and unrelated Bun lock internals are not pinned. The production editing contract is the mounted RPG Maker skill plus stable `rpgmaker_*` tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, schema rejection, and the `rpgmaker`, `playtest-debug`, and asset-only preset boundaries.
 
 ## Editing model
 
-In the first release, the agent is the sole writer while an RPG Maker MV project is under agent control. The editor may remain open only for read-only reference: users must not save from it, and must reopen the project before inspecting agent changes.
+In the first release, the agent is the sole writer while an RPG Maker MV workspace is under agent control; do not have multiple Agents write to it simultaneously. The editor may remain open only for read-only reference: users must not save from it, and must reopen the project before inspecting agent changes.
 
 ## Phase 6: 游戏构建与发布助手
 
-Select `--preset build-release` for a packaging session, or run the harness
-workflow directly after the existing RPG Maker MCP has validated the project:
+Select `--preset build-release` for a packaging session, or run the explicitly
+project-scoped harness workflow directly after the current DSH Web workspace has
+been validated with `rpgmaker_validate_project`:
 
 ```powershell
 bun "$env:DSH_RPGMAKER_RELEASE_CLI" build-release `

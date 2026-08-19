@@ -7,7 +7,6 @@ import { tmpdir } from 'node:os';
 import { installPreset, prepareRpgMakerDeployment, launchRpgmakerProject, RpgMakerStartupError, resolveMcpRunner, verifyMcpRuntime, type McpToolDefinition } from '../src/rpgmaker';
 import { DSH_VERSION } from '../src/config';
 import { backupIgnoreGuidance } from '../src/project';
-import { visionToolkitFixture } from './fixtures/vision-toolkit';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -325,10 +324,9 @@ describe('RPG Maker MCP deployment', () => {
     }
   });
 
-  test('passes the generated patch to DSH and retains project cwd/argv', async () => {
+  test('prepares a project-neutral composition and launches from the owned landing directory', async () => {
     const root = await temp('phase2-launch');
     try {
-      const project = await makeProject(root);
       const runtime = await makeDshRuntime(root);
       const dsh = join(root, 'dsh');
       const bun = join(root, 'bun.exe');
@@ -337,47 +335,67 @@ describe('RPG Maker MCP deployment', () => {
       const child = new EventEmitter() as EventEmitter & { exitCode: number | null; signalCode: NodeJS.Signals | null };
       child.exitCode = null;
       child.signalCode = null;
-      let launch: { args: string[]; cwd?: string } | undefined;
-      let probes = 0;
-      const opened: string[] = [];
+      let launch: { args: string[]; cwd?: string; env?: Record<string, string | undefined> } | undefined;
       const result = await launchRpgmakerProject({
         platform: 'win32',
         dshHome: join(root, 'dsh-home'),
         runtimeDir: runtime,
-        projectPath: project,
         dshExecutable: dsh,
         jsExecutable: bun,
+        agentPreset: 'playtest-debug',
         sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'),
-        commandRunner: async (_command, args, options) => {
-          if (args[0] === 'add') await makeMcpRuntime(options.cwd!);
-          if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: agent-presets\n  default: rpgmaker\n', stderr: '' };
-          return { exitCode: 0, stdout: '', stderr: '' };
-        },
-        schemaProbe: async () => ({ tools: toolNames() }),
-        visionToolkitPreparer: async () => visionToolkitFixture(),
-        imageWorkshopPluginPreparer: async () => ({
+        dshRuntimePreparer: async () => ({
+          status: 'unchanged',
+          runtimeDir: runtime,
+          verification: { valid: true, errors: [], dshPackageVersion: DSH_VERSION, dshExecutable: dsh, koffiLoaded: true }
+        }),
+        mcporterRuntimePreparer: async (_options, runtimeDir) => ({
           valid: true,
           errors: [],
-          packageDir: join(root, 'program', 'bundle', 'dsh-image-workshop'),
-          packageVersion: '0.1.0',
-          profileDependency: 'link:../../../../program/bundle/dsh-image-workshop',
-          bundleOccurrences: 0,
-          entrypoint: join(root, 'program', 'bundle', 'dsh-image-workshop', 'lib', 'index.js'),
-          ownedPath: true,
-          sha256: 'edd700c03856033e08d5886830d6bfee3f7f3e603f94cc10f011849ef0dde05a'
+          packageVersion: '0.12.3',
+          packageDir: join(runtimeDir, 'node_modules', 'mcporter'),
+          entrypoint: join(runtimeDir, 'node_modules', 'mcporter', 'dist', 'index.js')
         }),
-        portProbe: async () => { probes += 1; return probes > 1; },
-        openExistingSession: async (url) => { opened.push(url); },
+        mcpRuntimePreparer: async (_options, runtimeDir) => ({
+          valid: true,
+          errors: [],
+          packageVersion: '0.1.0',
+          executable: join(runtimeDir, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist', 'index.js')
+        }),
+        workspaceMcpBundlePreparer: async (options) => ({
+          valid: true,
+          errors: [],
+          packageDir: join(options.programRoot ?? root, 'bundle', 'dsh-workspace-mcp'),
+          packageVersion: '0.1.0',
+          bundleOccurrences: 1,
+          entrypoint: join(root, 'bundle', 'dsh-workspace-mcp', 'lib', 'index.js'),
+          ownedPath: true,
+          sha256: 'fixture'
+        }),
+        commandRunner: async (_command, args) => {
+          if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: agent-presets\n  default: playtest-debug\n', stderr: '' };
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+        portProbe: (() => {
+          let probes = 0;
+          return async () => { probes += 1; return probes > 1; };
+        })(),
+        openExistingSession: async () => undefined,
         spawnInteractive: (_command, args, options) => {
-          launch = { args, cwd: options.cwd };
+          launch = { args, cwd: options.cwd, env: options.env };
           return child;
         }
       });
-      expect(launch?.cwd).toBe(project);
+      const neutral = join(root, 'program', 'neutral');
+      expect(result.deployment.agentPreset).toBe('playtest-debug');
+      expect(launch?.cwd).toBe(neutral);
       expect(launch?.args.slice(0, 2)).toEqual(['--profile', 'web']);
       expect(launch?.args[2]).toBe('--patch');
       expect(launch?.args[3]).toBe(result.deployment.compositionPath);
-      expect(opened).toEqual(['http://127.0.0.1:3081/']);
+      expect(launch?.args.join(' ')).not.toContain('--project');
+      expect(launch?.env?.DSH_RPGMAKER_MCPORTER_RUNTIME).toBe(result.deployment.mcporterRuntimeDir);
+      expect(launch?.env?.DSH_RPGMAKER_XEROLO_RUNTIME).toBe(result.deployment.xeroloRuntimeDir);
+      expect(launch?.env?.DSH_RPGMAKER_JS_RUNNER).toBe(bun);
       child.exitCode = 0;
       child.emit('exit', 0);
       await result.releaseSession();

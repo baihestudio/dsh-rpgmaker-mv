@@ -49,6 +49,13 @@ the `workspace-mcp` Host row).
   workspace servers stay warm until Host shutdown, which closes the one
   MCPorter Runtime and every pooled child.
 
+DSH Web owns workspace selection and switching. The launcher starts from an
+app-owned neutral directory; it does not select or persist a project. A first
+request for an invalid workspace fails before a server starts and names the
+missing direct-child markers. Agents sharing one workspace should not write to
+it simultaneously; this bundle provides pooling and isolation, not a writer
+lock.
+
 The plugin accepts no model-supplied executable, cwd, environment, config path,
 or server definition. It performs no build on the user's machine and fetches
 nothing from npm at runtime. It is not published.

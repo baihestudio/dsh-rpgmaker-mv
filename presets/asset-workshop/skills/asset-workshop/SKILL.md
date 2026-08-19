@@ -45,7 +45,7 @@ scoped to this Agent only. Use them instead of constructing commands:
   that preserves decoded pixels, dimensions, and alpha. PNG input/output only;
   `output` must not exist and the source is never overwritten.
 
-Every path passed to these tools is project-relative to the current workspace;
+Every path passed to these tools is project-relative to the current DSH Web workspace; the workspace is selected in DSH Web, not by the launcher.
 absolute paths, `..` traversal, symlink/junction escapes, missing inputs, and
 pre-existing outputs are rejected. External sources must first be copied into
 the workspace. Array inputs (sheet assembly, atlas packing) are real schema
@@ -57,6 +57,7 @@ failed pixel checks, and incomplete atlas JSON as actionable failures. Paths
 may contain spaces and CJK characters; do not quote or concatenate them into a
 shell command string.
 
+Do not invoke app-owned harness source or runtimes through shell escalation.
 The optional Photoshop, Aseprite, and TexturePacker paths in the manifest are
 capability hints only. They are user-owned enhancements: do not download,
 redistribute, require, or silently invoke them. PNG/MV work falls back to the

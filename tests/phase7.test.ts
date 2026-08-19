@@ -13,7 +13,7 @@ import { runCli } from '../src/cli';
 import { runDoctor } from '../src/doctor';
 import { runCommand } from '../src/process';
 import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion } from '../src/executable';
-import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, recordRecentProject, readRecentProjects, uninstallHarness, UninstallSafetyError } from '../src/windows';
+import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, uninstallHarness, UninstallSafetyError } from '../src/windows';
 import { visionToolkitActivationFixture, visionToolkitFixture } from './fixtures/vision-toolkit';
 
 async function temp(prefix: string): Promise<string> {
@@ -297,7 +297,7 @@ describe('Windows release gate foundations', () => {
       expect(paths.dshHome).toBe(join(paths.mutableRoot, 'state'));
       expect(paths.logsDir).toBe(join(paths.mutableRoot, 'logs'));
       expect(paths.cacheDir).toBe(join(paths.mutableRoot, 'cache'));
-      expect(paths.recentProjectsPath).toBe(join(paths.mutableRoot, 'recent-projects.json'));
+      expect(paths.neutralLandingDir).toBe(join(paths.programRoot, 'neutral'));
       expect(paths.startMenuShortcutPath).toContain(join('BaiheStudio', 'DSH for RPG Maker MV.lnk'));
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -506,27 +506,6 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('records recent projects and offers continue-last or choose-other without writing project metadata', async () => {
-    const root = await temp('phase7-recent');
-    try {
-      const first = await project(root);
-      const secondRoot = await temp('phase7-recent-second');
-      try {
-        const second = await project(secondRoot);
-        const options = { platform: 'win32', mutableRoot: join(root, 'mutable'), dshHome: join(root, 'mutable', 'state'), programRoot: join(root, 'program') } as const;
-        await recordRecentProject(first, options);
-        await recordRecentProject(second, options);
-        const recent = await readRecentProjects(options);
-        expect(recent[0].path).toBe(resolve(second));
-        expect(recent[1].path).toBe(resolve(first));
-      } finally {
-        await rm(secondRoot, { recursive: true, force: true });
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   test('never changes the fixed web port and handles occupied-port choices truthfully', async () => {
     const opened: string[] = [];
     let probes = 0;
@@ -721,10 +700,9 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('adds fixed binding args only for the DSH web launch and records the selected project outside it', async () => {
+  test('adds fixed binding args only for the project-neutral DSH web launch', async () => {
     const root = await temp('phase7-launch');
     try {
-      const selected = await project(root);
       const dsh = join(root, 'dsh.exe');
       await writeFile(dsh, 'fixture');
       const launched = child();
@@ -733,7 +711,6 @@ describe('Windows release gate foundations', () => {
       const opened: string[] = [];
       const result = await launchProject({
         platform: 'win32',
-        projectPath: selected,
         dshHome: join(root, 'mutable', 'state'),
         mutableRoot: join(root, 'mutable'),
         programRoot: join(root, 'program'),
@@ -747,7 +724,8 @@ describe('Windows release gate foundations', () => {
       });
       expect(args).toEqual(['--profile', 'web', '--patch', 'composition.yml', '--host', '127.0.0.1', '--port', '3081']);
       expect(opened).toEqual(['http://127.0.0.1:3081/']);
-      expect(await readFile(join(root, 'mutable', 'recent-projects.json'), 'utf8')).toContain('选择 project with spaces');
+      expect(result.cwd).toBe(join(root, 'program', 'neutral'));
+      await expect(Bun.file(join(root, 'mutable', 'recent-projects.json')).exists()).resolves.toBe(false);
       launched.exitCode = 0;
       launched.emit('exit', 0);
       await result.releaseSession();

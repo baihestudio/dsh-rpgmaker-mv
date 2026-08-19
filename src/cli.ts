@@ -15,7 +15,7 @@ import { childExitCode, redactSensitive, type CommandRunner, type InteractiveSpa
 import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT } from './config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, uninstallWindowsRelease } from './release-gate';
 import type { PrerequisiteConsent } from './prerequisites';
-import type { PortConflictAction, ExistingSessionOpener, PortProbe, RecentProject, RecentProjectChoice } from './windows';
+import type { PortConflictAction, ExistingSessionOpener, PortProbe } from './windows';
 import { visionToolkitDisclosure } from './vision-toolkit';
 
 export interface CliIO {
@@ -37,8 +37,6 @@ export interface CliDependencies {
   portProbe?: PortProbe;
   onPortConflict?: (url: string) => Promise<PortConflictAction> | PortConflictAction;
   openExistingSession?: ExistingSessionOpener;
-  chooseRecentProject?: (last: RecentProject, recent: RecentProject[]) => Promise<RecentProjectChoice> | RecentProjectChoice;
-  pickProject?: () => Promise<string>;
   rpgmaker?: boolean;
 }
 
@@ -90,12 +88,12 @@ function helpText(): string {
     '  install     Install a Release ZIP into the per-user Windows roots',
     '  uninstall   Remove program files/cache (use --purge for state/credentials)',
     '  release-zip Build and inspect a distributable Release ZIP',
-    '  launch      Pick or launch an RPG Maker MV project in DSH',
+    '  launch      Start project-neutral DSH Web; choose workspaces in its UI',
     '  build-release  Package and smoke-test Windows and Browser artifacts',
     '  image       Run a deterministic Asset Workshop image operation',
     '',
     'Options:',
-    '  --project <path>          Project to launch or package',
+    '  --project <path>          Explicit project for build-release only; launch is project-neutral',
     '  --output <path>           Fresh release output directory (build-release)',
     '  --release-root <path>     Extracted Release ZIP root (install)',
     '  --zip <path>              Release ZIP path (release-zip)',
@@ -169,6 +167,8 @@ function baseOptions(parsed: ParsedArgs, dependencies: CliDependencies): Record<
     oxipngUrl: option(parsed.values, 'oxipng-url'),
     oxipngRelease: dependencies.oxipngRelease,
     installOxipng: parsed.flags.has('install-oxipng') || (parsed.flags.has('oxipng') && !option(parsed.values, 'oxipng')),
+    bunExecutable: option(parsed.values, 'bun-executable'),
+    jsExecutable: option(parsed.values, 'js-executable'),
     downloadArchive: dependencies.downloadArchive,
     extractArchive: dependencies.extractArchive,
     commandRunner: dependencies.commandRunner
@@ -439,12 +439,14 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
     }
 
     if (parsed.command === 'launch') {
+      if (parsed.flags.has('project') || option(parsed.values, 'project') !== undefined) {
+        throw new Error('The launch command is project-neutral and does not accept --project; choose a workspace in DSH Web.');
+      }
       validateCliFixedBinding(argv);
       // This notice is intentionally unconditional: do not detect editor processes or infer write ownership.
       io.stdout.write(`${SINGLE_WRITER_NOTICE}\n\n`);
       const launchOptions = {
         ...baseOptions(parsed, dependencies),
-        projectPath: option(parsed.values, 'project'),
         dshExecutable: option(parsed.values, 'dsh-executable'),
         dshArgs: [],
         agentPreset: option(parsed.values, 'preset'),
@@ -452,14 +454,12 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         portProbe: dependencies.portProbe,
         onPortConflict: dependencies.onPortConflict,
         openExistingSession: dependencies.openExistingSession,
-        chooseRecentProject: dependencies.chooseRecentProject,
-        pickProject: dependencies.pickProject,
         notify: (message: string) => io.stdout.write(`${message}\n`)
       };
       const result = dependencies.rpgmaker === false
         ? await launchProject(launchOptions)
         : await launchRpgmakerProject(launchOptions);
-      io.stdout.write(`Launching official DSH in ${result.projectPath}\n`);
+      io.stdout.write(`Launching official DSH in neutral landing directory ${result.cwd}\n`);
       if (result.webUrl) io.stdout.write(`DSH web session: ${result.webUrl}\n`);
       return await childExitCode(result.child);
     }
