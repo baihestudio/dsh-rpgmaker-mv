@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -364,6 +364,36 @@ describe('staged DSH runtime bootstrap', () => {
 
 
 describe('runtime access lock', () => {
+
+  test('reclaims a stale session lock whose owner process is gone', async () => {
+    const root = await disposableDirectory('runtime-stale-lock');
+    try {
+      const runtime = join(root, 'runtime');
+      const dshHome = join(root, 'dsh-home');
+      await makeRuntime(runtime, '0.1.0-rc.5');
+      const sessionLeaseDir = `${runtime}.session`;
+      await mkdir(sessionLeaseDir, { recursive: true });
+      // A dead owner (pid 999999) records the lock but cannot release it.
+      await writeFile(join(sessionLeaseDir, 'owner.json'), `${JSON.stringify({ pid: 999999, token: 'stale', startedAt: new Date().toISOString() })}\n`);
+
+      const result = await bootstrapRuntime({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        bunExecutable: 'bun',
+        lockTimeoutMs: 500,
+        lockRetryMs: 5,
+        commandRunner: async (_command, args, options) => {
+          if (args[0] === 'add') await makeRuntime(options.cwd!);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+      });
+      expect(result.status).toBe('repaired');
+      await expect(stat(sessionLeaseDir)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   test('launch failure releases the session lease so bootstrap can recover', async () => {
     const root = await disposableDirectory('runtime-session-failure');
