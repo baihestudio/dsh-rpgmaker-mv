@@ -231,6 +231,28 @@ function relativeTo(from: string, to: string): string {
   return relative(from, to);
 }
 
+class TrackedAbortSignal {
+  aborted = false;
+  addCalls = 0;
+  removeCalls = 0;
+  private listener: (() => void) | undefined;
+
+  addEventListener(_type: string, listener: unknown): void {
+    this.addCalls += 1;
+    this.listener = listener as () => void;
+  }
+
+  removeEventListener(_type: string, listener: unknown): void {
+    if (this.listener === listener) this.listener = undefined;
+    this.removeCalls += 1;
+  }
+
+  abort(): void {
+    this.aborted = true;
+    this.listener?.();
+  }
+}
+
 describe('Xerolo tool contract fail-closed', () => {
   test('accepts the complete fixed set and rejects missing, unknown, and duplicate names', async () => {
     const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
@@ -595,6 +617,178 @@ describe('disposable MCPorter probe', () => {
     }
   });
 
+  test('waits for per-server close before cancelling, removes its listener, and ignores late completion', async () => {
+    const shared = await sharedFixtureRuntimes();
+    const root = await temp('ws-mcp-cancel-close');
+    try {
+      const host = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const workspace = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/workspace.js')>('workspace.js');
+      const paths = { mcporterRuntime: shared.mcporter };
+      const affectedContext = join(root, 'affected-context');
+      const unaffectedContext = join(root, 'unaffected-context');
+      const affectedCwd = join(root, 'affected-cwd');
+      const unaffectedCwd = join(root, 'unaffected-cwd');
+      const closeGate = join(root, 'close.release');
+      const closeTrace = join(root, 'runtime-closes.jsonl');
+      const callTrace = join(root, 'calls.jsonl');
+      const completeTrace = join(root, 'completed.jsonl');
+      await mkdir(affectedContext, { recursive: true });
+      await mkdir(unaffectedContext, { recursive: true });
+      await mkdir(affectedCwd, { recursive: true });
+      await mkdir(unaffectedCwd, { recursive: true });
+
+      const affected = {
+        name: 'rpgmaker-cancel-boundary',
+        command: { kind: 'stdio' as const, command: process.execPath, args: [FIXTURE_SERVER, '--context', affectedContext], cwd: affectedCwd },
+        env: {
+          FIXTURE_CLOSE_GATE: closeGate,
+          FIXTURE_RUNTIME_CLOSE_TRACE: closeTrace,
+          FIXTURE_CALL_TRACE: callTrace,
+          FIXTURE_CALL_COMPLETE_TRACE: completeTrace
+        }
+      };
+      const unaffected = {
+        name: 'rpgmaker-unaffected-boundary',
+        command: { kind: 'stdio' as const, command: process.execPath, args: [FIXTURE_SERVER, '--context', unaffectedContext], cwd: unaffectedCwd },
+        env: { FIXTURE_CALL_TRACE: callTrace }
+      };
+
+      host.resetHostState();
+      try {
+        await host.registerServer(paths, affected);
+        await host.registerServer(paths, unaffected);
+        const signal = new TrackedAbortSignal();
+        let settlements = 0;
+        const call = host.callServerTool(paths, affected.name, 'slow_tool', { ms: 25 }, { signal: signal as unknown as AbortSignal });
+        void call.then(() => { settlements += 1; }, () => { settlements += 1; });
+        await waitForFile(callTrace);
+
+        // Abort twice while close is gated. The late tool result may complete,
+        // but the cancellation promise must remain pending until close does.
+        signal.abort();
+        signal.abort();
+        await waitForFile(`${closeGate}.entered`);
+        expect(settlements).toBe(0);
+        await waitForFile(completeTrace);
+        expect(settlements).toBe(0);
+
+        // Closing A must not make B unavailable while A's quiescence is pending.
+        const unaffectedResult = await host.callServerTool(paths, unaffected.name, 'echo', { message: 'still alive' });
+        expect(host.canonicalMcpValue(unaffectedResult)).toBe('still alive');
+        const callEvents = (await readFile(callTrace, 'utf8')).trim().split(/\r?\n/).filter(Boolean)
+          .map((line) => JSON.parse(line) as { name: string; timeoutMs: number });
+        expect(workspace.MCPORTER_CALL_TIMEOUT_MS).toBe(60_000);
+        expect(callEvents.find((event) => event.name === affected.name)?.timeoutMs).toBe(workspace.MCPORTER_CALL_TIMEOUT_MS);
+
+        await writeFile(closeGate, 'release\n');
+        await expect(call).rejects.toThrow(/^RPG Maker MCP call cancelled$/);
+        expect(settlements).toBe(1);
+        expect(signal.addCalls).toBe(1);
+        expect(signal.removeCalls).toBe(1);
+        await waitForFile(closeTrace);
+        const closes = (await readFile(closeTrace, 'utf8')).trim().split(/\r?\n/).filter(Boolean)
+          .map((line) => JSON.parse(line) as { name: string });
+        expect(closes).toEqual([{ name: affected.name }]);
+      } finally {
+        await host.closeHost().catch(() => undefined);
+        host.resetHostState();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('returns cleanup-unconfirmed when cancellation close exceeds its grace', async () => {
+    const shared = await sharedFixtureRuntimes();
+    const root = await temp('ws-mcp-cancel-timeout');
+    try {
+      const host = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const paths = { mcporterRuntime: shared.mcporter };
+      const contextDir = join(root, 'context');
+      const serverCwd = join(root, 'cwd');
+      const closeGate = join(root, 'close.release');
+      const closeTrace = join(root, 'runtime-closes.jsonl');
+      const callTrace = join(root, 'calls.jsonl');
+      await mkdir(contextDir, { recursive: true });
+      await mkdir(serverCwd, { recursive: true });
+      const definition = {
+        name: 'rpgmaker-cancel-timeout',
+        command: { kind: 'stdio' as const, command: process.execPath, args: [FIXTURE_SERVER, '--context', contextDir], cwd: serverCwd },
+        env: { FIXTURE_CLOSE_GATE: closeGate, FIXTURE_RUNTIME_CLOSE_TRACE: closeTrace, FIXTURE_CALL_TRACE: callTrace }
+      };
+
+      host.resetHostState();
+      try {
+        await host.registerServer(paths, definition);
+        const signal = new TrackedAbortSignal();
+        const call = host.callServerTool(paths, definition.name, 'slow_tool', { ms: 10_000 }, { signal: signal as unknown as AbortSignal });
+        await waitForFile(callTrace);
+        signal.abort();
+        await waitForFile(`${closeGate}.entered`);
+        await expect(call).rejects.toThrow(/cleanup-unconfirmed.*quiescence/i);
+        expect(signal.addCalls).toBe(1);
+        expect(signal.removeCalls).toBe(1);
+
+        // The bounded result is already returned, but the later close promise
+        // is still contained and can finish without a second settlement.
+        await writeFile(closeGate, 'release\n');
+        await waitForFile(closeTrace);
+        await host.closeHost();
+      } finally {
+        await writeFile(closeGate, 'release\n').catch(() => undefined);
+        await host.closeHost().catch(() => undefined);
+        host.resetHostState();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('returns cleanup-unconfirmed when MCPorter close rejects', async () => {
+    const shared = await sharedFixtureRuntimes();
+    const root = await temp('ws-mcp-cancel-failure');
+    try {
+      const host = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
+      const paths = { mcporterRuntime: shared.mcporter };
+      const contextDir = join(root, 'context');
+      const serverCwd = join(root, 'cwd');
+      const closeTrace = join(root, 'runtime-closes.jsonl');
+      const callTrace = join(root, 'calls.jsonl');
+      await mkdir(contextDir, { recursive: true });
+      await mkdir(serverCwd, { recursive: true });
+      const definition = {
+        name: 'rpgmaker-cancel-failure',
+        command: { kind: 'stdio' as const, command: process.execPath, args: [FIXTURE_SERVER, '--context', contextDir], cwd: serverCwd },
+        env: { FIXTURE_CLOSE_FAILURE: '1', FIXTURE_RUNTIME_CLOSE_TRACE: closeTrace, FIXTURE_CALL_TRACE: callTrace }
+      };
+
+      host.resetHostState();
+      try {
+        await host.registerServer(paths, definition);
+        const preAborted = new TrackedAbortSignal();
+        preAborted.abort();
+        const beforeDispatch = host.callServerTool(paths, definition.name, 'echo', { message: 'never sent' }, { signal: preAborted as unknown as AbortSignal });
+        await expect(beforeDispatch).rejects.toThrow(/cleanup-unconfirmed.*fixture close failed/i);
+        expect(preAborted.addCalls).toBe(0);
+
+        const signal = new TrackedAbortSignal();
+        const call = host.callServerTool(paths, definition.name, 'slow_tool', { ms: 10_000 }, { signal: signal as unknown as AbortSignal });
+        await waitForFile(callTrace);
+        signal.abort();
+        await expect(call).rejects.toThrow(/cleanup-unconfirmed.*fixture close failed/i);
+        expect(signal.addCalls).toBe(1);
+        expect(signal.removeCalls).toBe(1);
+        await waitForFile(closeTrace);
+        await host.closeHost();
+      } finally {
+        await host.closeHost().catch(() => undefined);
+        host.resetHostState();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('closes a child created after Host shutdown starts', async () => {
     const shared = await sharedFixtureRuntimes();
     const root = await temp('ws-mcp-shutdown-race');
@@ -690,6 +884,7 @@ describe('real DSH Agent seam', () => {
 
             const infoDefinition = agentA.ctx.tools.get('rpgmaker_get_project_info');
             expect(infoDefinition).toBeDefined();
+            expect('timeoutMs' in infoDefinition!).toBe(false);
             const info = await infoDefinition!.execute({}, { signal: new AbortController().signal }) as { gameTitle: string };
             expect(info.gameTitle).toBe('Probe Game');
 

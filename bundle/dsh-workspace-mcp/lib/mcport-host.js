@@ -14,10 +14,12 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { TOOL_CALL_TIMEOUT_MS } from './workspace.js'
+import { MCPORTER_CALL_TIMEOUT_MS } from './workspace.js'
 
 const RUNTIME_MODULE = join('node_modules', 'mcporter', 'dist', 'index.js')
 const CLIENT_INFO = { name: 'dsh-workspace-mcp', version: '0.1.0' }
+/** A cancellation may wait only this long for MCPorter to confirm quiescence. */
+export const MCPORTER_CANCELLATION_CLEANUP_GRACE_MS = 1_000
 const QUIET_LOGGER = {
   info() {},
   warn(...args) { console.warn(...args) },
@@ -134,31 +136,77 @@ export async function callWorkspaceTool(paths, canonical, toolName, args, option
   return callServerTool(paths, name, toolName, args, options)
 }
 
-/** Pooled call with cancellation containment and timeout, by server name. */
+function closeServerForCancellation(paths, serverName) {
+  const cleanup = getHostRuntime(paths).then((runtime) => runtime.close(serverName))
+  return new Promise((resolve, reject) => {
+    let finished = false
+    let timer
+    const finish = (settle, value) => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      settle(value)
+    }
+    timer = setTimeout(() => finish(reject, new Error(`MCPorter did not confirm workspace server ${serverName} quiescence within ${MCPORTER_CANCELLATION_CLEANUP_GRACE_MS} ms`)), MCPORTER_CANCELLATION_CLEANUP_GRACE_MS)
+    void cleanup.then(
+      () => finish(resolve, undefined),
+      (error) => finish(reject, error instanceof Error ? error : new Error(String(error)))
+    )
+  })
+}
+
+/** Pooled call with cancellation containment and MCPorter's fixed timeout, by server name. */
 export function callServerTool(paths, serverName, toolName, args, options = {}) {
   return new Promise((resolve, reject) => {
     const signal = options.signal
-    const timeoutMs = options.timeoutMs ?? TOOL_CALL_TIMEOUT_MS
-    const cancel = (cause) => {
-      void getHostRuntime(paths)
-        .then((runtime) => runtime.close(serverName))
-        .catch(() => undefined)
-      reject(new Error(cause))
-    }
-    if (signal?.aborted) {
-      cancel('RPG Maker MCP call cancelled')
-      return
-    }
-    const onAbort = () => cancel('RPG Maker MCP call cancelled')
-    signal?.addEventListener('abort', onAbort, { once: true })
-    const settle = (fn, value) => {
+    let settled = false
+    let cancelling = false
+    let listenerAttached = false
+    const removeAbortListener = () => {
+      if (!listenerAttached) return
+      listenerAttached = false
       signal?.removeEventListener('abort', onAbort)
+    }
+    const settle = (fn, value) => {
+      if (settled) return
+      settled = true
+      removeAbortListener()
       fn(value)
     }
-    getHostRuntime(paths)
-      .then((runtime) => runtime.callTool(serverName, toolName, { args, timeoutMs, disableOAuth: true }))
-      .then((value) => settle(resolve, value),
-        (error) => settle(reject, error instanceof Error ? error : new Error(String(error))))
+    const beginCancellation = () => {
+      if (cancelling || settled) return
+      cancelling = true
+      void closeServerForCancellation(paths, serverName).then(
+        () => settle(reject, new Error('RPG Maker MCP call cancelled')),
+        (error) => settle(reject, new Error(`RPG Maker MCP call cancellation cleanup-unconfirmed for workspace server ${serverName}: ${error instanceof Error ? error.message : String(error)}`))
+      )
+    }
+    const onAbort = () => beginCancellation()
+
+    if (signal?.aborted) {
+      beginCancellation()
+      return
+    }
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true })
+      listenerAttached = true
+      if (signal.aborted) {
+        beginCancellation()
+        return
+      }
+    }
+
+    // Keep this continuation attached even after cancellation. MCPorter may
+    // resolve or reject the old call after close; the result is intentionally
+    // ignored so it cannot create a second settlement or an unhandled rejection.
+    const call = getHostRuntime(paths).then((runtime) => {
+      if (cancelling) return undefined
+      return runtime.callTool(serverName, toolName, { args, timeoutMs: MCPORTER_CALL_TIMEOUT_MS, disableOAuth: true })
+    })
+    void call.then(
+      (value) => { if (!cancelling) settle(resolve, value) },
+      (error) => { if (!cancelling) settle(reject, error instanceof Error ? error : new Error(String(error))) }
+    )
   })
 }
 

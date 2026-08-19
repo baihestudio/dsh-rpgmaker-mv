@@ -37,7 +37,8 @@ export {
   closeServer,
   closeHost,
   normalizeMcpResult,
-  canonicalMcpValue
+  canonicalMcpValue,
+  MCPORTER_CANCELLATION_CLEANUP_GRACE_MS
 } from './mcport-host.js'
 export {
   XEROLO_MANIFEST,
@@ -66,7 +67,7 @@ export {
   buildWorkspaceDefinition,
   MV_PROJECT_MARKER,
   MV_REQUIRED_DIRECTORIES,
-  TOOL_CALL_TIMEOUT_MS
+  MCPORTER_CALL_TIMEOUT_MS
 } from './workspace.js'
 export { toModelName, createMcpTool } from './tools.js'
 

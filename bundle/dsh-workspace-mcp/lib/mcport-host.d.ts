@@ -36,15 +36,16 @@ export declare function callWorkspaceTool(
   canonical: string,
   toolName: string,
   args: Record<string, unknown>,
-  options?: { signal?: AbortSignal; timeoutMs?: number }
+  options?: { signal?: AbortSignal }
 ): Promise<unknown>;
 export declare function callServerTool(
   paths: { mcporterRuntime: string },
   serverName: string,
   toolName: string,
   args: Record<string, unknown>,
-  options?: { signal?: AbortSignal; timeoutMs?: number }
+  options?: { signal?: AbortSignal }
 ): Promise<unknown>;
+export declare const MCPORTER_CANCELLATION_CLEANUP_GRACE_MS: number;
 export declare function closeWorkspaceServer(paths: { mcporterRuntime: string }, canonical: string): Promise<void>;
 export declare function closeServer(paths: { mcporterRuntime: string }, serverName: string): Promise<void>;
 export declare function closeHost(): Promise<void>;

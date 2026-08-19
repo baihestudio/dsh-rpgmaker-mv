@@ -14,7 +14,8 @@ export const MV_PROJECT_MARKER = 'Game.rpgproject'
 export const MV_REQUIRED_DIRECTORIES = ['data', 'js']
 export const XEROLO_PACKAGE = '@xerolo44/rpgmaker-mv-mcp'
 export const XEROLO_ENTRY = join('dist', 'index.js')
-export const TOOL_CALL_TIMEOUT_MS = 60_000
+/** Fixed timeout passed to every MCPorter runtime.callTool invocation. */
+export const MCPORTER_CALL_TIMEOUT_MS = 60_000
 
 function asRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : undefined

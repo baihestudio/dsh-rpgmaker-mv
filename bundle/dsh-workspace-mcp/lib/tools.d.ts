@@ -10,7 +10,6 @@ export interface McpToolDefinition {
   description: string;
   parameters: Record<string, unknown>;
   output: { schema: Record<string, unknown>; render: (args: Record<string, unknown>, value: unknown) => McpContentBlock[] };
-  timeoutMs: number;
   execute: (args: Record<string, unknown>, exec: { signal?: AbortSignal }) => Promise<unknown>;
   presentCall: (args: Record<string, unknown>) => Record<string, unknown>;
 }

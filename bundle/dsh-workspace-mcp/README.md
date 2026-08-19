@@ -42,9 +42,14 @@ the `workspace-mcp` Host row).
   `{...process.env, ...overrides}` merge can never carry an original value into
   the deterministic child. (Strict key absence would require an isolated broker
   process and is not required for this fixed server.)
-- Preserves the 60-second call timeout, caller cancellation (contained by
-  closing that workspace's server), Xerolo text/structured results, and MCP
-  error results as failures.
+- Passes the fixed `MCPORTER_CALL_TIMEOUT_MS` (60 seconds) to every
+  MCPorter `runtime.callTool` invocation. This is the authoritative transport
+  timeout; generated DSH tools intentionally declare no `timeoutMs` field.
+  Caller cancellation closes only that workspace's server and waits for
+  `runtime.close(serverName)` to confirm quiescence. A bounded one-second grace
+  returns an explicit cleanup-unconfirmed cancellation failure when close
+  rejects or does not finish. Late call results are consumed and ignored.
+  Xerolo text/structured results and MCP error results remain unchanged.
 - **Agent disposal** removes only that Agent's registrations; registered
   workspace servers stay warm until Host shutdown, which closes the one
   MCPorter Runtime and every pooled child.

@@ -4,9 +4,9 @@
  * and forwards execution to MCPorter by raw tool name; nothing here is a
  * hand-written per-tool wrapper. Execution first awaits the Agent's workspace
  * initialization (validation + live manifest parity), so no call can run
- * before the pinned contract is proven.
+ * before the pinned contract is proven. The DSH tool deliberately declares no
+ * timeout policy; the fixed transport timeout is owned by MCPorter.
  */
-import { TOOL_CALL_TIMEOUT_MS } from './workspace.js'
 import { TOOL_NAME_PREFIX } from './contract.js'
 import { callWorkspaceTool, canonicalMcpValue } from './mcport-host.js'
 
@@ -35,12 +35,10 @@ export function createMcpTool(rawTool, workspace) {
     description: typeof rawTool.description === 'string' ? rawTool.description : `RPG Maker MV ${rawTool.name}`,
     parameters: normalizeSchema(rawTool.inputSchema),
     output: { schema: {}, render: renderResult },
-    timeoutMs: TOOL_CALL_TIMEOUT_MS,
     execute: async (args, exec) => {
       const { canonical, paths } = await workspace.init
       const result = await callWorkspaceTool(paths, canonical, rawTool.name, args ?? {}, {
-        signal: exec?.signal,
-        timeoutMs: TOOL_CALL_TIMEOUT_MS
+        signal: exec?.signal
       })
       return canonicalMcpValue(result)
     },

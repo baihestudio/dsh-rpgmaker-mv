@@ -35,6 +35,13 @@ async function traceRuntimeClose(server, name) {
   }
 }
 
+async function traceFixtureEvent(server, key, value) {
+  const path = server.definition.env?.[key]
+  if (typeof path === 'string' && path.length > 0) {
+    await appendFile(path, `${JSON.stringify(value)}\n`)
+  }
+}
+
 class FixtureServer {
   constructor(definition) {
     this.definition = definition
@@ -148,6 +155,7 @@ class FixtureServer {
 
   async callTool(toolName, args, timeoutMs) {
     await this.start()
+    await traceFixtureEvent(this, 'FIXTURE_CALL_TRACE', { name: this.definition.name, toolName, timeoutMs })
     const request = this.request('tools/call', { name: toolName, arguments: args ?? {} })
     if (!timeoutMs) return request
     let timer
@@ -164,8 +172,13 @@ class FixtureServer {
     if (this.closing) return this.closing
     const child = this.child
     const childClose = this.childClose
-    if (!child || !childClose) return
     const closing = (async () => {
+      const gate = this.definition.env?.FIXTURE_CLOSE_GATE
+      if (typeof gate === 'string' && gate.length > 0) {
+        await appendFile(`${gate}.entered`, `${JSON.stringify({ name: this.definition.name })}\n`)
+        await waitForRelease(gate)
+      }
+      if (!child || !childClose) return
       const timer = setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
       }, 2000)
@@ -215,6 +228,7 @@ export function createRuntime({ servers = [], clientInfo, logger } = {}) {
       const server = serversByName.get(name)
       if (!server) throw new Error(`dsh-workspace-mcp fixture: unknown server ${name}`)
       const message = await server.callTool(toolName, options.args, options.timeoutMs)
+      await traceFixtureEvent(server, 'FIXTURE_CALL_COMPLETE_TRACE', { name, toolName, timeoutMs: options.timeoutMs })
       if (message.error) throw new Error(message.error.message ?? 'RPG Maker MCP call failed')
       return message.result
     },
@@ -224,6 +238,7 @@ export function createRuntime({ servers = [], clientInfo, logger } = {}) {
         if (server) {
           await server.killChild()
           await traceRuntimeClose(server, name)
+          if (server.definition.env?.FIXTURE_CLOSE_FAILURE === '1') throw new Error(`fixture close failed for ${name}`)
         }
         return
       }
