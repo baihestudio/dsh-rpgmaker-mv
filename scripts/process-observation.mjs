@@ -1,41 +1,79 @@
 import { spawn } from 'node:child_process'
 import { basename, join } from 'node:path'
 
-function run(command, args, env, timeoutMs = 10_000) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      env: Object.fromEntries(Object.entries(env ?? process.env).filter((entry) => entry[1] !== undefined)),
-      shell: false,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe']
-    })
+const OBSERVER_CLEANUP_TIMEOUT_MS = 2_000
+
+function hasExited(child) {
+  return child.exitCode !== null || child.signalCode !== null
+}
+
+function waitForObserverExit(child, timeoutMs) {
+  if (hasExited(child)) return Promise.resolve(true)
+  return new Promise((resolve) => {
     let settled = false
-    let stdout = ''
-    let stderr = ''
-    const timer = setTimeout(() => {
+    let timer
+    const finish = (confirmed) => {
       if (settled) return
       settled = true
-      child.kill()
-      reject(new Error(`process observation command timed out after ${timeoutMs} ms`))
-    }, timeoutMs)
-    timer.unref?.()
+      clearTimeout(timer)
+      child.removeListener('exit', onExit)
+      child.removeListener('close', onClose)
+      resolve(confirmed || hasExited(child))
+    }
+    const onExit = () => finish(true)
+    const onClose = () => finish(true)
+    timer = setTimeout(() => finish(false), timeoutMs)
+    child.once('exit', onExit)
+    child.once('close', onClose)
+  })
+}
+
+async function cleanupObserver(child) {
+  if (hasExited(child)) return { confirmed: true }
+  let killError
+  try {
+    child.kill()
+  } catch (error) {
+    killError = error
+  }
+  const confirmed = await waitForObserverExit(child, OBSERVER_CLEANUP_TIMEOUT_MS)
+  return { confirmed, killError }
+}
+
+export async function run(command, args, env, timeoutMs = 10_000, spawnProcess = spawn) {
+  const child = spawnProcess(command, args, {
+    env: Object.fromEntries(Object.entries(env ?? process.env).filter((entry) => entry[1] !== undefined)),
+    shell: false,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+  let stdout = ''
+  let stderr = ''
+  const completion = new Promise((resolve, reject) => {
     child.stdout?.setEncoding('utf8')
     child.stderr?.setEncoding('utf8')
     child.stdout?.on('data', (chunk) => { stdout += chunk })
     child.stderr?.on('data', (chunk) => { stderr += chunk })
-    child.once('error', (error) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      reject(error)
-    })
-    child.once('close', (code) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve({ code: code ?? 1, stdout, stderr })
-    })
+    child.once('error', reject)
+    child.once('close', (code) => resolve({ code: code ?? 1, stdout, stderr }))
   })
+  let timer
+  try {
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`process observation command timed out after ${timeoutMs} ms`)), timeoutMs)
+      timer.unref?.()
+    })
+    return await Promise.race([completion, timeout])
+  } catch (error) {
+    const cleanup = await cleanupObserver(child)
+    if (!cleanup.confirmed) {
+      const detail = cleanup.killError instanceof Error ? `: ${cleanup.killError.message}` : ''
+      throw new Error(`${error instanceof Error ? error.message : String(error)}; observer process cleanup did not confirm termination within ${OBSERVER_CLEANUP_TIMEOUT_MS} ms${detail}`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function normalize(value, platform) {

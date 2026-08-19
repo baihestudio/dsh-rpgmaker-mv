@@ -26,6 +26,7 @@ type StartedProcess = {
   stderr: string;
   closed: Promise<number>;
   stopped: boolean;
+  stopping?: Promise<boolean>;
 };
 
 function requiredOption(argv: string[], name: string): string {
@@ -40,6 +41,10 @@ function requiredOption(argv: string[], name: string): string {
 
 function diagnostic(value: string): string {
   return redactSensitive(value, process.env);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function optionalOption(argv: string[], name: string): string | undefined {
@@ -192,18 +197,29 @@ async function waitForLaunchReady(
 }
 
 async function stopInstalledLaunch(started: StartedProcess, env: Record<string, string>): Promise<boolean> {
-  if (started.stopped) return !(await probeLoopbackPort(WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, 500));
-  started.stopped = true;
-  if (started.child.exitCode === null && started.child.signalCode === null) {
-    await terminateProcessTree(started.child, { platform: 'win32', env });
-  }
-  await started.closed;
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    if (!(await probeLoopbackPort(WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, 500))) return true;
-    await delay(100);
-  }
-  return false;
+  if (started.stopped) return true;
+  if (started.stopping) return started.stopping;
+  const stopPromise = (async (): Promise<boolean> => {
+    if (started.stopped) return true;
+    if (started.child.exitCode === null && started.child.signalCode === null) {
+      await terminateProcessTree(started.child, { platform: 'win32', env });
+    }
+    await started.closed;
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      if (!(await probeLoopbackPort(WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, 500))) {
+        started.stopped = true;
+        return true;
+      }
+      await delay(100);
+    }
+    return false;
+  })();
+  const trackedStop = stopPromise.finally(() => {
+    started.stopping = undefined;
+  });
+  started.stopping = trackedStop;
+  return trackedStop;
 }
 
 async function runInstalledMount(
@@ -270,6 +286,9 @@ const workspace = await makeWorkspace(root);
 const launchCmd = join(installedRoot, 'Launch.cmd');
 const active: StartedProcess[] = [];
 const startedAt = Date.now();
+let primaryFailure: unknown;
+let primaryFailed = false;
+let cleanupFailure: Error | undefined;
 
 try {
   await mkdir(neutralLanding, { recursive: true });
@@ -277,34 +296,34 @@ try {
   active.push(firstStarted);
   const firstLaunch = await waitForLaunchReady(firstStarted, installedRoot, neutralLanding, env);
   const firstProfile = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
-  assert.equal(firstProfile.valid, true);
+  assert.equal(firstProfile.valid, true, 'first installed workspace MCP bundle verification failed');
   const firstPortClosed = await stopInstalledLaunch(firstStarted, env);
-  assert.equal(firstPortClosed, true);
+  assert.equal(firstPortClosed, true, 'first installed Launch.cmd teardown did not terminate its process tree and close the fixed web port');
   active.splice(active.indexOf(firstStarted), 1);
 
   const profilePackage = join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
   await rm(profilePackage, { recursive: true, force: true });
   const brokenProfile = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
-  assert.equal(brokenProfile.valid, false);
+  assert.equal(brokenProfile.valid, false, 'deliberate workspace MCP bundle break was not detected');
 
   const repairStarted = startInstalledLaunch(launchCmd, installedRoot, env);
   active.push(repairStarted);
   const repairLaunch = await waitForLaunchReady(repairStarted, installedRoot, neutralLanding, env);
   const repairedProfile = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
-  assert.equal(repairedProfile.valid, true);
+  assert.equal(repairedProfile.valid, true, 'repaired installed workspace MCP bundle verification failed');
   const repairPortClosed = await stopInstalledLaunch(repairStarted, env);
-  assert.equal(repairPortClosed, true);
+  assert.equal(repairPortClosed, true, 'repair installed Launch.cmd teardown did not terminate its process tree and close the fixed web port');
   active.splice(active.indexOf(repairStarted), 1);
 
   const agentEvidence = await runInstalledMount(installedRoot, dshHome, neutralLanding, workspace, env);
   const directCalls = agentEvidence.directAgentToolCalls as Array<{ isError?: boolean; valueObserved?: boolean }> | undefined;
   const processEvidence = agentEvidence.xeroloProcessEvidence as { children?: unknown[]; shellProcesses?: unknown[] } | undefined;
-  assert.equal(agentEvidence.ok, true);
-  assert.equal(agentEvidence.stableTools, 41);
-  assert.equal(directCalls?.length, 2);
-  assert.equal(directCalls?.some((call) => call.isError !== false || call.valueObserved !== true), false);
-  assert.equal(processEvidence?.children?.length, 1);
-  assert.equal(processEvidence?.shellProcesses?.length, 0);
+  assert.equal(agentEvidence.ok, true, 'installed Agent probe reported failure');
+  assert.equal(agentEvidence.stableTools, 41, 'installed Agent probe exposed an unexpected stable tool count');
+  assert.equal(directCalls?.length, 2, 'installed Agent probe did not record both direct tool calls');
+  assert.equal(directCalls?.some((call) => call.isError !== false || call.valueObserved !== true), false, 'installed Agent direct tool calls did not both succeed and observe values');
+  assert.equal(processEvidence?.children?.length, 1, 'installed Agent probe did not observe exactly one Xerolo child');
+  assert.equal(processEvidence?.shellProcesses?.length, 0, 'installed Agent probe observed an unexpected shell process');
 
   console.log(diagnostic(JSON.stringify({
     ok: true,
@@ -337,9 +356,30 @@ try {
     shutdown: { firstPortClosed, repairPortClosed },
     durationMs: Date.now() - startedAt
   })));
+} catch (error) {
+  primaryFailure = error;
+  primaryFailed = true;
 } finally {
+  const cleanupErrors: string[] = [];
   for (const process of [...active].reverse()) {
-    await stopInstalledLaunch(process, env).catch(() => undefined);
+    try {
+      const portClosed = await stopInstalledLaunch(process, env);
+      if (!portClosed) throw new Error('fixed web port remained open after Launch.cmd process-tree termination');
+    } catch (error) {
+      cleanupErrors.push(`Launch.cmd cleanup for PID ${process.child.pid ?? 'unknown'} failed: ${errorMessage(error)}`);
+    }
   }
-  await rm(root, { recursive: true, force: true });
+  try {
+    await rm(root, { recursive: true, force: true });
+  } catch (error) {
+    cleanupErrors.push(`temporary gate workspace cleanup failed: ${errorMessage(error)}`);
+  }
+  if (cleanupErrors.length > 0) {
+    const message = diagnostic(`installed gate cleanup failed: ${cleanupErrors.join('; ')}`);
+    console.error(message);
+    if (!primaryFailed) cleanupFailure = new Error(message);
+  }
 }
+
+if (primaryFailed) throw primaryFailure;
+if (cleanupFailure) throw cleanupFailure;

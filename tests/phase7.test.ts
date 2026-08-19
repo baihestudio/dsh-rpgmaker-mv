@@ -22,6 +22,7 @@ import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
 import { runDoctor } from '../src/doctor';
 import { runCommand } from '../src/process';
+import { run as runProcessObservation } from '../scripts/process-observation.mjs';
 import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, uninstallHarness, UninstallSafetyError } from '../src/windows';
 import { visionToolkitActivationFixture, visionToolkitFixture } from './fixtures/vision-toolkit';
@@ -271,6 +272,25 @@ describe('Windows release gate foundations', () => {
     expect(Object.prototype.hasOwnProperty.call(out, 'Path')).toBe(false);
     expect(out.DSH_HOME).toBe('c');
     expect(withEnvironmentPath({ PATH: 'a' }, 'x', 'darwin').PATH).toBe('x');
+  });
+
+  test('waits for process observation cleanup after a timeout', async () => {
+    const observer = child() as unknown as EventEmitter & { exitCode: number | null; signalCode: string | null; kill: () => boolean };
+    let killed = false;
+    observer.kill = () => {
+      killed = true;
+      return true;
+    };
+    const observation = runProcessObservation('fixture', [], {}, 1, () => observer);
+    let settled = false;
+    observation.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+    expect(killed).toBe(true);
+    expect(settled).toBe(false);
+    observer.exitCode = 1;
+    observer.emit('exit', 1, null);
+    observer.emit('close', 1);
+    await expect(observation).rejects.toThrow(/process observation command timed out/);
   });
 
   test('prefers a real PowerShell 7 install over the WindowsApps execution alias', async () => {
