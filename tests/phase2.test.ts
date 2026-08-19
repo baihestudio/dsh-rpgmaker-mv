@@ -324,7 +324,7 @@ describe('RPG Maker MCP deployment', () => {
     }
   });
 
-  test('prepares a project-neutral composition and launches from the owned landing directory', async () => {
+  test('uses the explicit DSH home for preparation and the spawned Host', async () => {
     const root = await temp('phase2-launch');
     try {
       const runtime = await makeDshRuntime(root);
@@ -335,45 +335,64 @@ describe('RPG Maker MCP deployment', () => {
       const child = new EventEmitter() as EventEmitter & { exitCode: number | null; signalCode: NodeJS.Signals | null };
       child.exitCode = null;
       child.signalCode = null;
+      const dshHome = join(root, 'dsh-home');
+      const ambientDshHome = join(root, 'ambient-dsh-home');
+      const preparationHomes: Record<string, string | undefined> = {};
       let launch: { args: string[]; cwd?: string; env?: Record<string, string | undefined> } | undefined;
       const result = await launchRpgmakerProject({
         platform: 'win32',
-        dshHome: join(root, 'dsh-home'),
+        dshHome,
+        env: { DSH_HOME: ambientDshHome },
         runtimeDir: runtime,
         dshExecutable: dsh,
         jsExecutable: bun,
         agentPreset: 'playtest-debug',
         sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'),
-        dshRuntimePreparer: async () => ({
-          status: 'unchanged',
-          runtimeDir: runtime,
-          verification: { valid: true, errors: [], dshPackageVersion: DSH_VERSION, dshExecutable: dsh, koffiLoaded: true }
-        }),
-        mcporterRuntimePreparer: async (_options, runtimeDir) => ({
-          valid: true,
-          errors: [],
-          packageVersion: '0.12.3',
-          packageDir: join(runtimeDir, 'node_modules', 'mcporter'),
-          entrypoint: join(runtimeDir, 'node_modules', 'mcporter', 'dist', 'index.js')
-        }),
-        mcpRuntimePreparer: async (_options, runtimeDir) => ({
-          valid: true,
-          errors: [],
-          packageVersion: '0.1.0',
-          executable: join(runtimeDir, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist', 'index.js')
-        }),
-        workspaceMcpBundlePreparer: async (options) => ({
-          valid: true,
-          errors: [],
-          packageDir: join(options.programRoot ?? root, 'bundle', 'dsh-workspace-mcp'),
-          packageVersion: '0.1.0',
-          bundleOccurrences: 1,
-          entrypoint: join(root, 'bundle', 'dsh-workspace-mcp', 'lib', 'index.js'),
-          ownedPath: true,
-          sha256: 'fixture'
-        }),
-        commandRunner: async (_command, args) => {
-          if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: agent-presets\n  default: playtest-debug\n', stderr: '' };
+        dshRuntimePreparer: async (options) => {
+          preparationHomes.dsh = options.env?.DSH_HOME;
+          return {
+            status: 'unchanged',
+            runtimeDir: runtime,
+            verification: { valid: true, errors: [], dshPackageVersion: DSH_VERSION, dshExecutable: dsh, koffiLoaded: true }
+          };
+        },
+        mcporterRuntimePreparer: async (options, runtimeDir) => {
+          preparationHomes.mcporter = options.env?.DSH_HOME;
+          return {
+            valid: true,
+            errors: [],
+            packageVersion: '0.12.3',
+            packageDir: join(runtimeDir, 'node_modules', 'mcporter'),
+            entrypoint: join(runtimeDir, 'node_modules', 'mcporter', 'dist', 'index.js')
+          };
+        },
+        mcpRuntimePreparer: async (options, runtimeDir) => {
+          preparationHomes.mcp = options.env?.DSH_HOME;
+          return {
+            valid: true,
+            errors: [],
+            packageVersion: '0.1.0',
+            executable: join(runtimeDir, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist', 'index.js')
+          };
+        },
+        workspaceMcpBundlePreparer: async (options) => {
+          preparationHomes.bundle = options.env?.DSH_HOME;
+          return {
+            valid: true,
+            errors: [],
+            packageDir: join(options.programRoot ?? root, 'bundle', 'dsh-workspace-mcp'),
+            packageVersion: '0.1.0',
+            bundleOccurrences: 1,
+            entrypoint: join(root, 'bundle', 'dsh-workspace-mcp', 'lib', 'index.js'),
+            ownedPath: true,
+            sha256: 'fixture'
+          };
+        },
+        commandRunner: async (_command, args, options) => {
+          if (args.includes('--dump-config')) {
+            preparationHomes.validation = options.env?.DSH_HOME;
+            return { exitCode: 0, stdout: '- id: agent-presets\n  default: playtest-debug\n', stderr: '' };
+          }
           return { exitCode: 0, stdout: '', stderr: '' };
         },
         portProbe: (() => {
@@ -387,12 +406,20 @@ describe('RPG Maker MCP deployment', () => {
         }
       });
       const neutral = join(root, 'program', 'neutral');
+      expect(preparationHomes).toEqual({
+        dsh: dshHome,
+        mcporter: dshHome,
+        mcp: dshHome,
+        bundle: dshHome,
+        validation: dshHome
+      });
       expect(result.deployment.agentPreset).toBe('playtest-debug');
       expect(launch?.cwd).toBe(neutral);
       expect(launch?.args.slice(0, 2)).toEqual(['--profile', 'web']);
       expect(launch?.args[2]).toBe('--patch');
       expect(launch?.args[3]).toBe(result.deployment.compositionPath);
       expect(launch?.args.join(' ')).not.toContain('--project');
+      expect(launch?.env?.DSH_HOME).toBe(dshHome);
       expect(launch?.env?.DSH_RPGMAKER_MCPORTER_RUNTIME).toBe(result.deployment.mcporterRuntimeDir);
       expect(launch?.env?.DSH_RPGMAKER_XEROLO_RUNTIME).toBe(result.deployment.xeroloRuntimeDir);
       expect(launch?.env?.DSH_RPGMAKER_JS_RUNNER).toBe(bun);

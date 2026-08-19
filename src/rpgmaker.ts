@@ -760,8 +760,9 @@ async function validatePresetComposition(
 
 export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Promise<RpgMakerLaunchPreparation> {
   const platform = options.platform ?? process.platform;
-  const env = options.env ?? process.env;
-  const paths = resolveHarnessPaths({ ...options, platform, env });
+  const ambientEnv = options.env ?? process.env;
+  const paths = resolveHarnessPaths({ ...options, platform, env: ambientEnv });
+  const env = { ...ambientEnv, DSH_HOME: paths.dshHome };
   const agentPreset = options.agentPreset ?? RPGMAKER_PRESET_ID;
   if (![RPGMAKER_PRESET_ID, PLAYTEST_DEBUG_PRESET_ID, ASSET_WORKSHOP_PRESET_ID, BUILD_RELEASE_PRESET_ID].includes(agentPreset)) {
     throw new RpgMakerStartupError(`Unknown RPG Maker agent preset: ${agentPreset}`);
@@ -872,7 +873,8 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
   await ensureLaunchPort({ ...options, bindWeb: true, webHost: WINDOWS_DSH_HOST, webPort: WINDOWS_DSH_PORT });
   const deployment = await prepareRpgMakerLaunch(options);
   const paths = resolveHarnessPaths(options);
-  const imageEnvironment = await existingImageEnvironment(options, paths, options.platform ?? process.platform, options.env ?? process.env);
+  const env = { ...(options.env ?? process.env), DSH_HOME: paths.dshHome };
+  const imageEnvironment = await existingImageEnvironment(options, paths, options.platform ?? process.platform, env);
   const releaseEnvironment = {
     DSH_RPGMAKER_RELEASE_CLI: fileURLToPath(new URL('./cli.ts', import.meta.url)),
     DSH_IMAGE_WORKSHOP_CLI: fileURLToPath(new URL('./cli.ts', import.meta.url))
@@ -884,6 +886,7 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
   };
   const result = await launchProject({
     ...options,
+    env,
     dshExecutable: deployment.dshExecutable,
     bindWeb: true,
     portAlreadyChecked: true,

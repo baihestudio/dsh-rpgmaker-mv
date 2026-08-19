@@ -24,6 +24,8 @@ function assertValidation(label, validation) {
 }
 
 let mounted;
+const agentHandles = new Map();
+const agentAssemblies = new Map();
 try {
   mounted = await profileModule.runProfile({
     profile: 'web',
@@ -59,54 +61,62 @@ try {
     if (new Set(presetSchemas.map((schema) => schema.name)).size !== presetSchemas.length) throw new Error(`mounted ${expected.id} has duplicate tool schemas`);
     if (presetSchemas.filter((schema) => schema.name === 'run_code').length !== 1) throw new Error(`mounted ${expected.id} did not retain the PTC run_code tool`);
   }
-  const schemas = tools.schemas?.() ?? [];
-  const debugSchemas = tools?.schemas?.(standingKeys.get('playtest-debug')) ?? [];
-  const mcpTools = schemas.filter((schema) => schema.name?.startsWith('mcp__rpgmaker_mv__'));
-  const debugMcpTools = debugSchemas.filter((schema) => schema.name?.startsWith('mcp__rpgmaker_mv__'));
-  const requiredPlaytestTools = ['playtest_start', 'playtest_status', 'playtest_log', 'playtest_stop'];
-  if (new Set(schemas.map((schema) => schema.name)).size !== schemas.length) throw new Error('rc.7 mounted duplicate tool schemas');
-  if (mcpTools.length < 41 || debugMcpTools.length < 41) throw new Error(`official DSH registered only ${mcpTools.length}/${debugMcpTools.length} RPG Maker tools`);
-  if (requiredPlaytestTools.some((name) => !mcpTools.some((schema) => schema.name === `mcp__rpgmaker_mv__${name}`) || !debugMcpTools.some((schema) => schema.name === `mcp__rpgmaker_mv__${name}`))) {
-    throw new Error(`official DSH did not register every RPG Maker Playtest tool: ${requiredPlaytestTools.join(', ')}`);
-  }
-  if (schemas.some((schema) => schema.name === 'playtest_debug') || debugSchemas.some((schema) => schema.name === 'playtest_debug')) {
+  const hostSchemas = tools.schemas?.() ?? [];
+  const debugStandingSchemas = tools.schemas?.(standingKeys.get('playtest-debug')) ?? [];
+  if (new Set(hostSchemas.map((schema) => schema.name)).size !== hostSchemas.length) throw new Error('rc.7 mounted duplicate tool schemas');
+  if (hostSchemas.some((schema) => schema.name === 'playtest_debug') || debugStandingSchemas.some((schema) => schema.name === 'playtest_debug')) {
     throw new Error('playtest-debug mounted an unexpected custom workflow tool');
   }
-
   const agentLoop = mounted.ctx.get('agentLoop');
   const systemPrompt = mounted.ctx.get('systemPrompt');
   if (!agentLoop || !systemPrompt) throw new Error('official DSH agent-loop or system-prompt service did not mount');
   for (const expected of expectedPresets) {
-    let handle;
-    try {
-      handle = await agentLoop.createAgent(mounted.ctx, {
-        sessionId: randomUUID(),
-        meta: { cwd: process.cwd(), agentPreset: expected.id },
-        setup: async (agentCtx) => { await presets.mount(agentCtx, expected.id); }
-      });
-      const assembly = await systemPrompt.assemble(assembleContextFor(handle.agent));
-      const personaSections = assembly.sections.filter((section) => String(section.name ?? '').toLowerCase().includes('persona'));
-      if (personaSections.length !== 1) throw new Error(`mounted ${expected.id} did not expose exactly one effective persona section`);
-      const prompt = assembly.sections.map((section) => section.text).join('\n');
-      if (!prompt.includes(expected.promptFact)) throw new Error(`mounted ${expected.id} persona omitted its domain fact`);
-      if (!prompt.includes('使用用户当前使用的语言回复')) throw new Error(`mounted ${expected.id} persona omitted the language rule`);
-      if (!prompt.includes('rpgmaker') || !prompt.includes('playtest-debug') || !prompt.includes('asset-workshop') || !prompt.includes('build-release')) {
-        throw new Error(`mounted ${expected.id} persona omitted the specialist roster`);
-      }
-    } finally {
-      if (handle) await handle.dispose();
+    const handle = await agentLoop.createAgent(mounted.ctx, {
+      sessionId: randomUUID(),
+      meta: { cwd: process.cwd(), agentPreset: expected.id },
+      setup: async (agentCtx) => { await presets.mount(agentCtx, expected.id); }
+    });
+    agentHandles.set(expected.id, handle);
+    const assembly = await systemPrompt.assemble(assembleContextFor(handle.agent));
+    agentAssemblies.set(expected.id, assembly);
+    const personaSections = assembly.sections.filter((section) => String(section.name ?? '').toLowerCase().includes('persona'));
+    if (personaSections.length !== 1) throw new Error(`mounted ${expected.id} did not expose exactly one effective persona section`);
+    const prompt = assembly.sections.map((section) => section.text).join('\n');
+    if (!prompt.includes(expected.promptFact)) throw new Error(`mounted ${expected.id} persona omitted its domain fact`);
+    if (!prompt.includes('使用用户当前使用的语言回复')) throw new Error(`mounted ${expected.id} persona omitted the language rule`);
+    if (!prompt.includes('rpgmaker') || !prompt.includes('playtest-debug') || !prompt.includes('asset-workshop') || !prompt.includes('build-release')) {
+      throw new Error(`mounted ${expected.id} persona omitted the specialist roster`);
     }
   }
 
+  const rpgmakerSchemas = agentAssemblies.get('rpgmaker')?.tools ?? [];
+  const debugSchemas = agentAssemblies.get('playtest-debug')?.tools ?? [];
+  const rpgmakerTools = rpgmakerSchemas.filter((schema) => schema.name?.startsWith('rpgmaker_'));
+  const debugRpgmakerTools = debugSchemas.filter((schema) => schema.name?.startsWith('rpgmaker_'));
+  const requiredPlaytestTools = ['playtest_start', 'playtest_status', 'playtest_log', 'playtest_stop'];
+  if (new Set(rpgmakerTools.map((schema) => schema.name)).size !== rpgmakerTools.length || new Set(debugRpgmakerTools.map((schema) => schema.name)).size !== debugRpgmakerTools.length) {
+    throw new Error('workspace Agent registered duplicate stable RPG Maker tool schemas');
+  }
+  if (rpgmakerTools.length < 41 || debugRpgmakerTools.length < 41) throw new Error(`official DSH registered only ${rpgmakerTools.length}/${debugRpgmakerTools.length} stable RPG Maker tools`);
+  if (requiredPlaytestTools.some((name) => !rpgmakerTools.some((schema) => schema.name === `rpgmaker_${name}`) || !debugRpgmakerTools.some((schema) => schema.name === `rpgmaker_${name}`))) {
+    throw new Error(`official DSH did not register every stable RPG Maker Playtest tool: ${requiredPlaytestTools.join(', ')}`);
+  }
+  if (rpgmakerSchemas.some((schema) => schema.name === 'playtest_debug') || debugSchemas.some((schema) => schema.name === 'playtest_debug')) {
+    throw new Error('playtest-debug mounted an unexpected custom workflow tool');
+  }
+
+  const rpgmakerHandle = agentHandles.get('rpgmaker');
+  if (!rpgmakerHandle) throw new Error('rpgmaker workspace Agent was not created');
   let callNumber = 0;
   const call = async (name, args) => {
     const result = await tools.execute({
       callId: `phase2-real-${++callNumber}`,
-      name: `mcp__rpgmaker_mv__${name}`,
+      name: `rpgmaker_${name}`,
       arguments: args,
+      agent: rpgmakerHandle.agent,
       signal: new AbortController().signal,
     });
-    if (result.isError) throw new Error(`official DSH MCP ${name} returned an error: ${JSON.stringify(result)}`);
+    if (result.isError) throw new Error(`official DSH stable RPG Maker tool ${name} returned an error: ${JSON.stringify(result)}`);
     return result.value ?? result;
   };
 
@@ -147,7 +157,8 @@ try {
   if (restored?.name !== 'Hero') throw new Error('restore reread did not restore the actor record');
   const finalValidation = unwrap(await call('validate_project', {}));
   assertValidation('restore', finalValidation);
-  console.log(JSON.stringify({ ok: true, presets: expectedPresets.map((expected) => expected.id), defaultPreset: expectedPresets[0].id, playtestStatus, mcpTools: mcpTools.length, calls: callNumber, mutation: reread.name, restored: restored.name }));
+  console.log(JSON.stringify({ ok: true, presets: expectedPresets.map((expected) => expected.id), defaultPreset: expectedPresets[0].id, playtestStatus, mcpTools: rpgmakerTools.length, calls: callNumber, mutation: reread.name, restored: restored.name }));
 } finally {
+  for (const handle of agentHandles.values()) await handle.dispose().catch(() => undefined);
   if (mounted) await mounted.shutdown.shutdown(0);
 }
