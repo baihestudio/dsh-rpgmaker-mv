@@ -106,7 +106,7 @@ export async function listProcessRecords(platform = process.platform, env = proc
     const powershell = env.SystemRoot
       ? join(env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
       : 'powershell.exe'
-    const script = "$ErrorActionPreference='Stop'; Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress"
+    const script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; $ErrorActionPreference='Stop'; Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress"
     const result = await run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], env)
     if (result.code !== 0) throw new Error(`Windows process observation failed with exit code ${result.code}`)
     return parseWindowsProcesses(result.stdout)
