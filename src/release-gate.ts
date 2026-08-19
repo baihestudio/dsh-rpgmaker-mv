@@ -12,9 +12,9 @@ import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrer
 import { prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { prepareMcporterRuntime } from './mcport';
 import { prepareRpgmPackerRuntime } from './release';
-import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_BUNDLE_RELATIVE } from './image-plugin';
+import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE, IMAGE_WORKSHOP_BUNDLE_RELATIVE } from './image-plugin';
 import { preparePnpmRuntime, prepareVisionToolkit } from './vision-toolkit';
-import { WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
+import { WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
@@ -423,7 +423,6 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
   const result = await runner(command, args, { env: withoutCredentials(env), platform, timeoutMs: 30_000 });
   if (result.exitCode !== 0) throw new ReleaseGateError(`Release ZIP inspection failed: ${result.stderr || result.stdout}`.trim());
   const entries = result.stdout.split(/\r?\n/).map((entry) => entry.trim().replaceAll('\\', '/').replace(/^\.\//, '')).filter(Boolean);
-  const archivePath = (entry: string): string => entry.replaceAll('\\', '/');
   const requiredEntries = [
     'Install.cmd',
     'install.ps1',
@@ -438,10 +437,18 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'src/workspace-mcp.ts',
     'src/vision-toolkit.ts',
     'presets/rpgmaker/preset.yml',
-    `${archivePath(IMAGE_WORKSHOP_BUNDLE_RELATIVE)}/package.json`,
-    `${archivePath(WORKSPACE_MCP_BUNDLE_RELATIVE)}/package.json`,
-    `${archivePath(WORKSPACE_MCP_BUNDLE_RELATIVE)}/lib/index.js`,
-    `${archivePath(WORKSPACE_MCP_BUNDLE_RELATIVE)}/lib/xerolo-manifest.js`
+    `${IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/cordis.patch.yml`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/LICENSE`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/README.md`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/contract.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/env.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/index.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/mcport-host.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/tools.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/workspace.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/xerolo-manifest.js`
   ];
   const missing = requiredEntries.filter((entry) => !entries.includes(entry) && !entries.some((candidate) => candidate.startsWith(`${entry}/`)));
   return { path: zipPath, entries, requiredEntries, valid: missing.length === 0, missing };

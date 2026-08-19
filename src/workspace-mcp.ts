@@ -23,6 +23,8 @@ export const WORKSPACE_MCP_ROW_ID = 'workspace-mcp';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
 export const WORKSPACE_MCP_SHA256 = 'e3c4674f0f05d3c1a87ba42eaef498cee581ccc1bbc6b2abbcba9cf1616513e6';
 export const WORKSPACE_MCP_BUNDLE_RELATIVE = join('bundle', 'dsh-workspace-mcp');
+/** Archive entries always use POSIX separators, including on Windows. */
+export const WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE = 'bundle/dsh-workspace-mcp';
 
 /** Host env contract consumed by the prebuilt workspace bundle. */
 export const MCPORTER_RUNTIME_ENV = 'DSH_RPGMAKER_MCPORTER_RUNTIME';

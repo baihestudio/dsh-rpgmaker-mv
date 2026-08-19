@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
@@ -7,7 +8,12 @@ import { spawn } from 'node:child_process';
 
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease } from '../src/release-gate';
-import { WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
+import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
+import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
+import { PNPM_VERSION, VISION_TOOLKIT_NPM_INTEGRITY, VISION_TOOLKIT_PACKAGE, VISION_TOOLKIT_VERSION, VISION_TOOL_NAMES } from '../src/vision-toolkit';
+import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
+import { RPGMPACKER_NPM_INTEGRITY, RPGMPACKER_PACKAGE, RPGMPACKER_SCRIPT, RPGMPACKER_VERSION } from '../src/release';
+import { WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
 import { installWindowsPrerequisites, PrerequisiteConsentError, verifyWindowsPrerequisites } from '../src/prerequisites';
 import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
@@ -36,6 +42,7 @@ async function project(root: string): Promise<string> {
 
 async function dshRuntime(runtime: string): Promise<void> {
   await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true });
+  await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh-launch-environment', 'lib'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', 'koffi'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
   await writeFile(join(runtime, 'package.json'), JSON.stringify({ dependencies: { [DSH_PACKAGE_NAME]: DSH_VERSION } }));
@@ -45,6 +52,8 @@ async function dshRuntime(runtime: string): Promise<void> {
   }));
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ version: DSH_VERSION, bin: { dsh: 'lib/bin.js' } }));
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'fixture');
+  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'profile-boot-fixture.js'), 'fixture');
+  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh-launch-environment', 'lib', 'index.js'), 'fixture');
   await writeFile(join(runtime, 'node_modules', '.bin', 'dsh.cmd'), '@echo off\r\n');
   await writeFile(join(runtime, 'node_modules', 'koffi', 'package.json'), JSON.stringify({ version: '2.12.0' }));
 }
@@ -97,6 +106,151 @@ function prerequisiteRunner() {
     if (name === 'coreutils-manager.exe' && args[0] === 'status') return { exitCode: 0, stdout: 'find enabled\ngrep enabled\n', stderr: '' };
     if (name === '7z.exe' && args[0] === 'i') return { exitCode: 0, stdout: '7-Zip 24.09 (x64) : Copyright (c) 1999-2025 Igor Pavlov\n', stderr: '' };
     return { exitCode: 0, stdout: `${name} 0.1.0`, stderr: '' };
+  };
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+async function writePinnedPackageRuntime(
+  runtime: string,
+  packageName: string,
+  version: string,
+  integrity: string,
+  packageManifest: Record<string, unknown>,
+  lockMetadata: Record<string, unknown> = {}
+): Promise<void> {
+  const packageDir = join(runtime, 'node_modules', ...packageName.split('/'));
+  await mkdir(packageDir, { recursive: true });
+  await writeFile(join(runtime, 'package.json'), JSON.stringify({ private: true, dependencies: { [packageName]: version } }));
+  await writeFile(join(runtime, 'bun.lock'), JSON.stringify({
+    lockfileVersion: 1,
+    workspaces: { '': { dependencies: { [packageName]: version } } },
+    packages: { [packageName]: [`${packageName}@${version}`, '', lockMetadata, integrity] }
+  }));
+  await writeFile(join(packageDir, 'package.json'), JSON.stringify(packageManifest));
+  const entry = typeof packageManifest.main === 'string'
+    ? packageManifest.main
+    : Object.values((packageManifest.bin ?? {}) as Record<string, unknown>).find((value): value is string => typeof value === 'string');
+  if (entry) {
+    await mkdir(dirname(join(packageDir, entry)), { recursive: true });
+    await writeFile(join(packageDir, entry), 'export {}\n');
+  }
+}
+
+async function writePnpmRuntime(runtime: string): Promise<void> {
+  const packageDir = join(runtime, 'node_modules', 'pnpm');
+  await mkdir(join(packageDir, 'bin'), { recursive: true });
+  await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
+  await writeFile(join(packageDir, 'package.json'), JSON.stringify({ version: PNPM_VERSION, bin: { pnpm: 'bin/pnpm.cjs' } }));
+  await writeFile(join(packageDir, 'bin', 'pnpm.cjs'), '/* fixture pnpm */\n');
+  await writeFile(join(runtime, 'node_modules', '.bin', 'pnpm.cmd'), '@echo off\r\n');
+}
+
+async function writeVisionRuntimeMarker(dshHome: string): Promise<void> {
+  const runtime = join(dshHome, 'cache', 'dsh-vision-toolkit', 'python', 'fixture');
+  await mkdir(join(runtime, 'Scripts'), { recursive: true });
+  await writeFile(join(runtime, 'Scripts', 'python.exe'), 'fixture python');
+  await writeFile(join(runtime, 'runtime.json'), JSON.stringify({
+    schemaVersion: 1,
+    pythonVersion: '3.13.15',
+    upstreamCommit: 'fixture-commit',
+    upstreamContentSha256: sha256('fixture-upstream'),
+    requirementsSha256: sha256('fixture-requirements')
+  }));
+}
+
+async function writeProfilePlugin(
+  dshHome: string,
+  packageName: string,
+  version: string,
+  integrity: string,
+  source?: string
+): Promise<void> {
+  const profile = join(dshHome, 'profiles', 'web');
+  const installed = join(profile, 'node_modules', ...packageName.split('/'));
+  await mkdir(dirname(installed), { recursive: true });
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8')) as Record<string, unknown>;
+  } catch {
+    manifest = { name: 'dsh-profile-web', private: true, version: '0.1.0' };
+  }
+  const dependencies = { ...((manifest.dependencies ?? {}) as Record<string, string>), [packageName]: source ? `file:${source}` : version };
+  manifest.dependencies = dependencies;
+  manifest.dsh = { profile: { bundles: [VISION_TOOLKIT_PACKAGE] } };
+  if (source) {
+    await rm(installed, { recursive: true, force: true });
+    await symlink(source, installed, 'dir');
+  } else {
+    await mkdir(join(installed, 'lib'), { recursive: true });
+    await writeFile(join(installed, 'package.json'), JSON.stringify({
+      name: packageName,
+      version,
+      license: 'MIT',
+      main: 'lib/index.js',
+      dsh: { bundle: { patch: './cordis.patch.yml' } }
+    }));
+    await writeFile(join(installed, 'lib', 'index.js'), 'export {}\n');
+  }
+  await mkdir(profile, { recursive: true });
+  await writeFile(join(profile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFile(join(profile, 'pnpm-lock.yaml'), `${packageName}@${version}\n${integrity}\n`);
+}
+
+function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ command: string; args: string[]; cwd?: string }>) {
+  const base = prerequisiteRunner();
+  return async (command: string, args: string[], options: { cwd?: string }) => {
+    calls.push({ command, args: [...args], cwd: options.cwd });
+    const cwd = options.cwd;
+    const packageSpec = args.find((value) => value.includes('@') && !value.startsWith('--'));
+    if (args[0] === 'install' && packageSpec === `pnpm@${PNPM_VERSION}`) {
+      await writePnpmRuntime(cwd!);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'add' && packageSpec === `${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`) {
+      await writePinnedPackageRuntime(cwd!, MCPORTER_PACKAGE, MCPORTER_VERSION, MCPORTER_NPM_INTEGRITY, { version: MCPORTER_VERSION, main: 'dist/index.js' });
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'add' && packageSpec === `${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`) {
+      await writePinnedPackageRuntime(cwd!, RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==', { version: RPGMAKER_MCP_VERSION, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } });
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'add' && packageSpec === `${RPGMPACKER_PACKAGE}@${RPGMPACKER_VERSION}`) {
+      await writePinnedPackageRuntime(cwd!, RPGMPACKER_PACKAGE, RPGMPACKER_VERSION, RPGMPACKER_NPM_INTEGRITY, { version: RPGMPACKER_VERSION, bin: { rpgmpacket: RPGMPACKER_SCRIPT } }, { bin: { rpgmpacket: RPGMPACKER_SCRIPT } });
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'add' && packageSpec === `free-tex-packer-core@${FREE_TEX_PACKER_VERSION}`) {
+      await writePinnedPackageRuntime(cwd!, 'free-tex-packer-core', FREE_TEX_PACKER_VERSION, FREE_TEX_LOCK_INTEGRITY, { version: FREE_TEX_PACKER_VERSION });
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'add' && packageSpec === `${DSH_PACKAGE_NAME}@${DSH_VERSION}`) {
+      await dshRuntime(cwd!);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'pm') return { exitCode: 0, stdout: '', stderr: '' };
+    if (args[0] === 'plugin') {
+      const local = args.find((value) => value.startsWith('file:'))?.slice('file:'.length);
+      if (packageSpec?.startsWith(`${VISION_TOOLKIT_PACKAGE}@`)) {
+        await writeProfilePlugin(context.dshHome, VISION_TOOLKIT_PACKAGE, VISION_TOOLKIT_VERSION, VISION_TOOLKIT_NPM_INTEGRITY);
+      } else if (local) {
+        await writeProfilePlugin(context.dshHome, '@baihestudio/dsh-image-workshop', '0.1.0', '', local);
+      } else {
+        throw new Error(`unexpected plugin fixture args: ${args.join(' ')}`);
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }
+    const name = basename(command).toLowerCase();
+    if (name === 'magick.exe') return { exitCode: 0, stdout: 'ImageMagick 7.1.2-29 Q16 x64\n', stderr: '' };
+    if (name === 'oxipng.exe') return { exitCode: 0, stdout: 'oxipng 10.2.0\n', stderr: '' };
+    if (name === 'python.exe') return { exitCode: 0, stdout: 'Python 3.13.15\n', stderr: '' };
+    if (name === 'node.exe' && args[0]?.endsWith('vision-toolkit-profile-probe.mjs')) {
+      return { exitCode: 0, stdout: JSON.stringify({ valid: true, settingsReady: true, attachmentAdmissionReady: true, tools: VISION_TOOL_NAMES }) + '\n', stderr: '' };
+    }
+    if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
+    if (args[0] === 'add') throw new Error(`unexpected dependency fixture args: ${args.join(' ')}`);
+    return base(command, args, options);
   };
 }
 
@@ -509,6 +663,70 @@ describe('Windows release gate foundations', () => {
     }
   });
 
+  test('default install and repair prepare owned pnpm, MCPorter, and Xerolo runtimes', async () => {
+    const root = await temp('phase7-default-dependencies');
+    try {
+      const { bin, env: prerequisiteEnv } = await prerequisiteBin(root);
+      const imageMagick = join(bin, 'magick.exe');
+      const oxipng = join(bin, 'oxipng.exe');
+      await writeFile(imageMagick, 'fixture ImageMagick');
+      await writeFile(oxipng, 'fixture oxipng');
+      const mutable = join(root, 'mutable');
+      const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const state = join(mutable, 'state');
+      await writeVisionRuntimeMarker(state);
+      const bun = join(bin, 'bun.exe');
+      const npm = join(bin, 'npm.cmd');
+      const node = join(bin, 'node.exe');
+      const env = {
+        ...prerequisiteEnv,
+        BUN_EXECUTABLE: bun,
+        NPM_EXECUTABLE: npm,
+        NODE_EXECUTABLE: node,
+        DSH_IMAGE_MAGICK: imageMagick,
+        DSH_IMAGE_MAGICK_SHA256: sha256('fixture ImageMagick'),
+        DSH_OXIPNG: oxipng,
+        DSH_OXIPNG_SHA256: sha256('fixture oxipng')
+      };
+      const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
+      const commandRunner = defaultInstallRunner({ dshHome: state }, calls);
+      const install = () => installWindowsRelease({
+        platform: 'win32',
+        env,
+        releaseRoot: process.cwd(),
+        programRoot: program,
+        mutableRoot: mutable,
+        dshHome: state,
+        bunExecutable: bun,
+        npmExecutable: npm,
+        commandRunner,
+        consent: true,
+        createShortcut: async ({ targetPath }) => {
+          const shortcut = join(root, 'Start Menu', 'DSH for RPG Maker MV.lnk');
+          await mkdir(dirname(shortcut), { recursive: true });
+          await writeFile(shortcut, targetPath);
+          return shortcut;
+        }
+      });
+
+      await install();
+      expect(calls.some((call) => call.args.includes(`pnpm@${PNPM_VERSION}`))).toBe(true);
+      expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
+      expect(calls.some((call) => call.args.includes(`${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`))).toBe(true);
+      expect(await Bun.file(join(program, 'runtime', 'pnpm', 'node_modules', 'pnpm', 'package.json')).exists()).toBe(true);
+      expect(await Bun.file(join(program, 'runtime', 'mcporter', 'node_modules', MCPORTER_PACKAGE, 'dist', 'index.js')).exists()).toBe(true);
+      expect(await Bun.file(join(program, 'runtime', 'mcp', 'node_modules', ...RPGMAKER_MCP_PACKAGE.split('/'), 'dist', 'index.js')).exists()).toBe(true);
+
+      calls.length = 0;
+      await install();
+      expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
+      expect(await Bun.file(join(program, 'runtime', 'mcporter', 'package.json')).exists()).toBe(true);
+      expect(await Bun.file(join(program, 'runtime', 'mcp', 'package.json')).exists()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('never changes the fixed web port and handles occupied-port choices truthfully', async () => {
     const opened: string[] = [];
     let probes = 0;
@@ -698,9 +916,20 @@ describe('Windows release gate foundations', () => {
       expect(inspection.valid).toBe(true);
       expect(inspection.entries).toContain('Install.cmd');
       expect(inspection.entries).toContain('src/cli.ts');
-      expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_RELATIVE}/package.json`);
-      expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_RELATIVE}/lib/index.js`);
-      expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_RELATIVE}/lib/xerolo-manifest.js`);
+      expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/package.json`);
+      expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/cordis.patch.yml`);
+      expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/index.js`);
+      expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/mcport-host.js`);
+      expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/xerolo-manifest.js`);
+      const windowsListing = inspection.entries.map((entry) => entry.replaceAll('/', '\\')).join('\r\n');
+      const windowsInspection = await inspectReleaseZip({
+        zipPath: archive,
+        platform: 'win32',
+        unzipExecutable: 'fixture-unzip.exe',
+        commandRunner: async () => ({ exitCode: 0, stdout: windowsListing, stderr: '' })
+      });
+      expect(windowsInspection.valid).toBe(true);
+      expect(windowsInspection.requiredEntries.every((entry) => !entry.includes('\\'))).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -16,6 +16,13 @@ Contributors can still run the underlying bootstrap and doctor scripts from Powe
 
 The harness keeps the official DeepSeek Harness runtime in an app-owned tree and never forks or edits DSH. Windows is the primary, release-blocking platform; macOS support is best effort.
 
+The real workspace acceptance uses only disposable state: `bun run phase2:real`
+prepares the project-neutral Host from a neutral landing directory, checks the
+CJK/space workspace, one pooled Host server, synchronously collected stable
+`rpgmaker_*` tools, and direct calls without a shell or `danger-full-access`
+retry. The Windows-only `bun run phase6:windows-manual -- --rpgmaker-installation
+'<path>'` command remains the complementary native MV packaging gate.
+
 ### Install and repair
 
 `bootstrap.ps1` builds a fresh staging tree with the pinned `@deepseek-ai/dsh@0.1.0-rc.7` (npm integrity `sha512-ZceDCJ8FAywih+USW/OMk9jEhunlvJBGEz4kqrhau23hPzbciOazZrywH0nBRsaalSeAJ1JGBmjtw4OSjToStw==`), runs `bun pm trust --all`, verifies the exact package/lock facts and `koffi`, then swaps it into place. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched; older DSH releases are not accepted. If process termination or rollback cannot be confirmed, the lock reports a degraded state and preserves recoverable staging/rollback paths for manual recovery. Re-running against a valid runtime is a no-op; bootstrap, doctor, and launch serialize short runtime operations through the operation lock. A live DSH child also holds a session lease that prevents bootstrap or a second launch from swapping the runtime, while doctor remains available.
@@ -44,7 +51,12 @@ The workspace bundle validates `Game.rpgproject`, `data`, and `js` directly
 under the DSH Web workspace. Each Agent receives stable names such as
 `rpgmaker_validate_project`; workspace hashes, session identifiers, and MCP
 transport names never appear in prompts or history. Agents in one workspace
-share one warm connection, while different workspaces remain isolated.
+share one warm connection, while different workspaces remain isolated. The
+workspace server is Host-lifetime: it stays warm after its last Agent leaves and
+closes only when the Host shuts down. There is no concurrent-writer locking or
+serialization and no idle eviction. If a pooled Xerolo child crashes, affected
+workspace Agents fail until the Host restarts; automatic child restart is not
+provided.
 
 The launcher always shows this editing contract:
 
@@ -62,13 +74,13 @@ bun test
 bun run check
 # Optional real disposable pinned-DSH asset preset mount (no MCP service)
 bun run phase4:real
-# Optional real disposable DSH + Xerolo MCP acceptance
+# Optional real project-neutral DSH + Xerolo workspace acceptance
 bun run phase2:real
 # Optional real DSH rc.7 + Vision Toolkit compatibility (no image upload)
 bun run phase8:real
 ```
 
-Tests use disposable runtime, DSH home, credential, and MV project directories. They do not touch a user's installed DSH state, RPG Maker projects, applications, or credentials. The current macOS substitute suite uses fake prerequisite/runtime executables; `bun run phase2:real` additionally installs pinned DSH/Xerolo packages into a disposable temp runtime and verifies 41 tools, mutation reread, validation, backup/restore, and shutdown. Real PowerShell/Coreutils identity, Windows `.cmd` launch, spaces/CJK path, and installed DSH checks remain a release gate on a Windows runner in foundation ticket 07.
+Tests use disposable runtime, DSH home, credential, and MV project directories. They do not touch a user's installed DSH state, RPG Maker projects, applications, or credentials. The ordinary suite uses fake prerequisite/runtime executables; `bun run phase2:real` additionally installs the pinned DSH/MCPorter/Xerolo packages into a disposable temp runtime and verifies the project-neutral workspace Host, 41 stable tools, CJK/space paths, one pooled server, and shutdown. The two-workspace mutation matrix remains in the ordinary workspace test; it is not duplicated in the Windows gate. Real PowerShell/Coreutils identity, Windows `.cmd` launch, and installed MV checks remain the complementary Windows runner gate.
 
 ## Phase 2: RPG Maker Agent and MCP editing loop
 
@@ -200,6 +212,8 @@ bun run phase2:real
 bun run phase4:real
 bun run phase6:real
 bun run phase8:real
+# On Windows, after the disposable real gates:
+bun run phase6:windows-manual -- --rpgmaker-installation 'C:\Program Files\RPG Maker MV'
 ```
 
 The automated `phase6:real` acceptance always uses a disposable fixture-owned RPG Maker installation, including on Windows; it never reads a user-installed path. The explicit `phase6:windows-manual` gate is the only path that accepts an installed RPG Maker MV path and requires that opt-in argument. Non-Windows real acceptances truthfully mark Windows NW.js and Windows artifact launch as unsupported hardware evidence; they do not substitute macOS or a fake process for the Windows gate. The foundation stops before automated gameplay/CDP supervision, which remains on its separate draft/hold marker.

@@ -51,14 +51,31 @@ configuration are never searched. You can switch workspaces in the Web UI
 without restarting DSH. Stable Agent tools use names such as
 `rpgmaker_validate_project`; the internal workspace server name and session
 identity never enter model-facing names. Agents in one workspace share one warm
-MCP connection, while different workspaces receive isolated servers. Do not
-have multiple Agents write to the same project at the same time.
+MCP connection, while different workspaces receive isolated servers. The
+workspace server is Host-lifetime: it stays warm after its last Agent leaves and
+closes only when the DSH Host shuts down. There is no concurrent-writer locking
+or serialization and no idle eviction; do not have multiple Agents write to the
+same project at the same time. If a pooled Xerolo child crashes, the affected
+workspace Agents fail until the DSH Host is restarted; automatic child restart
+is not provided.
 
 The agent and its `rpgmaker_*` tools are the sole writers. If the RPG Maker
 editor is open, it is read-only: do not save from it, and reopen it before
 inspecting agent changes.
 
 The web session always binds to `http://127.0.0.1:3081`. If that port is occupied, the launcher offers to open the existing session or asks you to close it and retry. It never silently selects another port and never starts concurrent project sessions. The disposable Vision Toolkit compatibility probe is `bun run phase8:real`; it boots DSH rc.7, prepares the managed runtime, activates the ten visual tools in each shipped preset, and never sends an image to the provider.
+
+## Post-review acceptance sequence
+
+The ordinary workspace seam is covered by `bun test tests/phase10.test.ts`. On a
+machine authorized for real acceptance, run `bun run phase2:real` from a
+checkout. It uses disposable DSH state and a CJK/space project to verify the
+project-neutral composition, one Host runtime, one pooled workspace server,
+synchronously collected `rpgmaker_*` schemas, and one direct tool call; a failed
+call is not retried through shell or `danger-full-access`. On Windows, follow it
+with `bun run phase6:windows-manual -- --rpgmaker-installation '<installed RPG Maker MV folder>'`
+for the native MV packaging/launch evidence. The two-workspace mutation matrix
+is not repeated in the Windows gate.
 
 ## Doctor and repair
 
