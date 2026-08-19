@@ -17,7 +17,7 @@ import { createMcpTool, toModelName } from './tools.js'
 import { buildWorkspaceDefinition, canonicalWorkspace, validateWorkspace } from './workspace.js'
 
 export const name = '@baihestudio/dsh-workspace-mcp'
-export const inject = ['logger']
+export const inject = []
 
 /** Presets that compose a workspace-scoped RPG Maker Agent. */
 export const RPG_PRESETS = ['rpgmaker', 'playtest-debug', 'asset-workshop', 'build-release']

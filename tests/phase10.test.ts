@@ -1162,4 +1162,70 @@ describe('real DSH Agent seam', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test('activates without logger and emits optional lifecycle logs when logger is present', async () => {
+    const shared = await sharedFixtureRuntimes();
+    const root = await temp('ws-mcp-optional-logger');
+    try {
+      const project = await makeMvProject(root);
+      const bundle = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/index.js')>('index.js');
+      const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
+      const expectedNames = contract.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort();
+
+      expect(bundle.inject).toEqual([]);
+      await withBundleEnv(
+        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [XEROLO_RUNTIME_ENV]: shared.xerolo, [JS_RUNNER_ENV]: process.execPath },
+        async () => {
+          bundle.resetHostState();
+          const noLoggerScope = new HarnessScope('host-without-logger');
+          const noLoggerCtx = {
+            on: noLoggerScope.on.bind(noLoggerScope),
+            effect: noLoggerScope.effect.bind(noLoggerScope),
+            emit: noLoggerScope.emit.bind(noLoggerScope)
+          };
+          let noLoggerShutdown: (() => Promise<void>) | undefined;
+          try {
+            noLoggerShutdown = await bundle.apply(noLoggerCtx);
+            const noLoggerAgent = createHarnessAgent('without-logger', { cwd: project, agentPreset: 'rpgmaker' });
+            noLoggerCtx.emit('agent/created', { agent: noLoggerAgent });
+            const noLoggerAssembly = await noLoggerAgent.ctx.assemble();
+            expect(noLoggerAssembly.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
+            noLoggerAgent.ctx.dispose();
+          } finally {
+            await noLoggerShutdown?.().catch(() => undefined);
+            bundle.resetHostState();
+          }
+
+          const logs: unknown[][] = [];
+          const loggerScope = new HarnessScope('host-with-logger', {
+            info: (...args) => logs.push(args),
+            error: (...args) => logs.push(['error', ...args])
+          });
+          let loggerShutdown: (() => Promise<void>) | undefined;
+          try {
+            loggerShutdown = await bundle.apply(loggerScope);
+            const loggerAgent = createHarnessAgent('with-logger', { cwd: project, agentPreset: 'rpgmaker' });
+            loggerScope.emit('agent/created', { agent: loggerAgent });
+            const loggerAssembly = await loggerAgent.ctx.assemble();
+            expect(loggerAssembly.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
+            expect(logs).toContainEqual([
+              'dsh-workspace-mcp synchronously registered %d manifest tools for agent %s',
+              expectedNames.length,
+              'with-logger'
+            ]);
+            expect(logs.some((args) => (
+              args[0] === 'dsh-workspace-mcp initialized workspace server %s (%d tools matched the pinned manifest)'
+              && args[2] === expectedNames.length
+            ))).toBe(true);
+            loggerAgent.ctx.dispose();
+          } finally {
+            await loggerShutdown?.().catch(() => undefined);
+            bundle.resetHostState();
+          }
+        }
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
