@@ -23,6 +23,30 @@ export const XEROLO_MANIFEST_SHA256 = '09313bebb48af8274c8ce7b3c7c0dff1e2b769a51
 export const XEROLO_TOOL_NAMES = XEROLO_MANIFEST.tools.map((tool) => tool.name)
 export const XEROLO_TOOL_SET = new Set(XEROLO_TOOL_NAMES)
 const XEROLO_TOOL_BY_NAME = new Map(XEROLO_MANIFEST.tools.map((tool) => [tool.name, tool]))
+
+/**
+ * The critical raw-tool subset the product contract requires regardless of
+ * manifest pin drift: targeted editing, validation, backup/restore, and the
+ * Playtest lifecycle. The generated 41-tool manifest remains the schema SSOT;
+ * this small guard is not a second manifest and never supplies schemas.
+ */
+export const CRITICAL_XEROLO_TOOLS = [
+  'create_record',
+  'update_record',
+  'update_event',
+  'validate_project',
+  'list_backups',
+  'restore_backup',
+  'playtest_start',
+  'playtest_status',
+  'playtest_log',
+  'playtest_stop'
+]
+
+/** Critical contract tools absent from a tool-name list, if any. */
+export function missingCriticalTools(names) {
+  return CRITICAL_XEROLO_TOOLS.filter((name) => !names.includes(name))
+}
 export const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/
 export const TOOL_NAME_PREFIX = 'rpgmaker_'
 export const RESERVED_DSH_TOOL_NAME = 'run_code'
@@ -100,6 +124,10 @@ export function verifyManifest(manifest = XEROLO_MANIFEST) {
   if (new Set(tools.map((tool) => tool?.name)).size !== tools.length) {
     errors.push('pinned Xerolo manifest contains duplicate tool names')
   }
+  const critical = missingCriticalTools(tools.map((tool) => tool?.name))
+  if (critical.length > 0) {
+    errors.push(`pinned Xerolo manifest is missing critical RPG Maker tools: ${critical.join(', ')}`)
+  }
   for (const tool of tools) {
     const problem = schemaProblem(tool?.inputSchema, `manifest tool ${tool?.name ?? '?'}`)
     if (problem) errors.push(problem)
@@ -129,6 +157,10 @@ export function validateDiscoveredTools(tools) {
   const unknown = names.filter((name) => !XEROLO_TOOL_SET.has(name))
   if (unknown.length > 0) {
     return { errors: [`tools/list returned tools outside the fixed Xerolo contract: ${unknown.join(', ')}`] }
+  }
+  const critical = missingCriticalTools(names)
+  if (critical.length > 0) {
+    return { errors: [`tools/list is missing critical RPG Maker tools: ${critical.join(', ')}`] }
   }
   const missing = XEROLO_TOOL_NAMES.filter((name) => !names.includes(name))
   if (missing.length > 0) {

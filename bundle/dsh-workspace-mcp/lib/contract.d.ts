@@ -12,6 +12,8 @@ export declare const XEROLO_VERSION: string;
 export declare const XEROLO_MANIFEST: XeroloManifest;
 export declare const XEROLO_MANIFEST_SHA256: string;
 export declare const XEROLO_TOOL_NAMES: readonly string[];
+export declare const CRITICAL_XEROLO_TOOLS: readonly string[];
+export declare function missingCriticalTools(names: readonly string[]): string[];
 export declare const TOOL_NAME_PREFIX: string;
 export declare const RESERVED_DSH_TOOL_NAME: string;
 export declare function schemaProblem(schema: unknown, at: string): string | undefined;

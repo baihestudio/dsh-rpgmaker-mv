@@ -110,7 +110,7 @@ async function handleCall(toolName, params) {
   if (toolName === 'dump_context') {
     const env = Object.fromEntries(
       Object.entries(process.env)
-        .filter(([key]) => ['PATH', 'HOME', 'TMPDIR', 'DEEPSEEK_API_KEY', 'NPM_TOKEN', 'DSH_HOME', 'DSH_RPGMAKER_PROGRAM_ROOT', 'DSH_RPGMAKER_MCPORTER_RUNTIME'].includes(key))
+        .filter(([key]) => ['PATH', 'HOME', 'TMPDIR', 'DEEPSEEK_API_KEY', 'DSH_API_KEY', 'NPM_TOKEN', 'DSH_HOME', 'DSH_RPGMAKER_PROGRAM_ROOT', 'DSH_RPGMAKER_MCPORTER_RUNTIME'].includes(key))
     )
     await writeFile(join(contextDir, 'context.json'), `${JSON.stringify({ argv: process.argv, cwd: process.cwd(), env }, null, 2)}\n`)
     return { content: [{ type: 'text', text: JSON.stringify({ dumped: true }) }] }

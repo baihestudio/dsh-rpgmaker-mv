@@ -21,7 +21,7 @@ export const WORKSPACE_MCP_ENTRYPOINT = 'lib/index.js';
 export const WORKSPACE_MCP_BUNDLE_PATCH = './cordis.patch.yml';
 export const WORKSPACE_MCP_ROW_ID = 'workspace-mcp';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const WORKSPACE_MCP_SHA256 = 'bd54e521306b5051808c0712563cc09fb41f2e6e5dfd0a467d40edc456fc7573';
+export const WORKSPACE_MCP_SHA256 = '54e2e86f209b2242c4d8ef82d29852a3ebc26ef611e0176cac063b9a1ff82df0';
 export const WORKSPACE_MCP_BUNDLE_RELATIVE = join('bundle', 'dsh-workspace-mcp');
 
 /** Host env contract consumed by the prebuilt workspace bundle. */
@@ -45,7 +45,6 @@ export interface WorkspaceMcpBundleVerification {
   errors: string[];
   packageDir: string | undefined;
   packageVersion: string | undefined;
-  profileDependency: string | undefined;
   bundleOccurrences: number;
   entrypoint: string | undefined;
   ownedPath: boolean;
@@ -209,7 +208,9 @@ export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOption
     const spec = profileDependency.replace(/^(file|link):/i, '');
     const targetReal = await realpath(resolve(profileDir, spec)).catch(() => undefined);
     if (!targetReal || !sameCanonicalPath(targetReal, bundleReal, platform)) {
-      errors.push(`profile dependency ${WORKSPACE_MCP_PACKAGE} does not resolve to the app-owned local bundle (got ${profileDependency})`);
+      // The raw dependency specifier is deliberately omitted: a bare or remote
+      // specifier could carry credentials, so verification never surfaces it.
+      errors.push(`profile dependency ${WORKSPACE_MCP_PACKAGE} does not resolve to the app-owned local bundle`);
     }
   }
   if (bundleOccurrences !== 1) {
@@ -253,7 +254,6 @@ export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOption
     errors,
     packageDir: installedResolved,
     packageVersion,
-    profileDependency,
     bundleOccurrences,
     entrypoint,
     ownedPath,

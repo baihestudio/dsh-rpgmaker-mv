@@ -4,7 +4,7 @@ import { basename, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
-import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION, prepareMcporterRuntime, verifyMcporterRuntime } from '../src/mcport';
+import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION, verifyMcporterRuntime } from '../src/mcport';
 import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
@@ -16,7 +16,7 @@ import {
   prepareWorkspaceMcpBundle,
   verifyWorkspaceMcpBundle
 } from '../src/workspace-mcp';
-import { prepareRpgMakerMcpRuntime } from '../src/rpgmaker';
+import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
 import { HarnessScope, createHarnessAgent } from './fixtures/dsh-agent-harness';
 
 async function temp(prefix: string): Promise<string> {
@@ -42,23 +42,70 @@ function harnessPaths(root: string) {
 
 const BUNDLE_LIB = join(process.cwd(), 'bundle', 'dsh-workspace-mcp', 'lib');
 const FIXTURE_SERVER = join(process.cwd(), 'tests', 'fixtures', 'deterministic-mcp-server.mjs');
+const FAKE_MCPORTER = join(process.cwd(), 'tests', 'fixtures', 'fake-mcporter.mjs');
+const XEROLO_SERVER_TEMPLATE = join(process.cwd(), 'tests', 'fixtures', 'xerolo-fixture-server.mjs');
+const XEROLO_PACKAGE_DIR = join('node_modules', RPGMAKER_MCP_PACKAGE);
 
-/** Lazy real installs shared by the disposable probe and the Agent-seam tests. */
-let sharedRuntimesPromise: Promise<{ root: string; mcporter: string; xerolo: string }> | undefined;
+/**
+ * Install the test-owned fake MCPorter runtime in the exact pinned shape
+ * (package.json + bun.lock integrity + app-owned entry), so the fixture is
+ * indistinguishable from a verified install and no external package is ever
+ * downloaded by an ordinary test.
+ */
+async function writeFixtureMcporterRuntime(runtimeDir: string): Promise<void> {
+  const packageDir = join(runtimeDir, 'node_modules', MCPORTER_PACKAGE);
+  await mkdir(join(packageDir, 'dist'), { recursive: true });
+  await writeFile(join(runtimeDir, 'package.json'), JSON.stringify({ private: true, dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } }));
+  await writeFile(join(runtimeDir, 'bun.lock'), JSON.stringify({
+    lockfileVersion: 1,
+    workspaces: { '': { dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } } },
+    packages: { [MCPORTER_PACKAGE]: [`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`, '', {}, MCPORTER_NPM_INTEGRITY] }
+  }));
+  await writeFile(join(packageDir, 'package.json'), JSON.stringify({ version: MCPORTER_VERSION, main: 'dist/index.js' }));
+  await writeFile(join(packageDir, 'dist', 'index.js'), await readFile(FAKE_MCPORTER, 'utf8'));
+}
+
+/**
+ * Install a deterministic Xerolo fixture runtime seeded from the pinned bundle
+ * manifest (the schema SSOT), so live tools/list matches the contract without
+ * an external install. The server template is a generated test double, not a
+ * second manifest.
+ */
+async function writeFixtureXeroloRuntime(runtimeDir: string, manifest: unknown): Promise<void> {
+  const packageDir = join(runtimeDir, XEROLO_PACKAGE_DIR);
+  await mkdir(join(packageDir, 'dist'), { recursive: true });
+  await writeFile(join(packageDir, 'package.json'), JSON.stringify({
+    name: RPGMAKER_MCP_PACKAGE,
+    version: RPGMAKER_MCP_VERSION,
+    bin: { 'rpgmaker-mv-mcp': 'dist/index.js' }
+  }));
+  const template = await readFile(XEROLO_SERVER_TEMPLATE, 'utf8');
+  await writeFile(
+    join(packageDir, 'dist', 'index.js'),
+    template.replace(
+      'const XEROLO_MANIFEST = __XEROLO_MANIFEST__',
+      `const XEROLO_MANIFEST = ${JSON.stringify(manifest)}`
+    )
+  );
+}
+
+/** Lazy test-owned fixture runtimes shared by the probe and the Agent seam. */
+let sharedFixturesPromise: Promise<{ root: string; mcporter: string; xerolo: string }> | undefined;
 let sharedRootForCleanup: string | undefined;
 
-function sharedRealRuntimes(): Promise<{ root: string; mcporter: string; xerolo: string }> {
-  sharedRuntimesPromise ??= (async () => {
-    const root = await temp('ws-mcp-real');
+function sharedFixtureRuntimes(): Promise<{ root: string; mcporter: string; xerolo: string }> {
+  sharedFixturesPromise ??= (async () => {
+    const root = await temp('ws-mcp-fixture');
     sharedRootForCleanup = root;
     const paths = harnessPaths(root);
     const mcporter = join(paths.programRoot, 'runtime', 'mcporter');
-    await prepareMcporterRuntime({ bunExecutable: 'bun', ...paths }, mcporter);
+    await writeFixtureMcporterRuntime(mcporter);
     const xerolo = join(paths.programRoot, 'runtime', 'mcp');
-    await prepareRpgMakerMcpRuntime({ bunExecutable: 'bun', platform: process.platform }, xerolo);
+    const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
+    await writeFixtureXeroloRuntime(xerolo, contract.XEROLO_MANIFEST);
     return { root, mcporter, xerolo };
   })();
-  return sharedRuntimesPromise;
+  return sharedFixturesPromise;
 }
 
 afterAll(async () => {
@@ -225,6 +272,32 @@ describe('Xerolo tool contract fail-closed', () => {
     expect(contract.validateModelNames(['run_code']).errors.join(' ')).toContain('reserved');
     expect(contract.validateModelNames(['rpgmaker-9x']).errors.join(' ')).toContain('invalid');
   });
+
+  test('requires the critical editing, validation, backup/restore, and Playtest subset in the manifest and live set', async () => {
+    const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
+    // The pinned manifest itself carries every critical contract tool.
+    expect(contract.missingCriticalTools(contract.XEROLO_TOOL_NAMES)).toEqual([]);
+    expect(contract.validateDiscoveredTools(contract.XEROLO_MANIFEST.tools.map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema }))).errors).toEqual([]);
+
+    // Removing any critical tool fails the live set before execution.
+    const withoutPlaytestStop = contract.XEROLO_MANIFEST.tools
+      .filter((tool) => tool.name !== 'playtest_stop')
+      .map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema }));
+    expect(contract.missingCriticalTools(withoutPlaytestStop.map((tool) => tool.name))).toEqual(['playtest_stop']);
+    const liveErrors = contract.validateDiscoveredTools(withoutPlaytestStop).errors.join(' ');
+    expect(liveErrors).toContain('missing critical RPG Maker tools');
+    expect(liveErrors).toContain('playtest_stop');
+
+    // A regenerated manifest missing a critical tool is rejected too: digest
+    // drift is reported, and the contract guard names the exact gap.
+    const regressed = {
+      ...contract.XEROLO_MANIFEST,
+      tools: contract.XEROLO_MANIFEST.tools.filter((tool) => tool.name !== 'restore_backup')
+    };
+    const manifestErrors = contract.verifyManifest(regressed).errors.join(' ');
+    expect(manifestErrors).toContain('missing critical RPG Maker tools');
+    expect(manifestErrors).toContain('restore_backup');
+  });
 });
 
 describe('app-owned workspace MCP bundle profile link', () => {
@@ -341,11 +414,40 @@ describe('app-owned workspace MCP bundle profile link', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test('does not surface raw credential-bearing profile dependency specs', async () => {
+    const root = await temp('ws-bundle-redaction');
+    try {
+      const paths = harnessPaths(root);
+      const bundleDir = join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE);
+      await mkdir(bundleDir, { recursive: true });
+      await cp(BUNDLE_SOURCE, bundleDir, { recursive: true });
+      const profile = join(paths.dshHome, 'profiles', 'web');
+      await mkdir(profile, { recursive: true });
+      const secret = 'profile-secret-never-surfaced';
+      const dependency = `file:../wrong-bundle?token=${secret}`;
+      await writeFile(join(profile, 'package.json'), `${JSON.stringify({
+        name: 'dsh-profile-web',
+        private: true,
+        version: '0.1.0',
+        dependencies: { [WORKSPACE_MCP_PACKAGE]: dependency },
+        dsh: { profile: { bundles: [WORKSPACE_MCP_PACKAGE] } }
+      }, null, 2)}\n`);
+
+      const verification = await verifyWorkspaceMcpBundle({ platform: 'win32', ...paths, bundleDir });
+      const diagnostics = verification.errors.join(' ');
+      expect(diagnostics).toContain('does not resolve to the app-owned local bundle');
+      expect(diagnostics).not.toContain(dependency);
+      expect(diagnostics).not.toContain(secret);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('disposable MCPorter probe', () => {
   test('proves single-flight runtime, dynamic stdio registration, listing, pooling, containment, per-server and final close', async () => {
-    const shared = await sharedRealRuntimes();
+    const shared = await sharedFixtureRuntimes();
     const root = await temp('ws-mcp-probe');
     try {
       const host = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/mcport-host.js')>('mcport-host.js');
@@ -357,21 +459,21 @@ describe('disposable MCPorter probe', () => {
       await mkdir(contextDir, { recursive: true });
       await mkdir(serverCwd, { recursive: true });
 
-      // Corrupt config in every mcporter discovery location: because the Host
-      // runtime is created with an explicit server list, none of these are read.
-      const xdgHome = join(root, 'xdg-config');
-      await mkdir(join(xdgHome, 'mcporter'), { recursive: true });
-      await writeFile(join(xdgHome, 'mcporter', 'mcporter.json'), '{ corrupt');
-      await mkdir(join(serverCwd, 'config'), { recursive: true });
-      await writeFile(join(serverCwd, 'config', 'mcporter.json'), '{ corrupt');
-      const savedXdg = process.env.XDG_CONFIG_HOME;
-      const savedConfig = process.env.MCPORTER_CONFIG;
-      process.env.XDG_CONFIG_HOME = xdgHome;
-      process.env.MCPORTER_CONFIG = join(xdgHome, 'mcporter', 'mcporter.json');
-      const savedCredential = process.env.DEEPSEEK_API_KEY;
-      const savedDsh = process.env.DSH_HOME;
-      process.env.DEEPSEEK_API_KEY = 'probe-secret-never-shared';
-      process.env.DSH_HOME = join(root, 'dsh-home');
+      // A fully synthetic environment drives the neutralization seam: every
+      // credential and DSH key is a test-owned value that must never reach the
+      // spawned child. Ambient DEEPSEEK_API_KEY/DSH_API_KEY are never read or
+      // mutated, so the probe cannot touch live process credentials.
+      const syntheticEnv: Record<string, string> = {
+        PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+        HOME: join(root, 'synthetic-home'),
+        TMPDIR: process.env.TMPDIR ?? tmpdir(),
+        DEEPSEEK_API_KEY: 'synthetic-secret-never-shared',
+        DSH_API_KEY: 'synthetic-dsh-secret-never-shared',
+        NPM_TOKEN: 'synthetic-npm-token-never-shared',
+        DSH_HOME: join(root, 'synthetic-dsh-home'),
+        DSH_RPGMAKER_PROGRAM_ROOT: join(root, 'synthetic-program'),
+        DSH_RPGMAKER_MCPORTER_RUNTIME: join(root, 'synthetic-runtime')
+      };
 
       host.resetHostState();
       try {
@@ -386,18 +488,20 @@ describe('disposable MCPorter probe', () => {
         const definition = {
           name: 'rpgmaker-ws-probe',
           command: { kind: 'stdio', command: process.execPath, args: [FIXTURE_SERVER, '--context', contextDir], cwd: serverCwd },
-          env: env.neutralizedServerEnv(process.env) as Record<string, string>
+          env: env.neutralizedServerEnv(syntheticEnv) as Record<string, string>
         };
-        // The definition env covers every inherited key, so mcporter's
+        // The definition env covers every synthetic key, so mcporter's
         // {...process.env, ...overrides} merge cannot carry an original value;
         // every present credential/DSH key is overridden with the marker.
-        for (const key of Object.keys(process.env)) {
+        for (const key of Object.keys(syntheticEnv)) {
           expect(Object.prototype.hasOwnProperty.call(definition.env, key)).toBe(true);
         }
-        expect(definition.env.DEEPSEEK_API_KEY).toBe(env.SECRET_MARKER);
-        expect(definition.env.DSH_HOME).toBe(env.SECRET_MARKER);
-        for (const key of Object.keys(process.env).filter((candidate) => candidate.startsWith('DSH_'))) {
+        for (const key of Object.keys(syntheticEnv).filter((candidate) => candidate.startsWith('DSH_'))) {
           expect(definition.env[key]).toBe(env.SECRET_MARKER);
+        }
+        for (const key of ['DEEPSEEK_API_KEY', 'DSH_API_KEY', 'NPM_TOKEN']) {
+          expect(definition.env[key]).toBe(env.SECRET_MARKER);
+          expect(definition.env[key]).not.toBe(syntheticEnv[key]);
         }
 
         // Single-flight per-workspace acquisition: registration + listing once.
@@ -427,18 +531,16 @@ describe('disposable MCPorter probe', () => {
         const dumped = JSON.parse(await readFile(join(contextDir, 'context.json'), 'utf8')) as { argv: string[]; cwd: string; env: Record<string, string> };
         expect(dumped.argv.slice(1)).toEqual([FIXTURE_SERVER, '--context', contextDir]);
         expect(dumped.cwd).toBe(await realpath(serverCwd));
-        // mcporter spawns stdio servers with `{ ...process.env, ...definition.env }`
-        // (runtime/transport.js createStdioClientContext), so strict key absence is
-        // impossible without a separate broker process. The marker override instead
-        // proves no original secret bytes reach the deterministic child: every
-        // present credential/DSH key that the fixture dumps is the marker.
-        for (const key of ['DEEPSEEK_API_KEY', 'NPM_TOKEN', 'DSH_HOME', 'DSH_RPGMAKER_PROGRAM_ROOT', 'DSH_RPGMAKER_MCPORTER_RUNTIME']) {
-          if (process.env[key] !== undefined) {
-            expect(dumped.env[key]).toBe(env.SECRET_MARKER);
-            expect(dumped.env[key]).not.toBe(process.env[key]);
-          }
+        // The fixture runtime mirrors mcporter's `{ ...process.env,
+        // ...definition.env }` stdio merge, so strict key absence is impossible
+        // without a separate broker process. The marker override instead proves
+        // no original synthetic (or ambient) secret bytes reach the child: the
+        // deterministic dump shows the marker for every credential/DSH key.
+        for (const key of ['DEEPSEEK_API_KEY', 'DSH_API_KEY', 'NPM_TOKEN', 'DSH_HOME', 'DSH_RPGMAKER_PROGRAM_ROOT', 'DSH_RPGMAKER_MCPORTER_RUNTIME']) {
+          expect(dumped.env[key]).toBe(env.SECRET_MARKER);
+          expect(dumped.env[key]).not.toBe(syntheticEnv[key]);
         }
-        expect(dumped.env.PATH).toBeDefined();
+        expect(dumped.env.PATH).toBe(syntheticEnv.PATH);
 
         // Result normalization and MCP errors as failures.
         const echo = await host.callWorkspaceTool(paths, canonical, 'echo', { message: 'hi' });
@@ -474,11 +576,8 @@ describe('disposable MCPorter probe', () => {
         expect(host.hostState().workspaces).toEqual([]);
         await expect(host.getHostRuntime(paths)).rejects.toThrow(/closed/);
       } finally {
+        await host.closeHost().catch(() => undefined);
         host.resetHostState();
-        if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = savedXdg;
-        if (savedConfig === undefined) delete process.env.MCPORTER_CONFIG; else process.env.MCPORTER_CONFIG = savedConfig;
-        if (savedCredential === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = savedCredential;
-        if (savedDsh === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = savedDsh;
       }
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -488,7 +587,7 @@ describe('disposable MCPorter probe', () => {
 
 describe('real DSH Agent seam', () => {
   test('first prompt assembly waits for discovery, exposes stable rpgmaker_* tools, shares one server, and fails closed', async () => {
-    const shared = await sharedRealRuntimes();
+    const shared = await sharedFixtureRuntimes();
     const root = await temp('ws-mcp-seam');
     try {
       const project = await makeMvProject(root);

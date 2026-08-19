@@ -28,6 +28,7 @@ import { pathToFileURL } from 'node:url';
 
 import { spawn } from 'node:child_process';
 
+import { redactSensitive, withoutCredentials } from '../src/process';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
 import { WORKSPACE_MCP_BUNDLE_RELATIVE, workspaceMcpBundleDigest } from '../src/workspace-mcp';
 
@@ -43,28 +44,62 @@ interface XeroloTool {
   inputSchema?: unknown;
 }
 
+function diagnosticText(error: unknown): string {
+  return redactSensitive(error instanceof Error ? error.message : String(error), process.env);
+}
+
 function fail(message: string): never {
-  console.error(`generate-xerolo-manifest: ${message}`);
+  console.error(`generate-xerolo-manifest: ${diagnosticText(message)}`);
   process.exit(1);
+}
+
+/** Ambient env minus model credentials; subprocesses must never inherit them. */
+function scrubbedEnv(): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(withoutCredentials(process.env)).filter((entry): entry is [string, string] => entry[1] !== undefined)
+  );
 }
 
 async function runBun(args: string[], cwd: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, args, { cwd, stdio: 'inherit' });
-    child.once('error', reject);
-    child.once('exit', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`bun ${args.join(' ')} exited with code ${code}`));
+    const child = spawn(process.execPath, args, { cwd, env: scrubbedEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.once('error', (error) => reject(new Error(diagnosticText(error))));
+    child.once('close', (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      const output = [stderr, stdout].filter(Boolean).join('\n').trim();
+      reject(new Error(diagnosticText(`bun ${args.join(' ')} exited with ${signal ? `signal ${signal}` : `code ${code}`}${output ? `: ${output}` : ''}`)));
     });
   });
 }
 
 /** Ask the pinned server for its complete tools/list over stdio. */
 async function discoverTools(entry: string, projectRoot: string): Promise<XeroloTool[]> {
-  const child = spawn(process.execPath, [entry, '--project', projectRoot], { stdio: ['pipe', 'pipe', 'inherit'] });
+  const child = spawn(process.execPath, [entry, '--project', projectRoot], {
+    env: scrubbedEnv(),
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
   let buffer = '';
+  let stderr = '';
   let requestId = 0;
-  const pending = new Map<string, (message: unknown) => void>();
+  let closed = false;
+  const pending = new Map<string, { resolve: (message: unknown) => void; reject: (error: Error) => void }>();
+  const exited = new Promise<void>((resolve) => child.once('close', () => resolve()));
+  const exitError = (code: number | null, signal: NodeJS.Signals | null): Error => {
+    const output = stderr.trim();
+    const reason = signal ? `signal ${signal}` : `code ${code}`;
+    return new Error(diagnosticText(`pinned Xerolo server exited with ${reason}${output ? `: ${output}` : ''}`));
+  };
+  const rejectPending = (error: Error): void => {
+    for (const request of pending.values()) request.reject(error);
+    pending.clear();
+  };
   child.stdout.on('data', (chunk: Buffer) => {
     buffer += chunk.toString();
     let newline: number;
@@ -79,20 +114,36 @@ async function discoverTools(entry: string, projectRoot: string): Promise<Xerolo
         continue;
       }
       if (message.id !== undefined) {
-        const settle = pending.get(String(message.id));
-        if (settle) {
+        const request = pending.get(String(message.id));
+        if (request) {
           pending.delete(String(message.id));
-          settle(message);
+          request.resolve(message);
         }
       }
     }
   });
+  child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+  child.once('error', (error) => {
+    closed = true;
+    rejectPending(new Error(diagnosticText(error)));
+  });
+  child.once('close', (code, signal) => {
+    closed = true;
+    if (pending.size > 0) rejectPending(exitError(code, signal));
+  });
   const send = (method: string, params: Record<string, unknown>): Promise<unknown> =>
     new Promise((resolve, reject) => {
+      if (closed) {
+        reject(exitError(child.exitCode, child.signalCode));
+        return;
+      }
       const id = String(++requestId);
-      pending.set(id, resolve);
+      pending.set(id, { resolve, reject });
       child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`, (error) => {
-        if (error) reject(error);
+        if (error) {
+          pending.delete(id);
+          reject(new Error(diagnosticText(error)));
+        }
       });
     });
   try {
@@ -102,8 +153,11 @@ async function discoverTools(entry: string, projectRoot: string): Promise<Xerolo
     const tools = list.result?.tools;
     if (!Array.isArray(tools)) fail('tools/list returned no tool array');
     return tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+  } catch (error) {
+    throw new Error(diagnosticText(`Xerolo tools/list failed: ${diagnosticText(error)}${stderr.trim() ? `: ${diagnosticText(stderr.trim())}` : ''}`));
   } finally {
-    child.kill();
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await exited;
   }
 }
 
