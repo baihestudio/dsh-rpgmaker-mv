@@ -9,7 +9,7 @@ import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSev
 import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
 import { resolveImageToolchain } from './image-workshop';
-import { verifyMcpRuntime } from './rpgmaker';
+import { verifyMcpRuntime, verifyTimeoutPolicyComposition } from './rpgmaker';
 import { verifyRpgmPackerRuntime } from './release';
 import { verifyImageWorkshopPlugin, imageWorkshopPluginSummary, type ImageWorkshopPluginVerification } from './image-plugin';
 import {
@@ -332,6 +332,20 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
       imageWorkshopPluginSummary(imagePlugin),
       imagePlugin.packageDir
     ));
+
+    const timeoutPolicyPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
+    if ((await stat(timeoutPolicyPath).catch(() => undefined))?.isFile()) {
+      const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome);
+      checks.push(check(
+        'tool-call-timeout-policy',
+        'Shared DSH tool-call timeout policy',
+        timeoutPolicy.valid,
+        timeoutPolicy.valid
+          ? `One official timeout-policy Host row covers ${timeoutPolicy.coveredPresets.length} custom Agent presets`
+          : timeoutPolicy.errors.join('; '),
+        timeoutPolicy.hostCompositionPath
+      ));
+    }
 
     const vision = await (options.verifyVisionToolkit ?? (context => verifyVisionToolkit({
       platform: context.platform,

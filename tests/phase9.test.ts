@@ -16,11 +16,11 @@ import {
   prepareImageWorkshopPlugin,
   verifyImageWorkshopPlugin
 } from '../src/image-plugin';
-import { installPreset } from '../src/rpgmaker';
+import { CUSTOM_AGENT_PRESET_IDS, installPreset, renderPresetOnlyPatch, verifyTimeoutPolicyComposition } from '../src/rpgmaker';
 import { WORKSPACE_MCP_AGENT_ROW_ID, WORKSPACE_MCP_PACKAGE } from '../src/workspace-mcp';
 import { buildReleaseZip, inspectReleaseZip } from '../src/release-gate';
 import { validateRelativePath, resolveWorkspacePath } from '../bundle/dsh-image-workshop/lib/workspace.js';
-import { createImageInspectTool, createImageResizePixelTool, createImageTrimPadTool, createImageSheetSliceTool, createImageSheetAssembleTool, createImageAtlasPackTool, createImageOptimizePngTool } from '../bundle/dsh-image-workshop/lib/tools.js';
+import { createImageInspectTool, createImageResizePixelTool, createImageTrimPadTool, createImageSheetSliceTool, createImageSheetAssembleTool, createImageAtlasPackTool, createImageOptimizePngTool, IMAGE_INSPECT_TIMEOUT_MS, IMAGE_MUTATION_TIMEOUT_MS } from '../bundle/dsh-image-workshop/lib/tools.js';
 import * as imageWorkshopPlugin from '../bundle/dsh-image-workshop/lib/index.js';
 import { clearChildSpawner, clearTreeTerminator, clearWorkshopRunner, invokeImageOperation, setChildSpawner, setTreeTerminator, setWorkshopRunner } from '../bundle/dsh-image-workshop/lib/workshop-client.js';
 
@@ -837,6 +837,104 @@ describe('release bundle', () => {
 
   test('exposes exactly the seven Ticket 03 tools', () => {
     expect(IMAGE_WORKSHOP_TOOL_NAMES).toEqual(['image_inspect', 'image_resize_pixel', 'image_trim_pad', 'image_sheet_slice', 'image_sheet_assemble', 'image_atlas_pack', 'image_optimize_png']);
+  });
+
+  test('declares one fixed inspection budget and one fixed mutation budget', () => {
+    const definitions = [
+      createImageInspectTool(),
+      createImageResizePixelTool(),
+      createImageTrimPadTool(),
+      createImageSheetSliceTool(),
+      createImageSheetAssembleTool(),
+      createImageAtlasPackTool(),
+      createImageOptimizePngTool()
+    ];
+    expect(definitions.map((definition) => [definition.name, definition.timeoutMs])).toEqual([
+      ['image_inspect', IMAGE_INSPECT_TIMEOUT_MS],
+      ['image_resize_pixel', IMAGE_MUTATION_TIMEOUT_MS],
+      ['image_trim_pad', IMAGE_MUTATION_TIMEOUT_MS],
+      ['image_sheet_slice', IMAGE_MUTATION_TIMEOUT_MS],
+      ['image_sheet_assemble', IMAGE_MUTATION_TIMEOUT_MS],
+      ['image_atlas_pack', IMAGE_MUTATION_TIMEOUT_MS],
+      ['image_optimize_png', IMAGE_MUTATION_TIMEOUT_MS]
+    ]);
+    expect(IMAGE_INSPECT_TIMEOUT_MS).toBe(30_000);
+    expect(IMAGE_MUTATION_TIMEOUT_MS).toBe(180_000);
+  });
+
+  test('pre-aborted calls do not spawn a CLI process', async () => {
+    clearWorkshopRunner();
+    clearChildSpawner();
+    const controller = new AbortController();
+    controller.abort();
+    let spawned = 0;
+    setChildSpawner(() => {
+      spawned += 1;
+      throw new Error('pre-aborted image call spawned a child');
+    });
+    try {
+      await expect(invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal)).rejects.toThrow(/cancelled/);
+      expect(spawned).toBe(0);
+    } finally {
+      clearChildSpawner();
+    }
+  });
+
+  test('settles cancellation when the terminator never settles but the child closes late', async () => {
+    clearWorkshopRunner();
+    clearChildSpawner();
+    clearTreeTerminator();
+    const child = new EventEmitter() as EventEmitter & {
+      pid?: number;
+      exitCode: number | null;
+      signalCode: string | null;
+      kill: (signal?: string) => boolean;
+      stdout: PassThrough;
+      stderr: PassThrough;
+    };
+    child.pid = 4243;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = () => true;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    setChildSpawner(() => child);
+    setTreeTerminator(() => new Promise<void>(() => undefined));
+    const controller = new AbortController();
+    try {
+      const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+      controller.abort();
+      setTimeout(() => child.emit('close', null), 20);
+      await expect(promise).rejects.toThrow(/cancelled/);
+      expect(child.listenerCount('close')).toBe(0);
+      expect(child.listenerCount('error')).toBe(0);
+    } finally {
+      clearChildSpawner();
+      clearTreeTerminator();
+    }
+  });
+
+  test('verifies one shared Host timeout row covers all four custom Agent presets', async () => {
+    const root = await temp('timeout-policy-composition');
+    try {
+      const dshHome = join(root, 'dsh-home');
+      const presetRoot = join(dshHome, '.agent-presets');
+      await mkdir(join(dshHome, 'rpgmaker-mv'), { recursive: true });
+      await writeFile(join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml'), renderPresetOnlyPatch(presetRoot, 'asset-workshop'));
+      for (const presetId of CUSTOM_AGENT_PRESET_IDS) {
+        await mkdir(join(presetRoot, presetId), { recursive: true });
+        await writeFile(join(presetRoot, presetId, 'agent.cordis.yml'), '- id: persona\n');
+      }
+      const verified = await verifyTimeoutPolicyComposition(dshHome, presetRoot);
+      expect(verified.valid).toBe(true);
+      expect(verified.coveredPresets).toEqual([...CUSTOM_AGENT_PRESET_IDS]);
+      const composition = await readFile(verified.hostCompositionPath, 'utf8');
+      expect((composition.match(/id: timeout-policy/g) ?? [])).toHaveLength(1);
+      expect((composition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test('mounts under the shipped entry with only the required tools service', async () => {

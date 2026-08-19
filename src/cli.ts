@@ -11,7 +11,8 @@ import {
   type ImageToolchainOptions
 } from './image-workshop';
 import type { ImageReleasePin } from './image-releases';
-import { childExitCode, redactSensitive, type CommandRunner, type InteractiveSpawner } from './process';
+import { childExitCode, redactSensitive, runCommand, type CommandRunner, type InteractiveSpawner } from './process';
+import { imageDiagnosticContextFromEnvironment, withImageDiagnostics } from './image-diagnostics';
 import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT } from './config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, uninstallWindowsRelease } from './release-gate';
 import type { PrerequisiteConsent } from './prerequisites';
@@ -38,6 +39,7 @@ export interface CliDependencies {
   onPortConflict?: (url: string) => Promise<PortConflictAction> | PortConflictAction;
   openExistingSession?: ExistingSessionOpener;
   rpgmaker?: boolean;
+  signal?: AbortSignal;
 }
 
 interface ParsedArgs {
@@ -231,9 +233,16 @@ function inputList(parsed: ParsedArgs): string[] {
   return value;
 }
 
-async function runImageCommand(parsed: ParsedArgs, dependencies: CliDependencies, io: CliIO): Promise<void> {
+async function runImageCommand(parsed: ParsedArgs, dependencies: CliDependencies, io: CliIO, signal?: AbortSignal): Promise<void> {
   const operation = parsed.positionals[0] ?? option(parsed.values, 'operation');
   if (!operation) throw new Error('Image operation is required.');
+  const imageEnv = dependencies.env ?? process.env;
+  const diagnostics = imageDiagnosticContextFromEnvironment(imageEnv);
+  const baseCommandRunner = dependencies.commandRunner ?? runCommand;
+  const commandRunner = withImageDiagnostics((command, args, options) => baseCommandRunner(command, args, {
+    ...options,
+    signal: signal ?? options.signal
+  }), diagnostics);
   const toolchainOptions: ImageToolchainOptions = {
     platform: dependencies.platform,
     env: dependencies.env,
@@ -252,13 +261,15 @@ async function runImageCommand(parsed: ParsedArgs, dependencies: CliDependencies
     installOxipng: parsed.flags.has('install-oxipng') || (parsed.flags.has('oxipng') && !option(parsed.values, 'oxipng')),
     downloadArchive: dependencies.downloadArchive,
     extractArchive: dependencies.extractArchive,
-    commandRunner: dependencies.commandRunner
+    commandRunner
   };
   const toolchain = (await prepareImageToolchain(toolchainOptions)).toolchain;
   const workshop = createImageWorkshop(toolchain, {
-    commandRunner: dependencies.commandRunner,
+    commandRunner,
     platform: dependencies.platform,
-    env: dependencies.env
+    env: dependencies.env,
+    signal,
+    diagnostics
   });
   if (operation === 'inspect') {
     io.stdout.write(`${JSON.stringify(await workshop.inspect(requiredOption(parsed, 'input')), null, 2)}\n`);
@@ -334,8 +345,22 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
 
   try {
     if (parsed.command === 'image' || parsed.command === 'asset') {
-      await runImageCommand(parsed, dependencies, io);
-      return 0;
+      const controller = dependencies.signal ? undefined : new AbortController();
+      const signal = dependencies.signal ?? controller?.signal;
+      const onSignal = (): void => controller?.abort();
+      if (controller) {
+        process.once('SIGTERM', onSignal);
+        process.once('SIGINT', onSignal);
+      }
+      try {
+        await runImageCommand(parsed, dependencies, io, signal);
+        return 0;
+      } finally {
+        if (controller) {
+          process.removeListener('SIGTERM', onSignal);
+          process.removeListener('SIGINT', onSignal);
+        }
+      }
     }
 
     if (parsed.command === 'bootstrap') {

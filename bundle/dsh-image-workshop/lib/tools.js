@@ -15,6 +15,8 @@ import { resolveWorkspacePath } from './workspace.js'
 import { invokeImageOperation } from './workshop-client.js'
 
 const GRAVITIES = ['center', 'north', 'south', 'east', 'west', 'northeast', 'northwest', 'southeast', 'southwest']
+export const IMAGE_INSPECT_TIMEOUT_MS = 30_000
+export const IMAGE_MUTATION_TIMEOUT_MS = 180_000
 
 async function pathExists(path) {
   try {
@@ -87,6 +89,7 @@ function operationResult(workspace, manifest, manifestPath) {
 export function createImageInspectTool() {
   return {
     name: 'image_inspect',
+    timeoutMs: IMAGE_INSPECT_TIMEOUT_MS,
     description: 'Inspect an image inside the current workspace and return its decoded metadata (dimensions, format, channels, alpha, bytes, SHA-256). The path is project-relative to the workspace.',
     parameters: {
       type: 'object',
@@ -104,7 +107,7 @@ export function createImageInspectTool() {
       const workspace = agentWorkspace(exec)
       const input = await resolveWorkspacePath(workspace, args.input, { label: 'Input', forOutput: false })
       if (!(await pathExists(input))) throw new Error(`image_inspect input does not exist in the workspace: ${args.input}`)
-      const value = await invokeImageOperation('inspect', ['--input', input], undefined, exec?.signal)
+      const value = await invokeImageOperation('inspect', ['--input', input], undefined, exec?.signal, { toolName: 'image_inspect', inputLabels: [args.input] })
       if (value !== null && typeof value === 'object' && typeof value.path === 'string') {
         return { ...value, path: toWorkspaceRelative(workspace, value.path) }
       }
@@ -117,6 +120,7 @@ export function createImageInspectTool() {
 export function createImageResizePixelTool() {
   return {
     name: 'image_resize_pixel',
+    timeoutMs: IMAGE_MUTATION_TIMEOUT_MS,
     description: 'Pixel-safe integer nearest-neighbour scaling of an image inside the current workspace. Provide scale, or both width and height that match one integer scale. The source is never overwritten and the output must not already exist. Paths are project-relative to the workspace.',
     parameters: {
       type: 'object',
@@ -149,7 +153,7 @@ export function createImageResizePixelTool() {
       const cliArgs = ['--input', input, '--output', output]
       if (hasScale) cliArgs.push('--scale', String(args.scale))
       else cliArgs.push('--width', String(args.width), '--height', String(args.height))
-      const manifest = await invokeImageOperation('resize-pixel', cliArgs, undefined, exec?.signal)
+      const manifest = await invokeImageOperation('resize-pixel', cliArgs, undefined, exec?.signal, { toolName: 'image_resize_pixel', inputLabels: [args.input], outputLabels: [args.output] })
       return operationResult(workspace, manifest, `${output}.manifest.json`)
     },
     presentCall: (args) => ({ card: 'generic', title: `Pixel-resize ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
@@ -159,6 +163,7 @@ export function createImageResizePixelTool() {
 export function createImageTrimPadTool() {
   return {
     name: 'image_trim_pad',
+    timeoutMs: IMAGE_MUTATION_TIMEOUT_MS,
     description: 'Trim fully transparent borders and/or pad a transparent canvas around an image inside the current workspace. With trim true (default), fully transparent margins are removed. Supplying width and height (together) pads onto a transparent canvas of that exact size. The source is never overwritten and the output must not already exist. Paths are project-relative to the workspace.',
     parameters: {
       type: 'object',
@@ -194,7 +199,7 @@ export function createImageTrimPadTool() {
       if (args.trim === false) cliArgs.push('--no-trim')
       if (args.width !== undefined) cliArgs.push('--width', String(args.width), '--height', String(args.height))
       if (args.gravity !== undefined) cliArgs.push('--gravity', args.gravity)
-      const manifest = await invokeImageOperation('trim-pad', cliArgs, undefined, exec?.signal)
+      const manifest = await invokeImageOperation('trim-pad', cliArgs, undefined, exec?.signal, { toolName: 'image_trim_pad', inputLabels: [args.input], outputLabels: [args.output] })
       return operationResult(workspace, manifest, `${output}.manifest.json`)
     },
     presentCall: (args) => ({ card: 'generic', title: `Trim/pad ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
@@ -204,6 +209,7 @@ export function createImageTrimPadTool() {
 export function createImageSheetSliceTool() {
   return {
     name: 'image_sheet_slice',
+    timeoutMs: IMAGE_MUTATION_TIMEOUT_MS,
     description: 'Slice a sprite sheet inside the current workspace into equal cell frames using a fixed cell width and height. The sheet dimensions must be divisible by the cell size. Writes frame-0000.png… (zero-based) and manifest.json into a new output directory. The source is never overwritten and the output directory must not already exist. Paths are project-relative to the workspace.',
     parameters: {
       type: 'object',
@@ -231,7 +237,7 @@ export function createImageSheetSliceTool() {
       if (await pathExists(outputDir)) {
         throw new Error(`image_sheet_slice output directory already exists: ${args.outputDir}. Choose a new directory; the source is never overwritten.`)
       }
-      const manifest = await invokeImageOperation('sheet-slice', ['--input', input, '--output-dir', outputDir, '--cell-width', String(args.cellWidth), '--cell-height', String(args.cellHeight)], undefined, exec?.signal)
+      const manifest = await invokeImageOperation('sheet-slice', ['--input', input, '--output-dir', outputDir, '--cell-width', String(args.cellWidth), '--cell-height', String(args.cellHeight)], undefined, exec?.signal, { toolName: 'image_sheet_slice', inputLabels: [args.input], outputLabels: [args.outputDir] })
       return operationResult(workspace, manifest, join(outputDir, 'manifest.json'))
     },
     presentCall: (args) => ({ card: 'generic', title: `Slice sheet ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
@@ -241,6 +247,7 @@ export function createImageSheetSliceTool() {
 export function createImageSheetAssembleTool() {
   return {
     name: 'image_sheet_assemble',
+    timeoutMs: IMAGE_MUTATION_TIMEOUT_MS,
     description: 'Assemble equally sized images inside the current workspace into one sprite sheet. All inputs must share identical dimensions and alpha mode; the input count must be divisible by columns. The source images are never overwritten and the output must not already exist. Paths are project-relative to the workspace.',
     parameters: {
       type: 'object',
@@ -272,7 +279,7 @@ export function createImageSheetAssembleTool() {
       if (await pathExists(output)) {
         throw new Error(`image_sheet_assemble output already exists: ${args.output}. Choose a new path; the sources are never overwritten.`)
       }
-      const manifest = await invokeImageOperation('sheet-assemble', ['--inputs-json', JSON.stringify(inputPaths), '--output', output, '--columns', String(args.columns)], undefined, exec?.signal)
+      const manifest = await invokeImageOperation('sheet-assemble', ['--inputs-json', JSON.stringify(inputPaths), '--output', output, '--columns', String(args.columns)], undefined, exec?.signal, { toolName: 'image_sheet_assemble', inputLabels: args.inputs, outputLabels: [args.output] })
       return operationResult(workspace, manifest, `${output}.manifest.json`)
     },
     presentCall: (args) => ({ card: 'generic', title: `Assemble sheet (${Array.isArray(args.inputs) ? args.inputs.length : 0} cells)`, kind: 'execute', locations: (Array.isArray(args.inputs) ? args.inputs : []).map((path) => ({ path })) })
@@ -282,6 +289,7 @@ export function createImageSheetAssembleTool() {
 export function createImageAtlasPackTool() {
   return {
     name: 'image_atlas_pack',
+    timeoutMs: IMAGE_MUTATION_TIMEOUT_MS,
     description: 'Pack differently sized images inside the current workspace into one PNG texture atlas plus a JSON frame map. Requires unique source file names and a maximum atlas size; padding and extrusion are optional and bounded. Writes into a new output directory that must not already exist. The source images are never overwritten. Paths are project-relative to the workspace.',
     parameters: {
       type: 'object',
@@ -322,7 +330,7 @@ export function createImageAtlasPackTool() {
       if (args.padding !== undefined) cliArgs.push('--padding', String(args.padding))
       if (args.extrusion !== undefined) cliArgs.push('--extrusion', String(args.extrusion))
       if (args.fixedGrid === true) cliArgs.push('--fixed-grid')
-      const manifest = await invokeImageOperation('atlas-pack', cliArgs, undefined, exec?.signal)
+      const manifest = await invokeImageOperation('atlas-pack', cliArgs, undefined, exec?.signal, { toolName: 'image_atlas_pack', inputLabels: args.inputs, outputLabels: [args.output] })
       return operationResult(workspace, manifest, join(outputDir, 'manifest.json'))
     },
     presentCall: (args) => ({ card: 'generic', title: `Pack atlas (${Array.isArray(args.inputs) ? args.inputs.length : 0} inputs)`, kind: 'execute', locations: (Array.isArray(args.inputs) ? args.inputs : []).map((path) => ({ path })) })
@@ -332,6 +340,7 @@ export function createImageAtlasPackTool() {
 export function createImageOptimizePngTool() {
   return {
     name: 'image_optimize_png',
+    timeoutMs: IMAGE_MUTATION_TIMEOUT_MS,
     description: 'Losslessly optimize a PNG inside the current workspace with oxipng, preserving decoded pixels, dimensions, and alpha. The source is never overwritten and the output must not already exist. Paths are project-relative to the workspace.',
     parameters: {
       type: 'object',
@@ -358,7 +367,7 @@ export function createImageOptimizePngTool() {
         throw new Error(`image_optimize_png output already exists: ${args.output}. Choose a new path; the source is never overwritten.`)
       }
       const level = args.level === undefined ? 4 : args.level
-      const manifest = await invokeImageOperation('optimize-png', ['--input', input, '--output', output, '--level', String(level)], undefined, exec?.signal)
+      const manifest = await invokeImageOperation('optimize-png', ['--input', input, '--output', output, '--level', String(level)], undefined, exec?.signal, { toolName: 'image_optimize_png', inputLabels: [args.input], outputLabels: [args.output] })
       return operationResult(workspace, manifest, `${output}.manifest.json`)
     },
     presentCall: (args) => ({ card: 'generic', title: `Optimize PNG ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
