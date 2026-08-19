@@ -19,9 +19,22 @@ The harness keeps the official DeepSeek Harness runtime in an app-owned tree and
 The real workspace acceptance uses only disposable state: `bun run phase2:real`
 prepares the project-neutral Host from a neutral landing directory, checks the
 CJK/space workspace, one pooled Host server, synchronously collected stable
-`rpgmaker_*` tools, and direct calls without a shell or `danger-full-access`
-retry. The Windows-only `bun run phase6:windows-manual -- --rpgmaker-installation
-'<path>'` command remains the complementary native MV packaging gate.
+`rpgmaker_*` tools, direct Agent-scoped calls, and observed Xerolo child
+identity. Its machine JSON reports the actual child/process evidence and shell
+process observations; it does not claim a picker or permission retry from a
+constant. The installed-tree Windows gate is the exact NUC command sequence:
+
+```powershell
+Set-Location "$env:LOCALAPPDATA\Programs\BaiheStudio\DSH-RPGMaker-MV"
+bun run phase7:windows-installed -- --installed-root (Get-Location).Path
+```
+
+It launches the supported installed `Launch.cmd`, observes the real fixed-port
+Web readiness and project-neutral process arguments, repairs a deliberately
+broken local profile link, runs the installed-tree Agent probe, and cleans up
+all disposable state/processes. The separate
+`bun run phase6:windows-manual -- --rpgmaker-installation '<path>'` command
+remains the complementary native MV packaging gate.
 
 ### Install and repair
 

@@ -833,10 +833,11 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
 
   const codePresetPath = await findCodeComposition(paths.runtimeDir);
   const sourceRoot = options.sourceRoot ?? defaultSourceRoot(RPGMAKER_PRESET_ID);
+  const shippedPresetRoot = dirname(sourceRoot);
   const installed = await installPreset(sourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
-  await installPreset(defaultSourceRoot(PLAYTEST_DEBUG_PRESET_ID), paths.dshHome, codePresetPath, PLAYTEST_DEBUG_PRESET_ID);
-  await installPreset(defaultSourceRoot(ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
-  await installPreset(defaultSourceRoot(BUILD_RELEASE_PRESET_ID), paths.dshHome, codePresetPath, BUILD_RELEASE_PRESET_ID);
+  await installPreset(join(shippedPresetRoot, PLAYTEST_DEBUG_PRESET_ID), paths.dshHome, codePresetPath, PLAYTEST_DEBUG_PRESET_ID);
+  await installPreset(join(shippedPresetRoot, ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
+  await installPreset(join(shippedPresetRoot, BUILD_RELEASE_PRESET_ID), paths.dshHome, codePresetPath, BUILD_RELEASE_PRESET_ID);
 
   await mkdir(paths.neutralLandingDir, { recursive: true });
   const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');

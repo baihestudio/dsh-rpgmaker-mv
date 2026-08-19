@@ -7,12 +7,16 @@ import { strict as assert } from 'node:assert';
 import { bootstrapRuntime, findDshExecutable } from '../src/bootstrap';
 import { DSH_VERSION } from '../src/config';
 import { launchRpgmakerProject, prepareRpgMakerLaunch } from '../src/rpgmaker';
-import { runCommand } from '../src/process';
+import { redactSensitive, runCommand } from '../src/process';
 
 const DATABASE_TYPES = ['Actors', 'Classes', 'Skills', 'Items', 'Weapons', 'Armors', 'Enemies', 'Troops', 'States', 'Animations', 'Tilesets', 'CommonEvents'];
 
 function json(value: unknown): string {
   return `${JSON.stringify(value)}\n`;
+}
+
+function diagnosticText(value: string): string {
+  return redactSensitive(value, process.env);
 }
 
 async function makeFixture(root: string): Promise<string> {
@@ -117,23 +121,32 @@ try {
       MCPORTER_RUNTIME: preparation.mcporterRuntimeDir,
       XEROLO_RUNTIME: preparation.xeroloRuntimeDir,
       JS_RUNNER: preparation.jsRunner,
+      XEROLO_ENTRY: preparation.xeroloScript,
       WORKSPACE_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js')
     },
     platform: process.platform,
     timeoutMs: 120_000
   });
-  if (mountProbe.exitCode !== 0) throw new Error(`project-neutral DSH/Xerolo workspace acceptance failed: ${mountProbe.stderr || mountProbe.stdout}`);
+  if (mountProbe.exitCode !== 0) throw new Error(`project-neutral DSH/Xerolo workspace acceptance failed: ${diagnosticText(mountProbe.stderr || mountProbe.stdout)}`);
   const line = mountProbe.stdout.split(/\r?\n/).map((value) => value.trim()).find((value) => value.startsWith('{"ok"'));
-  if (!line) throw new Error(`workspace acceptance returned no structured result: ${mountProbe.stdout}`);
-  const result = JSON.parse(line) as { ok?: boolean; stableTools?: number; workspaceServers?: number; pooledXeroloChildren?: number; noPicker?: boolean; shellRetry?: boolean; dangerFullAccessRetry?: boolean };
+  if (!line) throw new Error(`workspace acceptance returned no structured result: ${diagnosticText(mountProbe.stdout)}`);
+  const result = JSON.parse(line) as {
+    ok?: boolean;
+    stableTools?: number;
+    workspaceServers?: number;
+    pooledXeroloChildren?: number;
+    directAgentToolCalls?: Array<{ name?: string; isError?: boolean; valueObserved?: boolean }>;
+    xeroloProcessEvidence?: { children?: Array<unknown>; shellProcesses?: Array<unknown> };
+  };
   assert.equal(result.ok, true);
-  assert.equal(result.noPicker, true);
   assert.equal(result.workspaceServers, 1);
   assert.equal(result.pooledXeroloChildren, 1);
   assert.equal(result.stableTools, 41);
-  assert.equal(result.shellRetry, false);
-  assert.equal(result.dangerFullAccessRetry, false);
-  console.log(JSON.stringify({
+  assert.equal(result.directAgentToolCalls?.length, 2);
+  assert.equal(result.directAgentToolCalls?.some((call) => call.isError !== false || call.valueObserved !== true), false);
+  assert.equal(result.xeroloProcessEvidence?.children?.length, 1);
+  assert.equal(result.xeroloProcessEvidence?.shellProcesses?.length, 0);
+  console.log(diagnosticText(JSON.stringify({
     ok: true,
     gate: 'phase2-real-workspace-mcp',
     dsh: DSH_VERSION,
@@ -141,8 +154,13 @@ try {
     project,
     mcporterRuntime: mcporterRuntimeDir,
     xeroloRuntime: xeroloRuntimeDir,
+    launchEvidence: {
+      neutralLandingDir,
+      observedCwd: launched.cwd,
+      projectArgumentCount: launched.args.filter((argument) => argument === '--project' || argument.startsWith('--project=')).length
+    },
     ...result
-  }));
+  })));
 } finally {
   await rm(root, { recursive: true, force: true });
 }

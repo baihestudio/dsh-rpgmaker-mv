@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 
@@ -11,9 +12,11 @@ import { buildReleaseZip, inspectReleaseZip, installWindowsRelease } from '../sr
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
 import { PNPM_VERSION, VISION_TOOLKIT_NPM_INTEGRITY, VISION_TOOLKIT_PACKAGE, VISION_TOOLKIT_VERSION, VISION_TOOL_NAMES } from '../src/vision-toolkit';
+import { findDshExecutable } from '../src/bootstrap';
+import { prepareRpgMakerLaunch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
 import { RPGMPACKER_NPM_INTEGRITY, RPGMPACKER_PACKAGE, RPGMPACKER_SCRIPT, RPGMPACKER_VERSION } from '../src/release';
-import { WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
+import { verifyWorkspaceMcpBundle, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
 import { installWindowsPrerequisites, PrerequisiteConsentError, verifyWindowsPrerequisites } from '../src/prerequisites';
 import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
@@ -26,6 +29,8 @@ import { visionToolkitActivationFixture, visionToolkitFixture } from './fixtures
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
 }
+
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const prepareAgentDependencies = async (): Promise<void> => undefined;
 
@@ -53,6 +58,8 @@ async function dshRuntime(runtime: string): Promise<void> {
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ version: DSH_VERSION, bin: { dsh: 'lib/bin.js' } }));
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'fixture');
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'profile-boot-fixture.js'), 'fixture');
+  await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code'), { recursive: true });
+  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml'), '- id: skill-filesystem\n  name: \'@deepseek-ai/dsh-skill-filesystem\'\n- id: persona\n  name: fixture persona\n');
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh-launch-environment', 'lib', 'index.js'), 'fixture');
   await writeFile(join(runtime, 'node_modules', '.bin', 'dsh.cmd'), '@echo off\r\n');
   await writeFile(join(runtime, 'node_modules', 'koffi', 'package.json'), JSON.stringify({ version: '2.12.0' }));
@@ -179,10 +186,10 @@ async function writeProfilePlugin(
   }
   const dependencies = { ...((manifest.dependencies ?? {}) as Record<string, string>), [packageName]: source ? `file:${source}` : version };
   manifest.dependencies = dependencies;
-  manifest.dsh = { profile: { bundles: [VISION_TOOLKIT_PACKAGE] } };
+  manifest.dsh = { profile: { bundles: [packageName === '@baihestudio/dsh-workspace-mcp' ? packageName : VISION_TOOLKIT_PACKAGE] } };
   if (source) {
     await rm(installed, { recursive: true, force: true });
-    await symlink(source, installed, 'dir');
+    await cp(source, installed, { recursive: true });
   } else {
     await mkdir(join(installed, 'lib'), { recursive: true });
     await writeFile(join(installed, 'package.json'), JSON.stringify({
@@ -235,7 +242,9 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
       if (packageSpec?.startsWith(`${VISION_TOOLKIT_PACKAGE}@`)) {
         await writeProfilePlugin(context.dshHome, VISION_TOOLKIT_PACKAGE, VISION_TOOLKIT_VERSION, VISION_TOOLKIT_NPM_INTEGRITY);
       } else if (local) {
-        await writeProfilePlugin(context.dshHome, '@baihestudio/dsh-image-workshop', '0.1.0', '', local);
+        const localManifest = JSON.parse(await readFile(join(local, 'package.json'), 'utf8')) as { name?: string; version?: string };
+        if (!localManifest.name || !localManifest.version) throw new Error(`local plugin fixture has no package identity: ${local}`);
+        await writeProfilePlugin(context.dshHome, localManifest.name, localManifest.version, '', local);
       } else {
         throw new Error(`unexpected plugin fixture args: ${args.join(' ')}`);
       }
@@ -547,8 +556,8 @@ describe('Windows release gate foundations', () => {
       await mkdir(join(release, 'src'), { recursive: true });
       await mkdir(bin, { recursive: true });
       await cp(process.execPath, join(bin, 'bun.exe'));
-      await writeFile(join(release, 'install.ps1'), await readFile(join(process.cwd(), 'install.ps1')));
-      await writeFile(join(release, 'Install.cmd'), await readFile(join(process.cwd(), 'Install.cmd')));
+      await writeFile(join(release, 'install.ps1'), await readFile(join(REPOSITORY_ROOT, 'install.ps1')));
+      await writeFile(join(release, 'Install.cmd'), await readFile(join(REPOSITORY_ROOT, 'Install.cmd')));
       await writeFile(join(release, 'src', 'cli.ts'), 'await Bun.write(process.env.WRAPPER_CAPTURE!, JSON.stringify(process.argv));\n');
       const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin};${process.env.PATH ?? ''}`, LOCALAPPDATA: local, APPDATA: appdata, WRAPPER_CAPTURE: capture };
       const powershell = process.env.PWSH_EXECUTABLE ?? 'powershell.exe';
@@ -627,7 +636,7 @@ describe('Windows release gate foundations', () => {
       const result = await installWindowsRelease({
         platform: 'win32',
         env: { ...env, DEEPSEEK_API_KEY: 'must-not-be-written' },
-        releaseRoot: process.cwd(),
+        releaseRoot: REPOSITORY_ROOT,
         programRoot: program,
         mutableRoot: mutable,
         dshHome: state,
@@ -693,7 +702,7 @@ describe('Windows release gate foundations', () => {
       const install = () => installWindowsRelease({
         platform: 'win32',
         env,
-        releaseRoot: process.cwd(),
+        releaseRoot: REPOSITORY_ROOT,
         programRoot: program,
         mutableRoot: mutable,
         dshHome: state,
@@ -790,7 +799,7 @@ describe('Windows release gate foundations', () => {
         const installOptions = {
           platform: 'win32',
           env,
-          releaseRoot: process.cwd(),
+          releaseRoot: REPOSITORY_ROOT,
           programRoot: program,
           mutableRoot: mutable,
           dshHome: state,
@@ -823,7 +832,7 @@ describe('Windows release gate foundations', () => {
       await expect(installWindowsRelease({
         platform: 'win32',
         env,
-        releaseRoot: process.cwd(),
+        releaseRoot: REPOSITORY_ROOT,
         programRoot: program,
         mutableRoot: mutable,
         dshHome: join(mutable, 'state'),
@@ -911,7 +920,7 @@ describe('Windows release gate foundations', () => {
     const root = await temp('phase7-zip');
     try {
       const zip = join(root, 'DSH-RPGMaker-MV-Windows.zip');
-      const archive = await buildReleaseZip({ sourceRoot: process.cwd(), outputZip: zip, platform: process.platform });
+      const archive = await buildReleaseZip({ sourceRoot: REPOSITORY_ROOT, outputZip: zip, platform: process.platform });
       const inspection = await inspectReleaseZip({ zipPath: archive, platform: process.platform });
       expect(inspection.valid).toBe(true);
       expect(inspection.entries).toContain('Install.cmd');
@@ -930,6 +939,101 @@ describe('Windows release gate foundations', () => {
       });
       expect(windowsInspection.valid).toBe(true);
       expect(windowsInspection.requiredEntries.every((entry) => !entry.includes('\\'))).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('repairs the installed web-profile bundle after a Release ZIP extraction and deliberate link break', async () => {
+    const root = await temp('phase7-release-repair-选择');
+    try {
+      const archive = join(root, 'DSH-RPGMaker-MV-Windows.zip');
+      await buildReleaseZip({ sourceRoot: REPOSITORY_ROOT, outputZip: archive, platform: process.platform });
+      const extracted = join(root, 'extracted Release 选择 with spaces');
+      await mkdir(extracted, { recursive: true });
+      const extractor = process.platform === 'win32' ? await resolveExecutable('tar', { platform: process.platform, env: process.env }) : await resolveExecutable('unzip', { platform: process.platform, env: process.env });
+      expect(extractor).toBeDefined();
+      const extractedResult = process.platform === 'win32'
+        ? await runCommand(extractor!, ['-xf', archive, '-C', extracted], { platform: process.platform, env: process.env, timeoutMs: 60_000 })
+        : await runCommand(extractor!, ['-q', archive, '-d', extracted], { platform: process.platform, env: process.env, timeoutMs: 60_000 });
+      expect(extractedResult.exitCode).toBe(0);
+      expect(await Bun.file(join(extracted, 'Launch.cmd')).exists()).toBe(true);
+
+      const { bin, env: prerequisiteEnv } = await prerequisiteBin(root);
+      const imageMagick = join(bin, 'magick.exe');
+      const oxipng = join(bin, 'oxipng.exe');
+      await writeFile(imageMagick, 'fixture ImageMagick');
+      await writeFile(oxipng, 'fixture oxipng');
+      const mutable = join(root, 'Mutable state 选择 with spaces');
+      const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const state = join(mutable, 'state');
+      await writeVisionRuntimeMarker(state);
+      const bun = join(bin, 'bun.exe');
+      const npm = join(bin, 'npm.cmd');
+      const env = {
+        ...prerequisiteEnv,
+        BUN_EXECUTABLE: bun,
+        NPM_EXECUTABLE: npm,
+        NODE_EXECUTABLE: join(bin, 'node.exe'),
+        DSH_IMAGE_MAGICK: imageMagick,
+        DSH_IMAGE_MAGICK_SHA256: sha256('fixture ImageMagick'),
+        DSH_OXIPNG: oxipng,
+        DSH_OXIPNG_SHA256: sha256('fixture oxipng')
+      };
+      const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
+      const runner = defaultInstallRunner({ dshHome: state }, calls);
+      const shortcut = join(root, 'Start Menu', 'DSH for RPG Maker MV.lnk');
+      await installWindowsRelease({
+        platform: 'win32',
+        env,
+        releaseRoot: extracted,
+        programRoot: program,
+        mutableRoot: mutable,
+        dshHome: state,
+        bunExecutable: bun,
+        npmExecutable: npm,
+        commandRunner: runner,
+        consent: true,
+        createShortcut: async () => {
+          await mkdir(dirname(shortcut), { recursive: true });
+          await writeFile(shortcut, 'fixture shortcut');
+          return shortcut;
+        }
+      });
+
+      const dshExecutable = await findDshExecutable(join(program, 'runtime', 'dsh'), 'win32');
+      expect(dshExecutable).toBeDefined();
+      const launchRunner = async (command: string, args: string[], options: { cwd?: string; env?: Record<string, string | undefined>; platform?: string; timeoutMs?: number }) => {
+        if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: agent-presets\n', stderr: '' };
+        return runner(command, args, options);
+      };
+      const launchOptions = {
+        platform: 'win32',
+        env,
+        dshHome: state,
+        programRoot: program,
+        mutableRoot: mutable,
+        runtimeDir: join(program, 'runtime', 'dsh'),
+        mcporterRuntimeDir: join(program, 'runtime', 'mcporter'),
+        mcpRuntimeDir: join(program, 'runtime', 'mcp'),
+        dshExecutable,
+        bunExecutable: bun,
+        npmExecutable: npm,
+        sourceRoot: join(program, 'presets', 'rpgmaker'),
+        commandRunner: launchRunner
+      } as const;
+
+      const firstPreparation = await prepareRpgMakerLaunch(launchOptions);
+      expect(firstPreparation.workspaceMcpBundle.valid).toBe(true);
+      const profilePackage = join(state, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
+      await rm(profilePackage, { recursive: true, force: true });
+      const broken = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') });
+      expect(broken.valid).toBe(false);
+      expect(broken.errors.join(' ')).toMatch(/installed profile package/i);
+
+      const repairedPreparation = await prepareRpgMakerLaunch(launchOptions);
+      expect(repairedPreparation.workspaceMcpBundle.valid).toBe(true);
+      expect((await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') })).valid).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

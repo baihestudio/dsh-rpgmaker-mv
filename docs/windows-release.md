@@ -67,15 +67,62 @@ The web session always binds to `http://127.0.0.1:3081`. If that port is occupie
 
 ## Post-review acceptance sequence
 
-The ordinary workspace seam is covered by `bun test tests/phase10.test.ts`. On a
-machine authorized for real acceptance, run `bun run phase2:real` from a
-checkout. It uses disposable DSH state and a CJK/space project to verify the
-project-neutral composition, one Host runtime, one pooled workspace server,
-synchronously collected `rpgmaker_*` schemas, and one direct tool call; a failed
-call is not retried through shell or `danger-full-access`. On Windows, follow it
-with `bun run phase6:windows-manual -- --rpgmaker-installation '<installed RPG Maker MV folder>'`
-for the native MV packaging/launch evidence. The two-workspace mutation matrix
-is not repeated in the Windows gate.
+The ordinary workspace seam is covered by `bun test tests/phase10.test.ts`.
+`bun test tests/phase7.test.ts` also builds a disposable Release ZIP, extracts it
+under a path containing spaces/CJK, performs a fake installed-tree first-launch
+preparation, breaks the local `web` profile bundle entry, and verifies the
+supported preparation path repairs it. The two-workspace mutation matrix stays
+only in phase 10.
+
+### Authorized disposable real gate
+
+From a checkout on a machine authorized to fetch the pinned packages, run:
+
+```powershell
+bun run phase2:real
+```
+
+This provisions temporary DSH, MCPorter, and Xerolo runtimes plus one temporary
+CJK/space MV workspace, then removes them. It performs no model request and no
+workspace mutation. Its final JSON records the neutral launch seam, one Host
+runtime/server, 41 stable schemas, successful direct Agent-scoped calls, and
+`xeroloProcessEvidence` containing the observed child PID/image/parent identity
+and matching `--project`/entry observations. It also records matching shell
+processes; an empty list is the evidence for no shell escalation. Subprocess
+failure diagnostics pass through the repository redaction boundary.
+
+### Authorized NUC installed-release gate
+
+Run these exact commands on the NUC from the installed program root:
+
+```powershell
+Set-Location "$env:LOCALAPPDATA\Programs\BaiheStudio\DSH-RPGMaker-MV"
+bun run phase7:windows-installed -- --installed-root (Get-Location).Path
+```
+
+This first verifies the installed DSH, pnpm, MCPorter, and Xerolo runtimes
+without downloading anything. It then provisions only disposable DSH state, a
+disposable CJK/space workspace, and temporary profile data. It launches the supported installed `Launch.cmd`,
+waits for an HTTP response on `127.0.0.1:3081`, observes the real launcher
+processes and neutral-landing message with zero `--project` arguments, shuts
+the process tree down with Windows `taskkill /T /F`, deliberately removes the
+local `web` profile bundle entry, repeats `Launch.cmd` for repair evidence, and
+runs the installed-tree Agent probe for 41 stable tools and one observed Xerolo
+child. The JSON emits `firstLaunch`, `repair`, `agentEvidence`, and
+`shutdown.firstPortClosed`/`shutdown.repairPortClosed` evidence. It sends no
+model request, mutates no real game, and uses no external service beyond the
+local loopback Web process. The gate cleans its temporary roots and every
+process it starts.
+
+The packaging/MV hardware gate remains a separate, explicitly authorized
+operation:
+
+```powershell
+bun run phase6:windows-manual -- --rpgmaker-installation '<installed RPG Maker MV folder>'
+```
+
+It is not part of the installed-release gate and is not a substitute for the
+project-neutral launch evidence above.
 
 ## Doctor and repair
 

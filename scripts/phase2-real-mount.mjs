@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url'
 import { realpath } from 'node:fs/promises'
+import { observeXeroloChildren } from './process-observation.mjs'
 
 const profileModule = await import(pathToFileURL(process.env.PROFILE_FILE).href)
 const environmentModule = await import(pathToFileURL(process.env.ENVIRONMENT_MODULE).href)
@@ -29,7 +30,8 @@ function stableNames(schemas) {
 
 const project = process.env.PROJECT_PATH
 const neutralLanding = process.env.NEUTRAL_LANDING_DIR
-if (!project || !neutralLanding) throw new Error('PROJECT_PATH and NEUTRAL_LANDING_DIR are required')
+const xeroloEntry = process.env.XEROLO_ENTRY
+if (!project || !neutralLanding || !xeroloEntry) throw new Error('PROJECT_PATH, NEUTRAL_LANDING_DIR, and XEROLO_ENTRY are required')
 const [actualNeutralLanding, expectedNeutralLanding] = await Promise.all([realpath(process.cwd()), realpath(neutralLanding)])
 if (actualNeutralLanding !== expectedNeutralLanding) throw new Error(`DSH did not start from the neutral landing directory: ${process.cwd()}`)
 if (!project.includes('选择') || !project.includes('spaces')) throw new Error(`CJK/space project fixture was lost: ${project}`)
@@ -99,16 +101,22 @@ try {
     throw new Error(`expected one pooled canonical workspace server, got ${JSON.stringify(stateAfterAgents.workspaces)}`)
   }
 
-  let callNumber = 0
+  const directAgentToolCalls = []
   async function call(handle, rawName, args) {
+    const modelName = `rpgmaker_${rawName}`
     const result = await tools.execute({
-      callId: `phase2-real-workspace-${++callNumber}`,
-      name: `rpgmaker_${rawName}`,
+      callId: `phase2-real-workspace-${directAgentToolCalls.length + 1}`,
+      name: modelName,
       arguments: args,
       agent: handle.agent,
       signal: new AbortController().signal
     })
     if (result.isError) throw new Error(`stable RPG Maker tool ${rawName} failed without retry: ${JSON.stringify(result)}`)
+    directAgentToolCalls.push({
+      name: modelName,
+      isError: result.isError === true,
+      valueObserved: result.value !== undefined
+    })
     return result.value ?? result
   }
 
@@ -120,18 +128,25 @@ try {
     throw new Error('pooled workspace calls did not remain on the single Host runtime/server')
   }
 
+  const xeroloProcessEvidence = await observeXeroloChildren({
+    project: canonicalProject,
+    entry: xeroloEntry,
+    platform: process.platform,
+    env: process.env
+  })
+  if (xeroloProcessEvidence.children.length === 0) {
+    throw new Error(`no live Xerolo child matched the canonical workspace and pinned entry (process table size ${xeroloProcessEvidence.processTableSize})`)
+  }
   console.log(JSON.stringify({
     ok: true,
-    noPicker: true,
     launchCwd: process.cwd(),
     workspace: canonicalProject,
     hostRuntime: stateAfterCalls.runtimeDir,
     workspaceServers: stateAfterCalls.workspaces.length,
-    pooledXeroloChildren: stateAfterCalls.workspaces.length,
+    pooledXeroloChildren: xeroloProcessEvidence.children.length,
     stableTools: expectedNames.length,
-    callNumber,
-    shellRetry: false,
-    dangerFullAccessRetry: false
+    directAgentToolCalls,
+    xeroloProcessEvidence
   }))
 } finally {
   for (const handle of handles) {
