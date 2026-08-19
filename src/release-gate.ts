@@ -10,9 +10,11 @@ import { prepareImageToolchain } from './image-workshop';
 import { withoutCredentials, runCommand, type CommandRunner } from './process';
 import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
 import { prepareRpgMakerMcpRuntime } from './rpgmaker';
+import { prepareMcporterRuntime } from './mcport';
 import { prepareRpgmPackerRuntime } from './release';
 import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_BUNDLE_RELATIVE } from './image-plugin';
-import { prepareVisionToolkit } from './vision-toolkit';
+import { preparePnpmRuntime, prepareVisionToolkit } from './vision-toolkit';
+import { WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
@@ -34,7 +36,8 @@ export const RELEASE_ENTRIES = [
   'src',
   'presets',
   'scripts',
-  IMAGE_WORKSHOP_BUNDLE_RELATIVE
+  IMAGE_WORKSHOP_BUNDLE_RELATIVE,
+  WORKSPACE_MCP_BUNDLE_RELATIVE
 ] as const;
 
 export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteOptions {
@@ -239,6 +242,28 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
       });
       const bunExecutable = options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE ?? 'bun';
       const prepareAgentDependencies = options.prepareAgentDependencies ?? (async (context) => {
+        await preparePnpmRuntime({
+          platform,
+          env: context.env,
+          dshHome: context.paths.dshHome,
+          programRoot: context.paths.programRoot,
+          mutableRoot: context.paths.mutableRoot,
+          runtimeDir: context.paths.runtimeDir,
+          npmExecutable: context.npmExecutable,
+          useAppOwnedPnpm: true,
+          commandRunner: context.commandRunner
+        }, context.paths);
+        const mcporter = await prepareMcporterRuntime({
+          platform,
+          env: context.env,
+          dshHome: context.paths.dshHome,
+          programRoot: context.paths.programRoot,
+          mutableRoot: context.paths.mutableRoot,
+          runtimeDir: context.paths.runtimeDir,
+          bunExecutable: context.bunExecutable,
+          commandRunner: context.commandRunner
+        }, join(context.paths.programRoot, 'runtime', 'mcporter'));
+        if (!mcporter.valid) throw new Error(`MCPorter runtime is not usable: ${mcporter.errors.join('; ')}`);
         const mcp = await prepareRpgMakerMcpRuntime({ platform, env: context.env, bunExecutable: context.bunExecutable, commandRunner: context.commandRunner }, join(context.paths.programRoot, 'runtime', 'mcp'));
         if (!mcp.valid) throw new Error(`RPG Maker MCP is not usable: ${mcp.errors.join('; ')}`);
         await prepareImageToolchain({
@@ -398,7 +423,26 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
   const result = await runner(command, args, { env: withoutCredentials(env), platform, timeoutMs: 30_000 });
   if (result.exitCode !== 0) throw new ReleaseGateError(`Release ZIP inspection failed: ${result.stderr || result.stdout}`.trim());
   const entries = result.stdout.split(/\r?\n/).map((entry) => entry.trim().replaceAll('\\', '/').replace(/^\.\//, '')).filter(Boolean);
-  const requiredEntries = ['Install.cmd', 'install.ps1', 'Launch.cmd', 'launch.ps1', 'Uninstall.cmd', 'uninstall.ps1', 'THIRD-PARTY-NOTICES.md', 'docs/windows-release.md', 'src/cli.ts', 'presets/rpgmaker/preset.yml', `${IMAGE_WORKSHOP_BUNDLE_RELATIVE}/package.json`];
+  const archivePath = (entry: string): string => entry.replaceAll('\\', '/');
+  const requiredEntries = [
+    'Install.cmd',
+    'install.ps1',
+    'Launch.cmd',
+    'launch.ps1',
+    'Uninstall.cmd',
+    'uninstall.ps1',
+    'THIRD-PARTY-NOTICES.md',
+    'docs/windows-release.md',
+    'src/cli.ts',
+    'src/mcport.ts',
+    'src/workspace-mcp.ts',
+    'src/vision-toolkit.ts',
+    'presets/rpgmaker/preset.yml',
+    `${archivePath(IMAGE_WORKSHOP_BUNDLE_RELATIVE)}/package.json`,
+    `${archivePath(WORKSPACE_MCP_BUNDLE_RELATIVE)}/package.json`,
+    `${archivePath(WORKSPACE_MCP_BUNDLE_RELATIVE)}/lib/index.js`,
+    `${archivePath(WORKSPACE_MCP_BUNDLE_RELATIVE)}/lib/xerolo-manifest.js`
+  ];
   const missing = requiredEntries.filter((entry) => !entries.includes(entry) && !entries.some((candidate) => candidate.startsWith(`${entry}/`)));
   return { path: zipPath, entries, requiredEntries, valid: missing.length === 0, missing };
 }

@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease } from '../src/release-gate';
+import { WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
 import { installWindowsPrerequisites, PrerequisiteConsentError, verifyWindowsPrerequisites } from '../src/prerequisites';
 import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
@@ -497,6 +498,8 @@ describe('Windows release gate foundations', () => {
       expect(metadata.owner).toBe(PROGRAM_OWNER);
       expect(metadata.prerequisites.some((item: { id: string }) => item.id === 'python')).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'dsh', 'package.json')).exists()).toBe(true);
+      expect(await Bun.file(join(program, WORKSPACE_MCP_BUNDLE_RELATIVE, 'package.json')).exists()).toBe(true);
+      expect(await Bun.file(join(program, WORKSPACE_MCP_BUNDLE_RELATIVE, 'lib', 'xerolo-manifest.js')).exists()).toBe(true);
       expect((await stat(join(mutable, 'logs'))).isDirectory()).toBe(true);
       expect((await stat(join(mutable, 'cache'))).isDirectory()).toBe(true);
       expect(await readFile(join(program, 'install.json'), 'utf8')).not.toContain('must-not-be-written');
@@ -695,6 +698,9 @@ describe('Windows release gate foundations', () => {
       expect(inspection.valid).toBe(true);
       expect(inspection.entries).toContain('Install.cmd');
       expect(inspection.entries).toContain('src/cli.ts');
+      expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_RELATIVE}/package.json`);
+      expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_RELATIVE}/lib/index.js`);
+      expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_RELATIVE}/lib/xerolo-manifest.js`);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

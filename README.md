@@ -32,9 +32,11 @@ On Windows, program-owned DSH/MCP/tool runtimes default under `%LOCALAPPDATA%\\P
 
 The Windows launcher is project-neutral: it never opens a folder picker, reads
 recent projects, writes app-owned project-selection state, or accepts
-`launch --project`. It prepares and verifies the pinned DSH, MCPorter, and
-RPG Maker runtimes, the four presets, the effective composition, and the
-app-owned `dsh-workspace-mcp` bundle before starting official DSH. DSH starts in
+`launch --project`. The Release ZIP carries the prebuilt
+`bundle/dsh-workspace-mcp` package and generated Xerolo manifest. Launch
+prepares and verifies the pinned DSH, pnpm 10.15.1, MCPorter 0.12.3, Xerolo
+0.1.0, the four presets, the effective composition, and the app-owned
+`dsh-workspace-mcp` profile link before starting official DSH. DSH starts in
 an app-owned neutral landing directory; choose and switch RPG Maker folders in
 DSH Web. `rpgmaker` is the default when `--preset` is omitted.
 

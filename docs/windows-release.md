@@ -33,11 +33,17 @@ Generated settings contain paths and non-secret versions only. DeepSeek credenti
 Use the Start Menu shortcut, or run `Launch.cmd` from the installed program root.
 The launcher is project-neutral: it opens no folder picker, reads no recent
 project list, writes no app-owned project-selection state, and rejects
-`launch --project`. It verifies the app-owned DSH, MCPorter, and Xerolo
-runtimes, local workspace bundle, four presets, and effective composition before
-spawning DSH from the neutral landing directory. Omit `--preset` to use
-`rpgmaker`, or pass `--preset playtest-debug`, `asset-workshop`, or
-`build-release` as the default Agent preset.
+`launch --project`. The Release ZIP carries the prebuilt
+`bundle/dsh-workspace-mcp` package, including its generated Xerolo manifest;
+installation copies it to the stable app-owned program tree. Before spawning
+DSH, launch verifies or repairs the exact-pinned app-owned pnpm 10.15.1,
+MCPorter 0.12.3, and Xerolo RPG Maker MCP 0.1.0 runtimes, links the local
+workspace bundle into the `web` profile, installs the four presets, and verifies
+the effective composition from the neutral landing directory. The profile link
+is made during this pre-launch preparation, never while an install tree swap is
+in progress. Omit `--preset` to use `rpgmaker`, or pass `--preset
+playtest-debug`, `asset-workshop`, or `build-release` as the default Agent
+preset.
 
 Choose a game folder in DSH Web. The workspace must contain `Game.rpgproject`,
 `data`, and `js` directly beneath its root; parents and workspace-authored
