@@ -13,6 +13,9 @@ const environment = environmentModule.createLaunchEnvironmentSnapshot([{
 }])
 
 function unwrap(value) {
+  // run_code returns { logs, result } where result is the program's returned
+  // canonical JSON value; native tool calls return an MCP-style content list.
+  if (value && typeof value === 'object' && 'result' in value) return value.result
   const text = value?.content?.find?.((block) => block?.type === 'text')?.text
   if (typeof text !== 'string') return value
   try { return JSON.parse(text) } catch { return text }
@@ -75,7 +78,7 @@ try {
   }
 
   const first = await createAgent('phase2-real-workspace-a')
-  const immediateSchemas = first.agent?.ctx?.tools?.schemas?.()
+  const immediateSchemas = first.agent?.ctx?.tools?.schemas?.(first.agent?.ctx?.agent)
   if (!Array.isArray(immediateSchemas)) throw new Error('Agent tool provider did not expose synchronous schemas')
   const expectedNames = bundle.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort()
   if (JSON.stringify(stableNames(immediateSchemas)) !== JSON.stringify(expectedNames)) {
@@ -83,17 +86,29 @@ try {
   }
 
   const firstAssembly = await systemPrompt.assemble(assembleContextFor(first.agent))
-  if (JSON.stringify(stableNames(firstAssembly.tools ?? [])) !== JSON.stringify(expectedNames)) {
-    throw new Error('first system-prompt assembly did not contain the complete stable rpgmaker_* tool set')
+  // Code mode (DSH rc.7 default for the shipped presets): the model calls
+  // tools through the generated run_code SDK, so the complete stable
+  // rpgmaker_* tool set must appear in the assembly's tools:sdk section, and
+  // no rpgmaker_* name may leak into the native tool list.
+  const sdkSection = (firstAssembly?.sections ?? []).find((section) => section?.name === 'tools:sdk')
+  if (typeof sdkSection?.text !== 'string' || expectedNames.some((name) => !sdkSection.text.includes(name))) {
+    throw new Error('first system-prompt assembly did not carry the complete stable rpgmaker_* tool set in the code-mode SDK section')
   }
   if (stableNames(firstAssembly.tools ?? []).some((name) => /(?:mcp__|[0-9a-f]{8,}|-)/.test(name))) {
     throw new Error('model-facing tool names exposed runtime identity')
   }
+  if (stableNames(firstAssembly.tools ?? []).length !== 0) {
+    throw new Error('code-mode assembly exposed rpgmaker_* tools in the native tool list')
+  }
 
   const second = await createAgent('phase2-real-workspace-b')
   const secondAssembly = await systemPrompt.assemble(assembleContextFor(second.agent))
-  if (JSON.stringify(stableNames(secondAssembly.tools ?? [])) !== JSON.stringify(expectedNames)) {
-    throw new Error('second Agent did not receive the same stable tool set')
+  const secondSdk = (secondAssembly?.sections ?? []).find((section) => section?.name === 'tools:sdk')
+  if (typeof secondSdk?.text !== 'string' || expectedNames.some((name) => !secondSdk.text.includes(name))) {
+    throw new Error('second Agent did not receive the same stable tool set in the code-mode SDK section')
+  }
+  if (stableNames(secondAssembly.tools ?? []).length !== 0) {
+    throw new Error('second code-mode assembly exposed rpgmaker_* tools in the native tool list')
   }
 
   const stateAfterAgents = bundle.hostState(mounted.ctx)
@@ -107,11 +122,15 @@ try {
 
   const directAgentToolCalls = []
   async function call(handle, rawName, args) {
+    // Code mode (DSH rc.7 shipped preset): the model calls tools through the
+    // generated run_code SDK, so the representative call goes through the
+    // same transport instead of a direct native dispatch.
     const modelName = `rpgmaker_${rawName}`
+    const code = `const __result = await tools['${modelName}'](${JSON.stringify(args)});\nreturn __result`
     const result = await tools.execute({
       callId: `phase2-real-workspace-${directAgentToolCalls.length + 1}`,
-      name: modelName,
-      arguments: args,
+      name: 'run_code',
+      arguments: { code, description: `Call ${modelName}` },
       agent: handle.agent,
       signal: new AbortController().signal
     })

@@ -66,7 +66,16 @@ class ToolRegistry {
     return this.entries.find((definition) => definition.name === name);
   }
 
-  schemas(): HarnessToolSchema[] {
+  schemas(_scope?: unknown): HarnessToolSchema[] {
+    return this.entries.map((definition) => ({
+      name: definition.name,
+      description: definition.description,
+      parameters: definition.parameters
+    }));
+  }
+
+  /** Code-mode SDK projection: every visible tool minus the reserved run_code transport. */
+  sdkSchemas(_scope?: unknown): HarnessToolSchema[] {
     return this.entries.map((definition) => ({
       name: definition.name,
       description: definition.description,
@@ -140,7 +149,10 @@ export class HarnessScope {
   /** Run the `system-prompt/assemble` waterfall for this scope's assembly. */
   async assemble(): Promise<PromptAssembly> {
     const assembly: PromptAssembly = {
-      sections: [],
+      sections: [{
+        name: 'tools:sdk',
+        text: this.tools.schemas().map((tool) => tool.name).join('\n')
+      }],
       contexts: [],
       tools: this.tools.schemas(),
       variables: {}
