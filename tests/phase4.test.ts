@@ -205,12 +205,36 @@ class FakeImageTools {
       await this.materialize(output);
       return { exitCode: 0, stdout: '', stderr: '' };
     }
+    if (args.includes('-format') && args[args.indexOf('-format') + 1] === '%w %h') {
+      const path = this.sourcePath(args) ?? this.outputPath(args);
+      const value = path ? this.virtual(path) : undefined;
+      if (!value) return { exitCode: 1, stdout: '', stderr: 'unknown image' };
+      return { exitCode: 0, stdout: `${value.width} ${value.height}\n`, stderr: '' };
+    }
     if (args.includes('-format')) {
       const path = this.sourcePath(args) ?? this.outputPath(args);
       const value = path ? this.virtual(path) : undefined;
       if (!value) return { exitCode: 1, stdout: '', stderr: 'unknown image' };
       const alpha = args.includes('-alpha') ? args[args.indexOf('-alpha') + 1] === 'on' : !this.opaque.has(resolve(path!));
       return { exitCode: 0, stdout: `${value.width}|${value.height}|PNG|${alpha ? 'srgba' : 'srgb'}|${alpha ? 'False' : 'True'}\n`, stderr: '' };
+    }
+    const rawRgba = args.find((value) => value.startsWith('RGBA:'));
+    if (rawRgba) {
+      const rawPath = rawRgba.slice('RGBA:'.length);
+      const path = this.sourcePath(args) ?? this.outputPath(args);
+      const value = path ? this.virtual(path) : undefined;
+      if (!value) return { exitCode: 1, stdout: '', stderr: 'unknown image' };
+      await mkdir(dirname(resolve(rawPath)), { recursive: true });
+      const bytes = Buffer.alloc(value.width * value.height * 4);
+      for (let index = 0; index < value.pixels.length; index += 1) {
+        const pixel = value.pixels[index];
+        bytes[index * 4] = Number.parseInt(pixel.slice(0, 2), 16);
+        bytes[index * 4 + 1] = Number.parseInt(pixel.slice(2, 4), 16);
+        bytes[index * 4 + 2] = Number.parseInt(pixel.slice(4, 6), 16);
+        bytes[index * 4 + 3] = Number.parseInt(pixel.slice(6, 8), 16);
+      }
+      await writeFile(resolve(rawPath), bytes);
+      return { exitCode: 0, stdout: '', stderr: '' };
     }
     if (args.at(-1) === 'txt:-') {
       const path = this.sourcePath(args) ?? this.outputPath(args);
@@ -498,6 +522,37 @@ describe('Asset Workshop trust and safe outputs', () => {
       const failedOutput = join(root, 'failed', 'output.png');
       await expect(workshop.resizePixel({ input: TILE, output: failedOutput, scale: 2 })).rejects.toThrow(/failed|malformed/i);
       expect(await Bun.file(`${failedOutput}.manifest.json`).exists()).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('pixel-safe scale 2 on a 576x288 RGBA image verifies without the text-capacity ceiling', async () => {
+    const root = await temp('phase4-large-resize');
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const source = join(root, 'img', 'faces', 'nannvzhu.png');
+      await mkdir(dirname(source), { recursive: true });
+      await writeFile(source, 'fixture png');
+      const fake = new FakeImageTools();
+      const sourcePixels: string[] = [];
+      for (let index = 0; index < 576 * 288; index += 1) sourcePixels.push(index % 7 === 0 ? NONE : RED);
+      fake.grids.set(resolve(source), grid(576, 288, sourcePixels));
+      const workshop = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake) });
+      const output = join(root, 'img', 'faces', 'nannvzhu.ticket02-scale2.png');
+      const result = await workshop.resizePixel({ input: source, output, scale: 2 });
+      expect(result.manifest.outputs[0]).toMatchObject({ width: 1152, height: 576 });
+      expect(result.outputPaths).toContain(output);
+      expect(await Bun.file(output).exists()).toBe(true);
+      expect(await Bun.file(result.manifestPath).exists()).toBe(true);
+      const manifest = JSON.parse(await readFile(result.manifestPath, 'utf8'));
+      expect(manifest.operation).toBe('resize-pixel');
+      expect(manifest.fidelity.pixelsMatch).toBe(true);
+      expect(manifest.verificationLevel).toBe('decoded-pixels');
+      expect(await readFile(source, 'utf8')).toBe('fixture png');
+      expect(await readFile(join(root, 'img', 'faces', 'nannvzhu.ticket02-scale2.png.manifest.json'), 'utf8')).toContain('resize-pixel');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

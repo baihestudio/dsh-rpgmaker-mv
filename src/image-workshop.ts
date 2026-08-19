@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -397,7 +397,8 @@ async function removeOperation(operation: FileOperation): Promise<void> {
 interface PixelGrid {
   width: number;
   height: number;
-  pixels: string[];
+  /** Packed RGBA pixels as uint32 values in RRGGBBAA order (alpha in the low byte). */
+  pixels: Uint32Array;
 }
 
 function parseInfo(text: string, path: string): { width: number; height: number; format: string; channels: string; opaque: boolean } {
@@ -414,34 +415,13 @@ function parseInfo(text: string, path: string): { width: number; height: number;
   return { width, height, format, channels, opaque: /^true$/i.test(opaqueValue) };
 }
 
-function parsePixelGrid(text: string, path: string): PixelGrid {
-  const header = text.match(/pixel enumeration:\s*(\d+),(\d+)/i);
-  if (!header) throw new ImageWorkshopError(`ImageMagick returned malformed pixel data for ${path}.`);
-  const width = Number(header[1]);
-  const height = Number(header[2]);
-  const pixels = new Array<string>(width * height);
-  for (const line of text.split(/\r?\n/)) {
-    const match = line.match(/^(\d+),(\d+):.*#([0-9a-f]+)\b/i);
-    if (!match) continue;
-    const x = Number(match[1]);
-    const y = Number(match[2]);
-    if (x < width && y < height) pixels[y * width + x] = match[3].toUpperCase();
-  }
-  if (pixels.some((value) => value === undefined)) throw new ImageWorkshopError(`ImageMagick returned incomplete pixel data for ${path}.`);
-  return { width, height, pixels };
-}
-
-function alphaValue(pixel: string): number {
-  return pixel.length >= 8 ? Number.parseInt(pixel.slice(-2), 16) : 255;
-}
-
 function alphaBounds(grid: PixelGrid): { left: number; top: number; right: number; bottom: number } | undefined {
   let left = grid.width;
   let top = grid.height;
   let right = -1;
   let bottom = -1;
   for (let y = 0; y < grid.height; y += 1) for (let x = 0; x < grid.width; x += 1) {
-    if (alphaValue(grid.pixels[y * grid.width + x]) > 0) {
+    if ((grid.pixels[y * grid.width + x] & 0xff) > 0) {
       left = Math.min(left, x);
       top = Math.min(top, y);
       right = Math.max(right, x);
@@ -452,13 +432,13 @@ function alphaBounds(grid: PixelGrid): { left: number; top: number; right: numbe
 }
 
 function cropGrid(source: PixelGrid, left: number, top: number, width: number, height: number): PixelGrid {
-  const pixels: string[] = [];
-  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) pixels.push(source.pixels[(top + y) * source.width + left + x]);
+  const pixels = new Uint32Array(width * height);
+  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) pixels[y * width + x] = source.pixels[(top + y) * source.width + left + x];
   return { width, height, pixels };
 }
 
 function placeGrid(source: PixelGrid, width: number, height: number, gravity: NonNullable<TrimPadOptions['gravity']>): PixelGrid {
-  const pixels = new Array<string>(width * height).fill('00000000');
+  const pixels = new Uint32Array(width * height);
   const horizontalCenter = Math.floor((width - source.width) / 2);
   const verticalCenter = Math.floor((height - source.height) / 2);
   const left = gravity.endsWith('east') || gravity === 'east' ? width - source.width : gravity.endsWith('west') || gravity === 'west' ? 0 : horizontalCenter;
@@ -473,8 +453,9 @@ function assertSameGrid(actual: PixelGrid, expected: PixelGrid, label: string): 
 }
 
 function resizeGrid(source: PixelGrid, scale: number): PixelGrid {
-  const pixels: string[] = [];
-  for (let y = 0; y < source.height; y += 1) for (let sy = 0; sy < scale; sy += 1) for (let x = 0; x < source.width; x += 1) for (let sx = 0; sx < scale; sx += 1) pixels.push(source.pixels[y * source.width + x]);
+  const pixels = new Uint32Array(source.width * scale * source.height * scale);
+  let index = 0;
+  for (let y = 0; y < source.height; y += 1) for (let sy = 0; sy < scale; sy += 1) for (let x = 0; x < source.width; x += 1) for (let sx = 0; sx < scale; sx += 1) pixels[index++] = source.pixels[y * source.width + x];
   return { width: source.width * scale, height: source.height * scale, pixels };
 }
 
@@ -482,10 +463,11 @@ function assembleGrid(inputs: PixelGrid[], columns: number): PixelGrid {
   const cellWidth = inputs[0].width;
   const cellHeight = inputs[0].height;
   const rows = inputs.length / columns;
-  const pixels: string[] = [];
+  const pixels = new Uint32Array(cellWidth * columns * cellHeight * rows);
+  let index = 0;
   for (let row = 0; row < rows; row += 1) for (let y = 0; y < cellHeight; y += 1) for (let column = 0; column < columns; column += 1) {
     const source = inputs[row * columns + column];
-    pixels.push(...source.pixels.slice(y * cellWidth, (y + 1) * cellWidth));
+    for (let x = 0; x < cellWidth; x += 1) pixels[index++] = source.pixels[y * cellWidth + x];
   }
   return { width: cellWidth * columns, height: cellHeight * rows, pixels };
 }
@@ -587,20 +569,66 @@ export class ImageWorkshop {
   private async pixels(path: string): Promise<PixelGrid> {
     const runner = this.dependencies.commandRunner ?? runCommand;
     const env = this.dependencies.env ?? process.env;
-    const args = [...RESOURCE_ARGS, resolve(path), '-alpha', 'on', '-depth', '8', '-colorspace', 'sRGB', '-compress', 'none', 'txt:-'];
-    let result;
+    const maxPixels = this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS;
+    const platform = this.dependencies.platform ?? process.platform;
+    const timeoutMs = this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+    // Probe dimensions with the same bounded metadata transport as inspect();
+    // the binary RGBA payload size is derived from them so a mismatch is exact.
+    const infoArgs = [...RESOURCE_ARGS, path, '-format', '%w %h', 'info:'];
+    let info;
     try {
-      result = await runner(this.toolchain.imageMagick, args, {
-        env: withoutCredentials(env),
-        platform: this.dependencies.platform ?? process.platform,
-        timeoutMs: this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS
-      });
+      info = await runner(this.toolchain.imageMagick, infoArgs, { env: withoutCredentials(env), platform, timeoutMs });
     } catch (error) {
       throw new ImageWorkshopError(`ImageMagick pixel verification could not start for ${path}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (result.exitCode !== 0) throw new ImageWorkshopError(`ImageMagick pixel verification failed: ${commandFailure(this.toolchain.imageMagick, args, result, env).message}`);
-    if (result.stdout.length > 4 * 1024 * 1024) throw new ImageWorkshopError(`Pixel fidelity output for ${path} exceeded the 4 MiB verification limit.`);
-    return parsePixelGrid(result.stdout, resolve(path));
+    if (info.exitCode !== 0) throw new ImageWorkshopError(`ImageMagick pixel verification failed: ${commandFailure(this.toolchain.imageMagick, infoArgs, info, env).message}`);
+    const [widthText, heightText] = info.stdout.trim().split(/\s+/);
+    const width = Number(widthText);
+    const height = Number(heightText);
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+      throw new ImageWorkshopError(`ImageMagick returned malformed pixel dimensions for ${path}.`);
+    }
+    if (width * height > maxPixels) throw new ImageWorkshopError(`Pixel verification for ${path} exceeds the ${maxPixels}-pixel resource limit.`);
+
+    const expectedBytes = width * height * 4;
+    const tempDir = await mkdtemp(join(tmpdir(), 'dsh-pixel-grid-'));
+    const rawPath = join(tempDir, 'rgba.bin');
+    try {
+      const rawArgs = [...RESOURCE_ARGS, path, '-alpha', 'on', '-depth', '8', '-colorspace', 'sRGB', `RGBA:${rawPath}`];
+      let raw;
+      try {
+        raw = await runner(this.toolchain.imageMagick, rawArgs, { env: withoutCredentials(env), platform, timeoutMs });
+      } catch (error) {
+        throw new ImageWorkshopError(`ImageMagick pixel verification could not start for ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (raw.exitCode !== 0) throw new ImageWorkshopError(`ImageMagick pixel verification failed: ${commandFailure(this.toolchain.imageMagick, rawArgs, raw, env).message}`);
+      let bytes: Uint8Array;
+      try {
+        const file = await open(rawPath, 'r');
+        try {
+          const rawStat = await file.stat();
+          if (rawStat.size !== expectedBytes) throw new ImageWorkshopError(`ImageMagick returned incomplete pixel data for ${path} (${rawStat.size} bytes, expected ${expectedBytes}).`);
+          const buffer = new Uint8Array(expectedBytes);
+          const { bytesRead } = await file.read(buffer, 0, expectedBytes, 0);
+          if (bytesRead !== expectedBytes) throw new ImageWorkshopError(`ImageMagick returned incomplete pixel data for ${path} (read ${bytesRead} bytes, expected ${expectedBytes}).`);
+          bytes = buffer;
+        } finally {
+          await file.close();
+        }
+      } catch (error) {
+        if (error instanceof ImageWorkshopError) throw error;
+        throw new ImageWorkshopError(`ImageMagick pixel data could not be read for ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const pixels = new Uint32Array(width * height);
+      for (let index = 0; index < width * height; index += 1) {
+        const offset = index * 4;
+        pixels[index] = ((bytes[offset] << 24) >>> 0) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3];
+      }
+      return { width, height, pixels };
+    } finally {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   private async finish(
