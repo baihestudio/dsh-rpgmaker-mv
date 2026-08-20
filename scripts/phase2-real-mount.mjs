@@ -2,10 +2,14 @@ import { pathToFileURL } from 'node:url'
 import { realpath } from 'node:fs/promises'
 import { observeXeroloChildren } from './process-observation.mjs'
 
+const hostBundleEntry = process.env.WORKSPACE_HOST_BUNDLE_ENTRY
+const agentBundleEntry = process.env.WORKSPACE_AGENT_BUNDLE_ENTRY
+if (!hostBundleEntry || !agentBundleEntry) throw new Error('WORKSPACE_HOST_BUNDLE_ENTRY and WORKSPACE_AGENT_BUNDLE_ENTRY are required')
 const profileModule = await import(pathToFileURL(process.env.PROFILE_FILE).href)
 const environmentModule = await import(pathToFileURL(process.env.ENVIRONMENT_MODULE).href)
-const bundle = await import(pathToFileURL(process.env.WORKSPACE_BUNDLE_ENTRY).href)
-const runtimePaths = bundle.resolveRuntimePaths(process.env)
+const hostBundle = await import(pathToFileURL(hostBundleEntry).href)
+const agentBundle = await import(pathToFileURL(agentBundleEntry).href)
+const runtimePaths = agentBundle.resolveRuntimePaths(process.env)
 const { assembleContextFor } = await import(new URL('../../dsh-agent/lib/index.js', pathToFileURL(process.env.PROFILE_FILE)).href)
 const environment = environmentModule.createLaunchEnvironmentSnapshot([{
   source: 'process',
@@ -80,7 +84,7 @@ try {
   const first = await createAgent('phase2-real-workspace-a')
   const immediateSchemas = first.agent?.ctx?.tools?.schemas?.(first.agent?.ctx?.agent)
   if (!Array.isArray(immediateSchemas)) throw new Error('Agent tool provider did not expose synchronous schemas')
-  const expectedNames = bundle.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort()
+  const expectedNames = agentBundle.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort()
   if (JSON.stringify(stableNames(immediateSchemas)) !== JSON.stringify(expectedNames)) {
     throw new Error(`stable manifest tools were not synchronously collected: ${stableNames(immediateSchemas).length}`)
   }
@@ -111,7 +115,7 @@ try {
     throw new Error('second code-mode assembly exposed rpgmaker_* tools in the native tool list')
   }
 
-  const stateAfterAgents = bundle.hostState(mounted.ctx)
+  const stateAfterAgents = hostBundle.hostState(mounted.ctx)
   const canonicalProject = await realpath(project)
   if (stateAfterAgents.runtimeDir !== runtimePaths.mcporterRuntime) {
     throw new Error(`Host used an unexpected MCPorter runtime: ${stateAfterAgents.runtimeDir}`)
@@ -146,7 +150,7 @@ try {
   const infoA = unwrap(await call(first, 'get_project_info', {}))
   if (typeof infoA?.gameTitle !== 'string' || infoA.gameTitle.length === 0) throw new Error(`unexpected project info: ${JSON.stringify(infoA)}`)
   assertValidation('real workspace', await call(second, 'validate_project', {}))
-  const stateAfterCalls = bundle.hostState(mounted.ctx)
+  const stateAfterCalls = hostBundle.hostState(mounted.ctx)
   if (stateAfterCalls.runtimeDir !== runtimePaths.mcporterRuntime || stateAfterCalls.workspaces.length !== 1) {
     throw new Error('pooled workspace calls did not remain on the single Host runtime/server')
   }

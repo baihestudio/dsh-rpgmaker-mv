@@ -39,8 +39,12 @@ installation copies it to the stable app-owned program tree. Before spawning
 DSH, launch verifies or repairs the exact-pinned app-owned pnpm 10.15.1,
 MCPorter 0.12.3, and Xerolo RPG Maker MCP 0.1.0 runtimes, links the local
 workspace bundle into the `web` profile, installs the four presets, and verifies
-the effective composition from the neutral landing directory. The profile link
-is made during this pre-launch preparation, never while an install tree swap is
+the effective composition from the neutral landing directory. The bundle's
+profile patch inserts only the Host service entry point; each shipped preset
+composition mounts the `/agent` entry point in Agent scope. The access layer
+shares Host state through the root-context WeakMap and does not publish a
+service into the ROOT realm or filter preset ids itself. The profile link is
+made during this pre-launch preparation, never while an install tree swap is
 in progress. Omit `--preset` to use `rpgmaker`, or pass `--preset
 playtest-debug`, `asset-workshop`, or `build-release` as the default Agent
 preset.

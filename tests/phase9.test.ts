@@ -17,6 +17,7 @@ import {
   verifyImageWorkshopPlugin
 } from '../src/image-plugin';
 import { installPreset } from '../src/rpgmaker';
+import { WORKSPACE_MCP_AGENT_ROW_ID, WORKSPACE_MCP_PACKAGE } from '../src/workspace-mcp';
 import { buildReleaseZip, inspectReleaseZip } from '../src/release-gate';
 import { validateRelativePath, resolveWorkspacePath } from '../bundle/dsh-image-workshop/lib/workspace.js';
 import { createImageInspectTool, createImageResizePixelTool, createImageTrimPadTool, createImageSheetSliceTool, createImageSheetAssembleTool, createImageAtlasPackTool, createImageOptimizePngTool } from '../bundle/dsh-image-workshop/lib/tools.js';
@@ -781,7 +782,7 @@ describe('asset-workshop preset composition', () => {
       const code = join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml');
       await mkdir(dirname(code), { recursive: true });
       await writeFile(code, CODE);
-      const source = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: asset persona\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`);
+      const source = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: asset persona\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`);
       const dshHome = join(root, 'dsh-home');
       const { presetDir } = await installPreset(source, dshHome, code, 'asset-workshop');
       const composed = await readFile(join(presetDir, 'agent.cordis.yml'), 'utf8');
@@ -803,12 +804,15 @@ describe('asset-workshop preset composition', () => {
       await mkdir(dirname(code), { recursive: true });
       await writeFile(code, CODE);
       const dshHome = join(root, 'dsh-home');
-      const pluginOverlay = `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`;
+      const pluginOverlay = `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`;
       const rpgmakerSource = await sourceWith(root, pluginOverlay);
       await expect(installPreset(rpgmakerSource, dshHome, code, 'rpgmaker')).rejects.toThrow(/must not mount the image tool plugin/);
 
-      const duplicate = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`);
+      const duplicate = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`);
       await expect(installPreset(duplicate, dshHome, code, 'asset-workshop')).rejects.toThrow(/must not duplicate/);
+
+      const missingWorkspace = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n`);
+      await expect(installPreset(missingWorkspace, dshHome, code, 'rpgmaker')).rejects.toThrow(/exactly one workspace-mcp-agent row/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

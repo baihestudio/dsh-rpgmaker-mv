@@ -102,10 +102,13 @@ the local `dsh-workspace-mcp` Host bundle, all four Chinese-named specialist
 presets (`rpgmaker`, `playtest-debug`, `asset-workshop`, and `build-release`),
 and a project-neutral `web --dump-config` composition before launch. The
 fresh-state default is RPG Maker MV 开发助手; `--preset` selects the default
-Agent preset without selecting a project. The bundle supplies stable
-`rpgmaker_<raw Xerolo name>` Agent tools synchronously and validates the live
-workspace connection before the first request. Invalid workspaces fail before
-a server starts, and non-RPG presets receive no RPG Maker tools.
+Agent preset without selecting a project. The bundle's profile layer owns only
+the Host service; each of the four shipped preset compositions mounts the
+Agent access row in its own scope. The access layer supplies stable
+`rpgmaker_<raw Xerolo name>` tools synchronously and validates the live
+workspace connection before the first request. It contains no preset filter:
+presets that do not mount the row receive no RPG Maker tools. Invalid
+workspaces fail before a server starts.
 
 The RPG Maker preset treats the MCP/agent as the sole writer. Database,
 event/dialogue, map-metadata, plugin, and restore mutations use stable

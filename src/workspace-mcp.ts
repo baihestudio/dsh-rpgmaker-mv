@@ -18,10 +18,12 @@ export const WORKSPACE_MCP_VERSION = '0.1.0';
 export const WORKSPACE_MCP_LICENSE = 'MIT';
 export const WORKSPACE_MCP_PROFILE = 'web';
 export const WORKSPACE_MCP_ENTRYPOINT = 'lib/index.js';
+export const WORKSPACE_MCP_AGENT_ENTRYPOINT = 'lib/agent.js';
 export const WORKSPACE_MCP_BUNDLE_PATCH = './cordis.patch.yml';
 export const WORKSPACE_MCP_ROW_ID = 'workspace-mcp';
+export const WORKSPACE_MCP_AGENT_ROW_ID = 'workspace-mcp-agent';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const WORKSPACE_MCP_SHA256 = '51eca3cc99f91443b86b471546eb44bc3020717e6ed9798e24596400e3497429';
+export const WORKSPACE_MCP_SHA256 = 'f5d9777bae8ea5cfefe9051d3223ed13a65db661975a33848318d283775b54d3';
 export const WORKSPACE_MCP_BUNDLE_RELATIVE = join('bundle', 'dsh-workspace-mcp');
 /** Archive entries always use POSIX separators, including on Windows. */
 export const WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE = 'bundle/dsh-workspace-mcp';
@@ -179,12 +181,14 @@ export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOption
   const packageVersion = typeof manifest?.version === 'string' ? manifest.version : undefined;
   const main = typeof manifest?.main === 'string' ? manifest.main : undefined;
   const entrypoint = main && await exists(join(bundleDir, main)) ? join(bundleDir, main) : undefined;
+  const agentEntrypoint = await exists(join(bundleDir, WORKSPACE_MCP_AGENT_ENTRYPOINT));
   const bundleManifest = asObject(asObject(manifest?.dsh)?.bundle);
   const bundlePatch = typeof bundleManifest?.patch === 'string' ? bundleManifest.patch : undefined;
   if (packageName !== WORKSPACE_MCP_PACKAGE) errors.push(`bundle identity is ${packageName ?? 'missing'}, expected ${WORKSPACE_MCP_PACKAGE}`);
   if (packageVersion !== WORKSPACE_MCP_VERSION) errors.push(`bundle version is ${packageVersion ?? 'missing'}, expected ${WORKSPACE_MCP_VERSION}`);
   if (manifest?.license !== WORKSPACE_MCP_LICENSE) errors.push(`bundle license is ${String(manifest?.license ?? 'missing')}, expected ${WORKSPACE_MCP_LICENSE}`);
   if (!entrypoint) errors.push(`bundle entrypoint ${WORKSPACE_MCP_ENTRYPOINT} was not found`);
+  if (!agentEntrypoint) errors.push(`bundle Agent entrypoint ${WORKSPACE_MCP_AGENT_ENTRYPOINT} was not found`);
   if (bundlePatch !== WORKSPACE_MCP_BUNDLE_PATCH) errors.push(`bundle dsh.bundle.patch is not ${WORKSPACE_MCP_BUNDLE_PATCH}`);
   else if (!(await exists(join(bundleDir, bundlePatch)))) errors.push(`bundle patch file ${bundlePatch} was not found`);
   const sha256 = await workspaceMcpBundleDigest(bundleDir).catch(() => undefined);
@@ -245,6 +249,9 @@ export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOption
     }
     if (!installedEntry || !(await exists(join(installedReal ?? installedDir, installedEntry)))) {
       errors.push(`installed profile package entrypoint ${installedEntry ?? WORKSPACE_MCP_ENTRYPOINT} was not found`);
+    }
+    if (!(await exists(join(installedReal ?? installedDir, WORKSPACE_MCP_AGENT_ENTRYPOINT)))) {
+      errors.push(`installed profile package Agent entrypoint ${WORKSPACE_MCP_AGENT_ENTRYPOINT} was not found`);
     }
     const installedSha = await workspaceMcpBundleDigest(installedReal ?? installedDir).catch(() => undefined);
     if (installedSha !== WORKSPACE_MCP_SHA256) {

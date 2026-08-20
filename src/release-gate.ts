@@ -14,7 +14,7 @@ import { prepareMcporterRuntime } from './mcport';
 import { prepareRpgmPackerRuntime } from './release';
 import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE, IMAGE_WORKSHOP_BUNDLE_RELATIVE } from './image-plugin';
 import { preparePnpmRuntime, prepareVisionToolkit } from './vision-toolkit';
-import { WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
+import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
@@ -444,6 +444,7 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/README.md`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/contract.js`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/env.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/${WORKSPACE_MCP_AGENT_ENTRYPOINT}`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/index.js`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/mcport-host.js`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/tools.js`,

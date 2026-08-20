@@ -2,11 +2,11 @@
  * Deterministic DSH rc.7 Agent-seam harness owned by the Ticket 01 tests.
  *
  * It replicates exactly the rc.7 plugin surface the dsh-workspace-mcp bundle
- * depends on — host `ctx.on('agent/created')`, agent-scoped `agent.ctx` with
- * `tools.register()`/`on('system-prompt/assemble')` effects that unwind on
- * disposal, and a `system-prompt/assemble` waterfall whose base tool schemas
- * come from the agent's tool registry. It never touches a live DSH home,
- * profile, or runtime.
+ * depends on — a root context shared by the Host row and preset-mounted
+ * Agent rows, agent-scoped `ctx.tools.register()`/`on('system-prompt/assemble')`
+ * effects that unwind on disposal, and a `system-prompt/assemble` waterfall
+ * whose base tool schemas come from the agent's tool registry. It never
+ * touches a live DSH home, profile, or runtime.
  */
 export interface HarnessToolSchema {
   name: string;
@@ -89,11 +89,18 @@ export class HarnessScope {
   private readonly effects: Array<() => void> = [];
   readonly tools: ToolRegistry;
   readonly logger: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void };
+  readonly root: object;
+  agent!: HarnessAgent;
   disposed = false;
   private disposalPromise: Promise<void> | undefined;
 
-  constructor(label: string, logger: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void } = { info() {}, error() {} }) {
+  constructor(
+    label: string,
+    logger: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void } = { info() {}, error() {} },
+    root: object = {}
+  ) {
     this.logger = logger;
+    this.root = root;
     this.tools = new ToolRegistry(this.effects);
     if (label) this.logger.info(`harness scope ${label} created`);
   }
@@ -187,7 +194,14 @@ export class HarnessScope {
   }
 }
 
-export function createHarnessAgent(id: string, header: { cwd?: string; agentPreset?: string }): HarnessAgent {
-  const ctx = new HarnessScope(`agent:${id}`);
-  return { id, session: { header }, ctx };
+export function createHarnessAgent(
+  id: string,
+  header: { cwd?: string; agentPreset?: string },
+  root: object = {},
+  logger: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void } = { info() {}, error() {} }
+): HarnessAgent {
+  const ctx = new HarnessScope(`agent:${id}`, logger, root);
+  const agent = { id, session: { header }, ctx };
+  ctx.agent = agent;
+  return agent;
 }

@@ -123,7 +123,8 @@ try {
       [XEROLO_RUNTIME_ENV]: preparation.xeroloRuntimeDir,
       [JS_RUNNER_ENV]: preparation.jsRunner,
       XEROLO_ENTRY: preparation.xeroloScript,
-      WORKSPACE_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js')
+      WORKSPACE_HOST_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js'),
+      WORKSPACE_AGENT_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'agent.js')
     },
     platform: process.platform,
     timeoutMs: 120_000

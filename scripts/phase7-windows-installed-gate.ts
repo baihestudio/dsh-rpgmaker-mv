@@ -259,7 +259,8 @@ async function runInstalledMount(
     [XEROLO_RUNTIME_ENV]: mcpRuntime,
     XEROLO_ENTRY: mcp.executable,
     [JS_RUNNER_ENV]: env.BUN_EXECUTABLE,
-    WORKSPACE_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js')
+    WORKSPACE_HOST_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js'),
+    WORKSPACE_AGENT_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'agent.js')
   };
   const mountScript = join(installedRoot, 'scripts', 'phase2-real-mount.mjs');
   if (!(await exists(mountScript))) throw new Error('installed phase2 process-observation probe was not included in the Release tree');

@@ -1,9 +1,6 @@
-# The dsh-workspace-mcp bundle patch: one workspace-aware Host plugin inserted
-# over the profile root. Later bundle layers and the user's profile
-# cordis.patch.yml address rows by id, with the last write winning per row.
-#
-# The plugin activates only live Agents whose session preset is one of the
-# four RPG Maker presets; other presets never resolve its tools.
+# The dsh-workspace-mcp bundle contributes only its Host service layer to the
+# profile root. Preset compositions mount the Agent access entry point in their
+# own scopes.
 
 - insert:
     - id: workspace-mcp

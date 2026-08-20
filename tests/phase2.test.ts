@@ -402,7 +402,8 @@ describe('RPG Maker MCP deployment', () => {
           [XEROLO_RUNTIME_ENV]: join(root, 'xerolo-runtime'),
           [JS_RUNNER_ENV]: process.execPath,
           XEROLO_ENTRY: join(root, 'xerolo-entry.mjs'),
-          WORKSPACE_BUNDLE_ENTRY: fixture.bundleEntry,
+          WORKSPACE_HOST_BUNDLE_ENTRY: fixture.bundleEntry,
+          WORKSPACE_AGENT_BUNDLE_ENTRY: fixture.bundleEntry,
           TRACE_FILE: fixture.traceFile
         },
         platform: process.platform,
@@ -440,7 +441,8 @@ describe('RPG Maker MCP deployment', () => {
           XEROLO_RUNTIME: join(root, 'old-xerolo-runtime'),
           JS_RUNNER: process.execPath,
           XEROLO_ENTRY: join(root, 'xerolo-entry.mjs'),
-          WORKSPACE_BUNDLE_ENTRY: fixture.bundleEntry,
+          WORKSPACE_HOST_BUNDLE_ENTRY: fixture.bundleEntry,
+          WORKSPACE_AGENT_BUNDLE_ENTRY: fixture.bundleEntry,
           TRACE_FILE: fixture.traceFile
         },
         platform: process.platform,

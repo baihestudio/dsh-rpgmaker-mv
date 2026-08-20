@@ -1,11 +1,15 @@
 {
   "name": "@baihestudio/dsh-workspace-mcp",
   "version": "0.1.0",
-  "description": "App-owned Host plugin: one lazy MCPorter runtime, warm per-workspace RPG Maker (Xerolo) stdio servers, and stable rpgmaker_* Agent tools.",
+  "description": "App-owned Host service and Agent access plugins for warm per-workspace RPG Maker (Xerolo) stdio servers and stable rpgmaker_* tools.",
   "license": "MIT",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./agent": "./lib/agent.js"
+  },
   "files": [
     "lib",
     "cordis.patch.yml",

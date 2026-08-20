@@ -27,6 +27,7 @@ import {
   MCPORTER_RUNTIME_ENV,
   XEROLO_RUNTIME_ENV,
   prepareWorkspaceMcpBundle,
+  WORKSPACE_MCP_AGENT_ROW_ID,
   type WorkspaceMcpBundleOptions,
   type WorkspaceMcpBundleVerification
 } from './workspace-mcp';
@@ -365,22 +366,27 @@ function composePresetComposition(code: string, overlay: string, presetId: strin
   }
   const overlayRows = topLevelRows(overlay);
   const personaRows = overlayRows.filter((row) => row.id === 'persona');
+  const workspaceRows = overlayRows.filter((row) => row.id === WORKSPACE_MCP_AGENT_ROW_ID);
   const pluginRows = overlayRows.filter((row) => row.id === IMAGE_WORKSHOP_PLUGIN_ROW_ID);
   if (personaRows.length !== 1) {
     throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must provide exactly one persona row; found ${personaRows.length}.`);
   }
+  if (workspaceRows.length !== 1) {
+    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must provide exactly one ${WORKSPACE_MCP_AGENT_ROW_ID} row; found ${workspaceRows.length}.`);
+  }
   if (pluginRows.length > 1) {
     throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must not duplicate the ${IMAGE_WORKSHOP_PLUGIN_ROW_ID} row.`);
   }
-  const otherRows = overlayRows.filter((row) => row.id !== 'persona' && row.id !== IMAGE_WORKSHOP_PLUGIN_ROW_ID);
+  const otherRows = overlayRows.filter((row) => row.id !== 'persona' && row.id !== WORKSPACE_MCP_AGENT_ROW_ID && row.id !== IMAGE_WORKSHOP_PLUGIN_ROW_ID);
   if (otherRows.length > 0) {
-    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must define no composition rows beyond persona${pluginRows.length === 1 ? ' and the app-owned image plugin row' : ''}.`);
+    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must define no composition rows beyond persona, ${WORKSPACE_MCP_AGENT_ROW_ID}${pluginRows.length === 1 ? ' and the app-owned image plugin row' : ''}.`);
   }
   if (pluginRows.length === 1 && presetId !== ASSET_WORKSHOP_PRESET_ID) {
     throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must not mount the image tool plugin; only ${ASSET_WORKSHOP_PRESET_ID} may scope it.`);
   }
   let composed = replaceTopLevelRow(code, 'persona', personaRows[0].text, `RPG Maker preset ${presetId}`);
-  if (pluginRows.length === 1) composed = insertTopLevelRowAfter(composed, 'persona', pluginRows[0].text.trim(), `RPG Maker preset ${presetId}`);
+  composed = insertTopLevelRowAfter(composed, 'persona', workspaceRows[0].text.trim(), `RPG Maker preset ${presetId}`);
+  if (pluginRows.length === 1) composed = insertTopLevelRowAfter(composed, WORKSPACE_MCP_AGENT_ROW_ID, pluginRows[0].text.trim(), `RPG Maker preset ${presetId}`);
   const ids = topLevelIds(composed);
   if (new Set(ids).size !== ids.length) throw new RpgMakerStartupError(`RPG Maker preset ${presetId} derived from Code contains duplicate top-level row ids.`);
   return composed;

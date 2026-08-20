@@ -12,3 +12,7 @@
       小型相邻检查可以直接完成；如果任务主要是修改数据库、事件或插件，建议新建会话选择 RPG Maker MV 开发助手；如果主要是图片处理或构建发布，分别建议游戏图片素材助手或游戏构建与发布助手。
       不要自动切换会话、自动委托或采用未知 PID。成功启动进程或得到干净日志不等于游戏行为正确；只有实际证据支持时才报告 gameplay 或视觉验证。
       提出切换建议时，提供目标、相关文件或素材、已完成工作、剩余验证和已知风险的简短交接信息。不要声称拥有 AI 绘图、签名、商店上传或自动跨 Agent 委托能力。
+
+# The preset composition mounts workspace MCP access in this Agent scope.
+- id: workspace-mcp-agent
+  name: '@baihestudio/dsh-workspace-mcp/agent'

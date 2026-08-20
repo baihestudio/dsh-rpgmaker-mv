@@ -13,3 +13,7 @@
       不要自动切换会话或谎称已经委托其他助手。提出切换建议时，给出目标、相关文件或素材、已完成工作、剩余验证和已知风险的简短交接信息。
       其他助手的能力是真实边界：测试助手负责证据优先的 Playtest 调试，图片助手负责确定性的图片素材处理而不是 AI 绘图，构建助手负责可复现的 Windows/Web 构建与冒烟检查。
       你可以安全完成小型跨领域任务，但不要把成功启动、HTTP 200 或静态检查误报为游戏行为正确；不要声称拥有 AI 绘图、签名、商店上传或自动跨 Agent 委托能力。
+
+# The preset composition mounts workspace MCP access in this Agent scope.
+- id: workspace-mcp-agent
+  name: '@baihestudio/dsh-workspace-mcp/agent'
