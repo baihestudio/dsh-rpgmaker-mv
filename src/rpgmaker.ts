@@ -31,7 +31,6 @@ import {
   type WorkspaceMcpBundleOptions,
   type WorkspaceMcpBundleVerification
 } from './workspace-mcp';
-import { removeObsoleteVisionToolkitState } from './profile-repair';
 
 export const RPGMAKER_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
 export const RPGMAKER_MCP_VERSION = '0.1.0';
@@ -713,7 +712,6 @@ export async function resolveMcpRunner(options: Pick<RpgMakerDeploymentOptions, 
 async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: string): Promise<RpgMakerDeployment> {
   const paths = resolveHarnessPaths(options);
   const platform = options.platform ?? process.platform;
-  await removeObsoleteVisionToolkitState({ ...options, platform });
   const mcpRuntimeDir = resolve(options.mcpRuntimeDir ?? join(paths.programRoot, 'runtime', 'mcp'));
   const mcp = await prepareRpgMakerMcpRuntime(options, mcpRuntimeDir);
   if (!mcp.valid || !mcp.executable || !mcp.packageVersion) throw new RpgMakerStartupError(`RPG Maker MCP is not usable: ${mcp.errors.join('; ')}`);
@@ -965,8 +963,6 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   const dshExecutable = options.dshExecutable ?? dshBootstrap.verification.dshExecutable ?? await findDshExecutable(paths.runtimeDir, platform);
   if (!dshExecutable) throw new RpgMakerStartupError('Pinned DSH executable was not found; refusing to launch an unverified project-neutral Host.');
   if (!(await pathExists(dshExecutable))) throw new RpgMakerStartupError(`DSH executable does not exist: ${dshExecutable}. Run bootstrap, then retry.`);
-
-  await removeObsoleteVisionToolkitState({ ...options, platform, env });
 
   const mcporterRuntimeDir = resolve(options.mcporterRuntimeDir ?? mcporterRuntimeDirFor(paths));
   const prepareMcporter = options.mcporterRuntimePreparer ?? prepareMcporterRuntime;

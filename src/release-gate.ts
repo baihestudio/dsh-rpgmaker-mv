@@ -14,12 +14,12 @@ import { prepareMcporterRuntime } from './mcport';
 import { prepareRpgmPackerRuntime } from './release';
 import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE, IMAGE_WORKSHOP_BUNDLE_RELATIVE } from './image-plugin';
 import { preparePnpmRuntime } from './profile';
-import { removeObsoleteVisionToolkitState } from './profile-repair';
 import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
 export const WINDOWS_GATE_CLEANUP_HELPER_RELATIVE = 'scripts/remove-phase7-gate-root.ps1';
+export const NUC_WEB_PROFILE_RESET_RELATIVE = 'scripts/reset-nuc-web-profile.ps1';
 export const RELEASE_ENTRIES = [
   'Install.cmd',
   'install.ps1',
@@ -242,14 +242,6 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         bunExecutable: options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE,
         commandRunner: options.commandRunner
       });
-      await removeObsoleteVisionToolkitState({
-        platform,
-        env: installedEnv,
-        dshHome: paths.dshHome,
-        programRoot: paths.programRoot,
-        mutableRoot: paths.mutableRoot,
-        runtimeDir: paths.runtimeDir
-      });
       const bunExecutable = options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE ?? 'bun';
       const prepareAgentDependencies = options.prepareAgentDependencies ?? (async (context) => {
         await preparePnpmRuntime({
@@ -433,11 +425,11 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'THIRD-PARTY-NOTICES.md',
     'docs/windows-release.md',
     WINDOWS_GATE_CLEANUP_HELPER_RELATIVE,
+    NUC_WEB_PROFILE_RESET_RELATIVE,
     'src/cli.ts',
     'src/mcport.ts',
     'src/workspace-mcp.ts',
     'src/profile.ts',
-    'src/profile-repair.ts',
     'presets/rpgmaker/preset.yml',
     `${IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,

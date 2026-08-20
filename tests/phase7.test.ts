@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
-import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
+import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, NUC_WEB_PROFILE_RESET_RELATIVE, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
 import { PNPM_VERSION } from '../src/profile';
@@ -26,7 +26,6 @@ import { run as runProcessObservation } from '../scripts/process-observation.mjs
 import { cleanupInstalledGateWorkspace, resolveInstalledNode, runInstalledMount } from '../scripts/phase7-windows-installed-gate';
 import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, uninstallHarness, UninstallSafetyError } from '../src/windows';
-import { OBSOLETE_VISION_TOOLKIT_PACKAGE, removeObsoleteVisionToolkitState } from '../src/profile-repair';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -159,50 +158,6 @@ async function writePnpmRuntime(runtime: string): Promise<void> {
   await writeFile(join(runtime, 'node_modules', '.bin', 'pnpm.cmd'), '@echo off\r\n');
 }
 
-async function writeObsoleteVisionProfileState(dshHome: string): Promise<void> {
-  const profile = join(dshHome, 'profiles', 'web');
-  const obsoletePackage = join(profile, 'node_modules', ...OBSOLETE_VISION_TOOLKIT_PACKAGE.split('/'));
-  const workspacePackage = join(profile, 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
-  await mkdir(join(obsoletePackage, 'lib'), { recursive: true });
-  await mkdir(join(profile, 'node_modules', '.pnpm', '@anionex+dsh-vision-toolkit@0.1.31', 'node_modules', '@anionex', 'dsh-vision-toolkit'), { recursive: true });
-  await mkdir(workspacePackage, { recursive: true });
-  await writeFile(join(obsoletePackage, 'package.json'), JSON.stringify({ name: OBSOLETE_VISION_TOOLKIT_PACKAGE, version: '0.1.31' }));
-  await writeFile(join(workspacePackage, 'package.json'), JSON.stringify({ name: '@baihestudio/dsh-workspace-mcp', version: '0.1.0' }));
-  await writeFile(join(profile, 'package.json'), `${JSON.stringify({
-    name: 'dsh-profile-web',
-    private: true,
-    dependencies: {
-      [OBSOLETE_VISION_TOOLKIT_PACKAGE]: '0.1.31',
-      '@baihestudio/dsh-workspace-mcp': 'file:../../bundle/dsh-workspace-mcp'
-    },
-    dsh: { profile: { bundles: [OBSOLETE_VISION_TOOLKIT_PACKAGE, '@baihestudio/dsh-workspace-mcp'] } }
-  }, null, 2)}\n`);
-  await writeFile(join(profile, 'pnpm-lock.yaml'), [
-    'lockfileVersion: 9.0',
-    'importers:',
-    '  .:',
-    '    dependencies:',
-    `      ${OBSOLETE_VISION_TOOLKIT_PACKAGE}:`,
-    '        specifier: 0.1.31',
-    '        version: 0.1.31',
-    '      @baihestudio/dsh-workspace-mcp:',
-    '        specifier: file:../../bundle/dsh-workspace-mcp',
-    '        version: link:../../bundle/dsh-workspace-mcp',
-    'packages:',
-    `  ${OBSOLETE_VISION_TOOLKIT_PACKAGE}@0.1.31:`,
-    '    resolution: {integrity: sha512-obsolete}',
-    '  @baihestudio/dsh-workspace-mcp@0.1.0:',
-    '    resolution: {integrity: sha512-workspace}',
-    ''
-  ].join('\n'));
-  await writeFile(join(profile, 'cordis.patch.yml'), [
-    `- id: vision-toolkit-activation\n  name: '${OBSOLETE_VISION_TOOLKIT_PACKAGE}'\n`,
-    "- id: workspace-mcp\n  name: '@baihestudio/dsh-workspace-mcp'\n"
-  ].join(''));
-  await mkdir(join(dshHome, 'cache', 'dsh-vision-toolkit', 'python', '3.13'), { recursive: true });
-  await writeFile(join(dshHome, 'cache', 'dsh-vision-toolkit', 'python', '3.13', 'runtime.json'), 'obsolete runtime');
-}
-
 async function writeProfilePlugin(
   dshHome: string,
   packageName: string,
@@ -223,9 +178,7 @@ async function writeProfilePlugin(
   manifest.dependencies = dependencies;
   const dsh = (manifest.dsh ?? {}) as Record<string, unknown>;
   const profileConfig = (dsh.profile ?? {}) as Record<string, unknown>;
-  const bundles = Array.isArray(profileConfig.bundles)
-    ? profileConfig.bundles.filter((value) => value !== OBSOLETE_VISION_TOOLKIT_PACKAGE)
-    : [];
+  const bundles = Array.isArray(profileConfig.bundles) ? [...profileConfig.bundles] : [];
   if (packageName === '@baihestudio/dsh-workspace-mcp') bundles.push(packageName);
   profileConfig.bundles = [...new Set(bundles)];
   dsh.profile = profileConfig;
@@ -923,42 +876,59 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('repairs obsolete remote image profile state without touching workspace, credentials, presets, or projects', async () => {
-    const root = await temp('phase7-obsolete-image-repair');
+  test('development NUC cleanup resets only generated roots and is idempotent', async () => {
+    if (process.platform !== 'win32') return;
+    const root = await temp('phase7-nuc-web-profile-reset');
     try {
-      const dshHome = join(root, 'state');
-      const projectPath = await project(root);
+      const localAppData = join(root, 'Local AppData');
+      const mutableRoot = join(localAppData, 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const dshHome = join(mutableRoot, 'state');
+      const webProfile = join(dshHome, 'profiles', 'web');
+      const visionCache = join(dshHome, 'cache', 'dsh-vision-toolkit');
       const credential = join(dshHome, '.credentials.yaml');
-      const customPreset = join(dshHome, '.agent-presets', 'custom-agent', 'agent.cordis.yml');
+      const recent = join(mutableRoot, 'recent-workspaces.json');
+      const projectPath = join(root, 'projects', 'keep', 'Game.rpgproject');
+      const python = join(localAppData, 'Programs', 'Python', 'Python313', 'python.exe');
+      const profileSibling = join(dshHome, 'profiles', 'web-sibling', 'keep.txt');
+      const cacheSibling = join(dshHome, 'cache', 'dsh-vision-toolkit-sibling', 'keep.txt');
+      await mkdir(webProfile, { recursive: true });
+      await mkdir(visionCache, { recursive: true });
       await mkdir(dirname(credential), { recursive: true });
+      await mkdir(dirname(recent), { recursive: true });
+      await mkdir(dirname(projectPath), { recursive: true });
+      await mkdir(dirname(python), { recursive: true });
+      await mkdir(dirname(profileSibling), { recursive: true });
+      await mkdir(dirname(cacheSibling), { recursive: true });
+      await writeFile(join(webProfile, 'generated.json'), '{}\n');
+      await writeFile(join(visionCache, 'runtime.json'), '{}\n');
       await writeFile(credential, 'provider: local\n');
-      await mkdir(dirname(customPreset), { recursive: true });
-      await writeFile(customPreset, 'custom identity\n');
-      await writeObsoleteVisionProfileState(dshHome);
+      await writeFile(recent, '["keep"]\n');
+      await writeFile(projectPath, '{}\n');
+      await writeFile(python, 'installed Python\n');
+      await writeFile(profileSibling, 'keep profile sibling\n');
+      await writeFile(cacheSibling, 'keep cache sibling\n');
 
-      const first = await removeObsoleteVisionToolkitState({ platform: 'win32', dshHome, programRoot: join(root, 'program'), mutableRoot: join(root, 'mutable') });
-      expect(first.removed).toBe(true);
-      const profile = join(dshHome, 'profiles', 'web');
-      const manifest = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8')) as { dependencies?: Record<string, string>; dsh?: { profile?: { bundles?: string[] } } };
-      expect(manifest.dependencies?.[OBSOLETE_VISION_TOOLKIT_PACKAGE]).toBeUndefined();
-      expect(manifest.dependencies?.['@baihestudio/dsh-workspace-mcp']).toBe('file:../../bundle/dsh-workspace-mcp');
-      expect(manifest.dsh?.profile?.bundles).toEqual(['@baihestudio/dsh-workspace-mcp']);
-      const lock = await readFile(join(profile, 'pnpm-lock.yaml'), 'utf8');
-      expect(lock).not.toContain(OBSOLETE_VISION_TOOLKIT_PACKAGE);
-      expect(lock).toContain('@baihestudio/dsh-workspace-mcp');
-      const patch = await readFile(join(profile, 'cordis.patch.yml'), 'utf8');
-      expect(patch).not.toContain(OBSOLETE_VISION_TOOLKIT_PACKAGE);
-      expect(patch).toContain('workspace-mcp');
-      expect(await Bun.file(join(profile, 'node_modules', '@anionex', 'dsh-vision-toolkit', 'package.json')).exists()).toBe(false);
-      expect(await Bun.file(join(profile, 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'package.json')).exists()).toBe(true);
-      expect(await Bun.file(join(profile, 'node_modules', '.pnpm', '@anionex+dsh-vision-toolkit@0.1.31')).exists()).toBe(false);
-      expect(await Bun.file(join(dshHome, 'cache', 'dsh-vision-toolkit')).exists()).toBe(false);
+      const pwsh = await resolveWindowsPwsh({ platform: 'win32', env: process.env });
+      expect(pwsh).toBeDefined();
+      const script = join(REPOSITORY_ROOT, 'scripts', 'reset-nuc-web-profile.ps1');
+      const env = { ...process.env, LOCALAPPDATA: localAppData };
+      const runReset = () => runCommand(pwsh!, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', script], { platform: 'win32', env, timeoutMs: 30_000 });
+
+      const first = await runReset();
+      expect(first.exitCode).toBe(0);
+      expect(first.stdout).toMatch(/Reset complete/i);
+      expect(await Bun.file(webProfile).exists()).toBe(false);
+      expect(await Bun.file(visionCache).exists()).toBe(false);
       expect(await readFile(credential, 'utf8')).toBe('provider: local\n');
-      expect(await readFile(customPreset, 'utf8')).toBe('custom identity\n');
-      expect((await stat(projectPath)).isDirectory()).toBe(true);
+      expect(await readFile(recent, 'utf8')).toBe('["keep"]\n');
+      expect(await readFile(projectPath, 'utf8')).toBe('{}\n');
+      expect(await readFile(python, 'utf8')).toBe('installed Python\n');
+      expect(await readFile(profileSibling, 'utf8')).toBe('keep profile sibling\n');
+      expect(await readFile(cacheSibling, 'utf8')).toBe('keep cache sibling\n');
 
-      const second = await removeObsoleteVisionToolkitState({ platform: 'win32', dshHome, programRoot: join(root, 'program'), mutableRoot: join(root, 'mutable') });
-      expect(second.removed).toBe(false);
+      const second = await runReset();
+      expect(second.exitCode).toBe(0);
+      expect(second.stdout).toMatch(/already absent/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1013,7 +983,7 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('default install and repair prepare owned pnpm, MCPorter, and Xerolo runtimes', async () => {
+  test('fresh and repeated install prepare owned local dependencies without Vision Toolkit', async () => {
     const root = await temp('phase7-default-dependencies');
     try {
       const { bin, env: prerequisiteEnv } = await prerequisiteBin(root);
@@ -1024,7 +994,6 @@ describe('Windows release gate foundations', () => {
       const mutable = join(root, 'mutable');
       const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
       const state = join(mutable, 'state');
-      await writeObsoleteVisionProfileState(state);
       const bun = join(bin, 'bun.exe');
       const npm = join(bin, 'npm.cmd');
       const node = join(bin, 'node.exe');
@@ -1061,7 +1030,8 @@ describe('Windows release gate foundations', () => {
 
       await install();
       expect(calls.some((call) => call.args.includes(`pnpm@${PNPM_VERSION}`))).toBe(true);
-      expect(calls.some((call) => call.args.includes(OBSOLETE_VISION_TOOLKIT_PACKAGE))).toBe(false);
+      expect(calls.some((call) => basename(call.command).toLowerCase() === 'python.exe')).toBe(true);
+      expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
       expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', '@anionex', 'dsh-vision-toolkit')).exists()).toBe(false);
       expect(await Bun.file(join(state, 'cache', 'dsh-vision-toolkit')).exists()).toBe(false);
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
@@ -1072,6 +1042,7 @@ describe('Windows release gate foundations', () => {
 
       calls.length = 0;
       await install();
+      expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'package.json')).exists()).toBe(true);
@@ -1270,7 +1241,8 @@ describe('Windows release gate foundations', () => {
       expect(inspection.entries).toContain('Install.cmd');
       expect(inspection.entries).toContain('src/cli.ts');
       expect(inspection.entries).toContain('src/profile.ts');
-      expect(inspection.entries).toContain('src/profile-repair.ts');
+      expect(inspection.entries).toContain(NUC_WEB_PROFILE_RESET_RELATIVE);
+      expect(inspection.entries).not.toContain('src/profile-repair.ts');
       expect(inspection.entries).not.toContain('src/vision-toolkit.ts');
       expect(inspection.entries.some((entry) => entry.includes('phase8') || entry.includes('vision-toolkit'))).toBe(false);
       expect(inspection.entries).toContain(WINDOWS_GATE_CLEANUP_HELPER_RELATIVE);
@@ -1294,7 +1266,7 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('repairs the installed web-profile bundle after a Release ZIP extraction and deliberate link break', async () => {
+  test('repeated setup repairs the local web-profile bundle after a Release ZIP extraction', async () => {
     const root = await temp('phase7-release-repair-选择');
     try {
       const archive = join(root, 'DSH-RPGMaker-MV-Windows.zip');
@@ -1317,7 +1289,6 @@ describe('Windows release gate foundations', () => {
       const mutable = join(root, 'Mutable state 选择 with spaces');
       const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
       const state = join(mutable, 'state');
-      await writeObsoleteVisionProfileState(state);
       const bun = join(bin, 'bun.exe');
       const npm = join(bin, 'npm.cmd');
       const env = {
@@ -1375,6 +1346,8 @@ describe('Windows release gate foundations', () => {
 
       const firstPreparation = await prepareRpgMakerLaunch(launchOptions);
       expect(firstPreparation.workspaceMcpBundle.valid).toBe(true);
+      expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
+      expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', '@anionex', 'dsh-vision-toolkit')).exists()).toBe(false);
       const profilePackage = join(state, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
       await rm(profilePackage, { recursive: true, force: true });
       const broken = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') });
