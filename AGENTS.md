@@ -25,6 +25,10 @@ Tests use `bun:test`. Name test files `phase<N>.test.ts` and test observable beh
 
 Run `phase*:real`, simulated fresh/disposable installations, clean-machine Windows installation or repair gates, full integration suites, and external runtime/provider downloads only when the user explicitly requests that exact class of test in the current conversation. “Verify” or “continue” alone is not authorization. Routine incremental deployment of the current build to the existing NUC and a focused regression check are not expensive gates and may proceed as part of the active NUC workflow. Before an expensive gate, state what it provisions, expected duration, and external services used.
 
+## Agent-Specific Instructions
+
+When delegating repository work, use GPT-family subagent models. Do not use Flash models unless the user explicitly requests one for the current task.
+
 ## Commit & Pull Request Guidelines
 
 Use scoped Conventional Commits: `feat(scope): description`, `fix(scope): description`, `refactor(scope): description`, or `chore(scope): description`. Review `git diff --cached` before committing. PRs should summarize user-visible behavior, list focused verification, identify unverified native Windows gates, and include screenshots only for visible UI changes. Keep hardware-dependent PRs Draft until their required evidence exists.
