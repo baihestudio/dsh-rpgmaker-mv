@@ -19,7 +19,7 @@ export const IMAGE_WORKSHOP_PLUGIN_LICENSE = 'MIT';
 export const IMAGE_WORKSHOP_PLUGIN_PROFILE = 'web';
 export const IMAGE_WORKSHOP_PLUGIN_ENTRYPOINT = 'lib/index.js';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const IMAGE_WORKSHOP_PLUGIN_SHA256 = 'd1fe15d569ae6758a65d8d056cf7ae80641615bac82a2e1038d7bba49dc9664a';
+export const IMAGE_WORKSHOP_PLUGIN_SHA256 = '183290ffd49c1a0f68d689b6adaf7c0791abbdd84097e8ab96cd3dee801dfa6a';
 export const IMAGE_WORKSHOP_BUNDLE_RELATIVE = join('bundle', 'dsh-image-workshop');
 /** Archive entries always use POSIX separators, including on Windows. */
 export const IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE = 'bundle/dsh-image-workshop';

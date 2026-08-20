@@ -32,6 +32,14 @@ const SAFE_STAGE_NAMES = new Set([
 ]);
 
 type DiagnosticOutcome = 'completed' | 'failed' | 'timed-out' | 'cancelled' | 'cleanup-unconfirmed';
+type DiagnosticErrorCode = 'CHILD_EXIT_NONZERO' | 'COMMAND_FAILED' | 'ATLAS_HELPER_FAILED' | 'CANCELLED' | 'TOOL_TIMEOUT';
+const SAFE_ERROR_CODES: ReadonlySet<DiagnosticErrorCode> = new Set([
+  'CHILD_EXIT_NONZERO',
+  'COMMAND_FAILED',
+  'ATLAS_HELPER_FAILED',
+  'CANCELLED',
+  'TOOL_TIMEOUT'
+]);
 
 export interface ImageDiagnosticContext {
   operationId?: string;
@@ -41,7 +49,7 @@ export interface ImageDiagnosticContext {
   outputLabels?: string[];
   options?: Record<string, string | number | boolean>;
   logPath?: string;
-  /** Kept in memory only so bounded error excerpts can redact inherited credentials. */
+  /** Kept in memory only to redact app-owned labels and options; child output is never passed here. */
   redactionValues?: string[];
   writeChain?: Promise<void>;
 }
@@ -55,7 +63,7 @@ export interface ImageDiagnosticRecord {
   finishedAt?: string;
   elapsedMs?: number;
   outcome?: DiagnosticOutcome;
-  error?: string;
+  errorCode?: DiagnosticErrorCode;
   processCleanupConfirmed?: boolean;
 }
 
@@ -192,7 +200,7 @@ function recordFor(context: ImageDiagnosticContext, record: ImageDiagnosticRecor
     ...(record.elapsedMs !== undefined && Number.isFinite(record.elapsedMs) ? { elapsedMs: Math.max(0, Math.round(record.elapsedMs)) } : {}),
     ...(record.outcome ? { outcome: record.outcome } : {}),
     ...(record.processCleanupConfirmed !== undefined ? { processCleanupConfirmed: record.processCleanupConfirmed } : {}),
-    ...(record.error ? { error: boundedText(record.error, context) } : {})
+    ...(record.errorCode && SAFE_ERROR_CODES.has(record.errorCode) ? { errorCode: record.errorCode } : {})
   };
 }
 
@@ -209,7 +217,7 @@ function encodedRecord(context: ImageDiagnosticContext, record: ImageDiagnosticR
     elapsedMs: record.elapsedMs,
     outcome: record.outcome,
     processCleanupConfirmed: record.processCleanupConfirmed,
-    error: '[redacted/truncated]'
+    errorCode: record.errorCode
   });
   return `${JSON.stringify(fallback)}\n`;
 }
@@ -234,11 +242,16 @@ export async function writeImageDiagnostic(context: ImageDiagnosticContext, reco
   await next;
 }
 
-function cancellationOutcome(signal: AbortSignal | undefined): DiagnosticOutcome {
-  if (!signal?.aborted) return 'failed';
+function cancellationErrorCode(signal: AbortSignal | undefined): 'CANCELLED' | 'TOOL_TIMEOUT' {
+  if (!signal?.aborted) return 'CANCELLED';
   const reason = signal.reason;
   const text = reason instanceof Error ? `${reason.name} ${reason.message}` : String(reason ?? '');
-  return /TOOL_TIMEOUT|timeout/i.test(text) ? 'timed-out' : 'cancelled';
+  return /TOOL_TIMEOUT|timeout/i.test(text) ? 'TOOL_TIMEOUT' : 'CANCELLED';
+}
+
+function cancellationOutcome(signal: AbortSignal | undefined): DiagnosticOutcome {
+  if (!signal?.aborted) return 'failed';
+  return cancellationErrorCode(signal) === 'TOOL_TIMEOUT' ? 'timed-out' : 'cancelled';
 }
 
 export function imageCommandStage(command: string, args: string[]): string | undefined {
@@ -271,7 +284,7 @@ export function withImageDiagnostics(runner: CommandRunner, context: ImageDiagno
         finishedAt: new Date().toISOString(),
         elapsedMs: Date.now() - startedTime,
         outcome: options.signal?.aborted ? cancellationOutcome(options.signal) : result.exitCode === 0 ? 'completed' : 'failed',
-        ...(result.exitCode === 0 ? {} : { error: result.stderr || result.stdout })
+        ...(result.exitCode === 0 ? {} : { errorCode: options.signal?.aborted ? cancellationErrorCode(options.signal) : 'CHILD_EXIT_NONZERO' })
       });
       return result;
     } catch (error) {
@@ -283,7 +296,7 @@ export function withImageDiagnostics(runner: CommandRunner, context: ImageDiagno
         finishedAt: new Date().toISOString(),
         elapsedMs: Date.now() - startedTime,
         outcome: options.signal?.aborted ? cancellationOutcome(options.signal) : 'failed',
-        error: error instanceof Error ? error.message : String(error)
+        errorCode: options.signal?.aborted ? cancellationErrorCode(options.signal) : 'COMMAND_FAILED'
       });
       throw error;
     }
@@ -305,7 +318,7 @@ export async function runImageDiagnosticStage<T>(
     await writeImageDiagnostic(context, { event: 'terminal', stage, executable, startedAt, finishedAt: new Date().toISOString(), elapsedMs: Date.now() - startedTime, outcome: 'completed' });
     return value;
   } catch (error) {
-    await writeImageDiagnostic(context, { event: 'terminal', stage, executable, startedAt, finishedAt: new Date().toISOString(), elapsedMs: Date.now() - startedTime, outcome: 'failed', error: error instanceof Error ? error.message : String(error) });
+    await writeImageDiagnostic(context, { event: 'terminal', stage, executable, startedAt, finishedAt: new Date().toISOString(), elapsedMs: Date.now() - startedTime, outcome: 'failed', errorCode: 'ATLAS_HELPER_FAILED' });
     throw error;
   }
 }

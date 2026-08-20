@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -15,11 +15,13 @@ import {
 import {
   IMAGE_OPERATION_CLEANUP_GRACE_MS,
   clearChildSpawner,
+  clearCleanupTimerScheduler,
   clearTerminationCommandSpawner,
   clearTreeTerminator,
   clearWorkshopRunner,
   invokeImageOperation,
   setChildSpawner,
+  setCleanupTimerScheduler,
   setTreeTerminator,
   setWorkshopRunner
 } from '../bundle/dsh-image-workshop/lib/workshop-client.js';
@@ -62,8 +64,8 @@ describe('image diagnostics', () => {
       });
       const runner = withImageDiagnostics(async () => ({
         exitCode: 1,
-        stdout: '',
-        stderr: `${secret} ${'unbounded-looking diagnostic output '.repeat(1000)}`
+        stdout: `${secret} ${'raw stdout command token '.repeat(1000)}`,
+        stderr: `${secret} ${'raw stderr image bytes '.repeat(1000)}`
       }), context);
 
       expect(imageCommandStage('magick.exe', ['--version'])).toBe('toolchain-version-check');
@@ -81,9 +83,11 @@ describe('image diagnostics', () => {
       expect(records[0].inputs).toEqual(['sprites/hero.png']);
       expect(records[0].expectedPaths).toEqual(['out.png', 'out.png.manifest.json']);
       expect(records[0].options).toEqual({ width: 64, gravity: 'center' });
-      expect(records[1]).toMatchObject({ event: 'terminal', outcome: 'failed', elapsedMs: expect.any(Number) });
-      expect(String(records[1].error)).not.toContain(secret);
-      expect(String(records[1].error).length).toBeLessThanOrEqual(512);
+      expect(records[1]).toMatchObject({ event: 'terminal', outcome: 'failed', errorCode: 'CHILD_EXIT_NONZERO', elapsedMs: expect.any(Number) });
+      expect(records[1].error).toBeUndefined();
+      expect(JSON.stringify(records)).not.toContain(secret);
+      expect(JSON.stringify(records)).not.toContain('raw stdout command token');
+      expect(JSON.stringify(records)).not.toContain('raw stderr image bytes');
       expect(JSON.stringify(records)).not.toContain('C:\\tools');
       expect(JSON.stringify(records)).not.toContain('RGBA:');
 
@@ -97,6 +101,70 @@ describe('image diagnostics', () => {
       const restarted = await readJsonLines(logPath);
       expect(restarted.at(-1)).toMatchObject({ event: 'start', operationId: 'stalled-after-restart', stage: 'metadata-inspection', executable: 'magick.exe' });
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('correlates plugin and CLI diagnostics across a real child process', async () => {
+    const root = await temp('image-plugin-cli-correlation');
+    try {
+      clearWorkshopRunner();
+      clearChildSpawner();
+      const logPath = join(root, 'logs', 'image-workshop.jsonl');
+      const cliPath = join(root, 'test-owned-image-cli.mjs');
+      const diagnosticsModule = new URL('../bundle/dsh-image-workshop/lib/diagnostics.js', import.meta.url).href;
+      await writeFile(cliPath, [
+        `const { appendImageDiagnostic, createImageDiagnosticContext, diagnosticEntry } = await import(${JSON.stringify(diagnosticsModule)});`,
+        "const context = createImageDiagnosticContext(process.argv[3] ?? 'inspect', process.env, { toolName: process.env.DSH_IMAGE_WORKSHOP_TOOL_NAME });",
+        "await appendImageDiagnostic(context, diagnosticEntry(context, 'start', 'toolchain-version-check', 'test-owned-cli'));",
+        "await appendImageDiagnostic(context, diagnosticEntry(context, 'terminal', 'toolchain-version-check', 'test-owned-cli', { outcome: 'completed' }));",
+        "console.log(JSON.stringify({ path: 'sprites/hero.png', width: 1, height: 1, format: 'PNG', channels: 'srgba', hasAlpha: true, opaque: false, bytes: 1, sha256: 'x' }));",
+        ''
+      ].join('\n'));
+      const env = { DSH_IMAGE_WORKSHOP_CLI: cliPath, BUN_EXECUTABLE: process.execPath, DSH_IMAGE_WORKSHOP_LOG: logPath };
+      const result = await invokeImageOperation('inspect', ['--input', 'sprites/hero.png'], env, undefined, [], {
+        toolName: 'image_inspect',
+        inputLabels: ['sprites/hero.png']
+      });
+      expect(result).toMatchObject({ path: 'sprites/hero.png' });
+      const records = await readJsonLines(logPath);
+      const pluginRecords = records.filter((record) => record.stage === 'harness-cli-spawn');
+      const cliRecords = records.filter((record) => record.stage === 'toolchain-version-check' && record.executable === 'test-owned-cli');
+      expect(pluginRecords.length).toBeGreaterThanOrEqual(2);
+      expect(cliRecords).toHaveLength(2);
+      const operationIds = new Set([...pluginRecords, ...cliRecords].map((record) => record.operationId));
+      expect(operationIds.size).toBe(1);
+      expect(pluginRecords[0].operationId).toBe(cliRecords[0].operationId);
+    } finally {
+      clearWorkshopRunner();
+      clearChildSpawner();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('records confirmed cleanup for pre-aborted and injected cancellations', async () => {
+    const root = await temp('image-cancellation-diagnostics');
+    try {
+      const logPath = join(root, 'logs', 'image-workshop.jsonl');
+      const env = { DSH_IMAGE_WORKSHOP_CLI: 'test-owned-image-cli', BUN_EXECUTABLE: 'bun', DSH_IMAGE_WORKSHOP_LOG: logPath };
+      const preAborted = new AbortController();
+      preAborted.abort(new Error('TOOL_TIMEOUT'));
+      await expect(invokeImageOperation('inspect', ['--input', 'sprites/hero.png'], env, preAborted.signal)).rejects.toMatchObject({ code: 'cancelled' });
+
+      const injected = new AbortController();
+      clearWorkshopRunner();
+      setWorkshopRunner(() => new Promise<string>(() => undefined));
+      const pending = invokeImageOperation('inspect', ['--input', 'sprites/hero.png'], env, injected.signal);
+      injected.abort('manual cancellation');
+      await expect(pending).rejects.toMatchObject({ code: 'cancelled' });
+
+      const records = await readJsonLines(logPath);
+      const terminals = records.filter((record) => record.event === 'terminal' && record.stage === 'harness-cli-spawn');
+      expect(terminals).toHaveLength(2);
+      expect(terminals.every((record) => record.outcome === 'cancelled' || record.outcome === 'timed-out')).toBe(true);
+      expect(terminals.every((record) => record.processCleanupConfirmed === true)).toBe(true);
+    } finally {
+      clearWorkshopRunner();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -141,9 +209,14 @@ describe('image diagnostics', () => {
     try {
       clearWorkshopRunner();
       clearTreeTerminator();
+      clearCleanupTimerScheduler();
       clearTerminationCommandSpawner();
       setChildSpawner(spawner);
       setTreeTerminator(() => new Promise<void>(() => undefined));
+      setCleanupTimerScheduler((callback, delayMs) => {
+        expect(delayMs).toBe(IMAGE_OPERATION_CLEANUP_GRACE_MS);
+        return setTimeout(callback, 0);
+      });
       const pending = invokeImageOperation('trim-pad', ['--input', 'sprites/hero.png', '--output', 'out.png'], env, controller.signal, [{ path: join(root, 'out.png'), projectPath: 'out.png' }], {
         toolName: 'image_trim_pad',
         inputLabels: ['sprites/hero.png'],
@@ -155,10 +228,7 @@ describe('image diagnostics', () => {
       expect(response.status).toBe(200);
 
       controller.abort(new Error('TOOL_TIMEOUT'));
-      const settled = await Promise.race([
-        pending.then(() => undefined, (error) => error),
-        new Promise<Error>((_, reject) => setTimeout(() => reject(new Error('hung plugin call exceeded cleanup grace')), IMAGE_OPERATION_CLEANUP_GRACE_MS + 1000))
-      ]);
+      const settled = await pending.then(() => undefined, (error) => error);
       expect(settled).toMatchObject({ code: 'IMAGE_CANCELLATION_INCOMPLETE', info: { processCleanupConfirmed: false, expectedPaths: ['out.png'] } });
 
       const records = await readJsonLines(logPath);
@@ -187,9 +257,10 @@ describe('image diagnostics', () => {
       clearWorkshopRunner();
       clearChildSpawner();
       clearTreeTerminator();
+      clearCleanupTimerScheduler();
       clearTerminationCommandSpawner();
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
       await rm(root, { recursive: true, force: true });
     }
-  }, IMAGE_OPERATION_CLEANUP_GRACE_MS + 3000);
+  }, IMAGE_OPERATION_CLEANUP_GRACE_MS);
 });

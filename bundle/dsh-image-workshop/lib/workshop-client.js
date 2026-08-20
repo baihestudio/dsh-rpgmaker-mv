@@ -48,6 +48,7 @@ let workshopRunner
 let childSpawner
 let treeTerminator
 let terminationCommandSpawner
+let cleanupTimerScheduler
 
 export function setWorkshopRunner(runner) {
   workshopRunner = runner
@@ -79,6 +80,21 @@ export function setTerminationCommandSpawner(spawner) {
 
 export function clearTerminationCommandSpawner() {
   terminationCommandSpawner = undefined
+}
+
+/** Test-owned timing seam; production always uses the fixed five-second grace. */
+export function setCleanupTimerScheduler(scheduler) {
+  cleanupTimerScheduler = scheduler
+}
+
+export function clearCleanupTimerScheduler() {
+  cleanupTimerScheduler = undefined
+}
+
+function scheduleCleanupTimer(callback) {
+  return cleanupTimerScheduler
+    ? cleanupTimerScheduler(callback, IMAGE_OPERATION_CLEANUP_GRACE_MS)
+    : setTimeout(callback, IMAGE_OPERATION_CLEANUP_GRACE_MS)
 }
 
 /** Environment passed to the Image Workshop subprocess; credential values are never forwarded. */
@@ -334,9 +350,9 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
       const startedTime = Date.now()
       void appendImageDiagnostic(context, diagnosticEntry(context, 'start', 'termination', bun, { pid: child.pid, startedAt }))
       forceKillTimer = setTimeout(escalate, FORCE_KILL_DELAY_MS)
-      cleanupTimer = setTimeout(() => {
+      cleanupTimer = scheduleCleanupTimer(() => {
         if (aborted) void finishCancellation()
-      }, IMAGE_OPERATION_CLEANUP_GRACE_MS)
+      })
       if (!isRunning(child)) {
         terminationStatus = 'skipped'
         if (closeObserved) void finishCancellation()
@@ -365,7 +381,7 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
             elapsedMs: Date.now() - startedTime,
             outcome: 'failed',
             processCleanupConfirmed: false,
-            error: error instanceof Error ? error.message : String(error)
+            errorCode: 'TERMINATION_FAILED'
           }))
           // A direct close after an unsuccessful tree request is not proof of
           // descendant cleanup; wait for the bounded escalation before settling.
@@ -380,7 +396,7 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
           elapsedMs: Date.now() - startedTime,
           outcome: 'failed',
           processCleanupConfirmed: false,
-          error: error instanceof Error ? error.message : String(error)
+          errorCode: 'TERMINATION_FAILED'
         }))
         if (aborted && canSettleCancellation()) void finishCancellation()
       }
@@ -524,7 +540,16 @@ export async function invokeImageOperation(operation, cliArgs, env = process.env
     const failure = error instanceof Error ? error : new Error(String(error))
     if (context.terminationLog) await context.terminationLog
     const incomplete = failure.code === 'IMAGE_CANCELLATION_INCOMPLETE'
-    const cancelled = failure.code === 'cancelled' || incomplete || signal?.aborted
+    const timedOut = failure.code === 'TOOL_TIMEOUT' || (signal?.aborted && diagnosticAbortOutcome(signal) === 'timed-out')
+    const cancelled = failure.code === 'cancelled' || incomplete || timedOut || signal?.aborted
+    if (cancelled && context.cleanupConfirmed === undefined) context.cleanupConfirmed = true
+    const errorCode = incomplete
+      ? 'IMAGE_CANCELLATION_INCOMPLETE'
+      : timedOut
+        ? 'TOOL_TIMEOUT'
+        : cancelled
+          ? 'CANCELLED'
+          : 'COMMAND_FAILED'
     await appendImageDiagnostic(context, diagnosticEntry(context, 'terminal', 'harness-cli-spawn', safeEnv.BUN_EXECUTABLE ?? 'bun', {
       pid: context.pid,
       startedAt,
@@ -533,10 +558,14 @@ export async function invokeImageOperation(operation, cliArgs, env = process.env
       outcome: incomplete && context.cleanupConfirmed === false
         ? 'cleanup-unconfirmed'
         : cancelled
-          ? diagnosticAbortOutcome(signal)
+          ? timedOut
+            ? 'timed-out'
+            : signal
+              ? diagnosticAbortOutcome(signal)
+              : 'cancelled'
           : 'failed',
-      ...(context.cleanupConfirmed !== undefined ? { processCleanupConfirmed: context.cleanupConfirmed } : {}),
-      error: failure.message
+      ...(cancelled || context.cleanupConfirmed !== undefined ? { processCleanupConfirmed: context.cleanupConfirmed } : {}),
+      errorCode
     }))
     throw failure
   }

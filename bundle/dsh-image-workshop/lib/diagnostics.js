@@ -12,6 +12,15 @@ const DIAGNOSTIC_OPTIONS_LIMIT = 16
 const DIAGNOSTIC_RECORD_LIMIT = 8 * 1024
 const OPERATION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/
 const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/
+const SAFE_ERROR_CODES = new Set([
+  'CHILD_EXIT_NONZERO',
+  'COMMAND_FAILED',
+  'ATLAS_HELPER_FAILED',
+  'TERMINATION_FAILED',
+  'IMAGE_CANCELLATION_INCOMPLETE',
+  'CANCELLED',
+  'TOOL_TIMEOUT'
+])
 const SAFE_OPTION_KEYS = new Set([
   'scale', 'width', 'height', 'trim', 'gravity', 'cellWidth', 'cellHeight',
   'columns', 'inputCount', 'maxSize', 'padding', 'extrusion', 'fixedGrid', 'level'
@@ -69,6 +78,10 @@ function safeToken(value) {
   return typeof value === 'string' && SAFE_TOKEN_PATTERN.test(value) ? value : undefined
 }
 
+function safeErrorCode(value) {
+  return typeof value === 'string' && SAFE_ERROR_CODES.has(value) ? value : undefined
+}
+
 function executableName(value) {
   if (!value) return undefined
   const name = basename(String(value).replaceAll('\\', '/'))
@@ -95,7 +108,7 @@ export function createImageDiagnosticContext(operation, env = process.env, metad
     env.GITLAB_TOKEN
   ].filter((value) => typeof value === 'string' && value.length > 0)
   return {
-    operationId: operationId(metadata.operationId),
+    operationId: operationId(metadata.operationId ?? env.DSH_IMAGE_WORKSHOP_OPERATION_ID),
     operation,
     toolName: safeToken(metadata.toolName) ?? safeToken(env.DSH_IMAGE_WORKSHOP_TOOL_NAME),
     inputLabels: boundedLabels(metadata.inputLabels),
@@ -133,7 +146,7 @@ function recordFor(context, record) {
     ...(Number.isFinite(record.elapsedMs) ? { elapsedMs: Math.max(0, Math.round(record.elapsedMs)) } : {}),
     ...(record.outcome ? { outcome: record.outcome } : {}),
     ...(record.processCleanupConfirmed !== undefined ? { processCleanupConfirmed: record.processCleanupConfirmed } : {}),
-    ...(record.error ? { error: redactText(record.error, context) } : {})
+    ...(safeErrorCode(record.errorCode) ? { errorCode: record.errorCode } : {})
   }
 }
 
@@ -150,7 +163,7 @@ function encodedRecord(context, record) {
     elapsedMs: record.elapsedMs,
     outcome: record.outcome,
     processCleanupConfirmed: record.processCleanupConfirmed,
-    error: '[redacted/truncated]'
+    errorCode: record.errorCode
   }))}\n`
 }
 
@@ -191,6 +204,6 @@ export function diagnosticEntry(context, event, stage, executable, values = {}) 
     ...(values.elapsedMs !== undefined ? { elapsedMs: values.elapsedMs } : {}),
     ...(values.outcome ? { outcome: values.outcome } : {}),
     ...(values.processCleanupConfirmed !== undefined ? { processCleanupConfirmed: values.processCleanupConfirmed } : {}),
-    ...(values.error ? { error: values.error } : {})
+    ...(values.errorCode ? { errorCode: values.errorCode } : {})
   }
 }
