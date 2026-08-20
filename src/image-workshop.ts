@@ -361,22 +361,24 @@ function noteCleanupFailure(operation: FileOperation, path: string): void {
   if (!operation.cleanupFailures.includes(path)) operation.cleanupFailures.push(path);
 }
 
-async function removeOperation(operation: FileOperation): Promise<boolean> {
+async function removeOperation(operation: FileOperation, preserveCommitted = false): Promise<boolean> {
   let confirmed = true;
-  for (const path of [...operation.committedPaths].reverse()) {
-    try {
-      await rm(path, { force: true });
-    } catch {
-      confirmed = false;
-      noteCleanupFailure(operation, path);
+  if (!preserveCommitted) {
+    for (const path of [...operation.committedPaths].reverse()) {
+      try {
+        await rm(path, { force: true });
+      } catch {
+        confirmed = false;
+        noteCleanupFailure(operation, path);
+      }
     }
-  }
-  if (operation.committedDirectory) {
-    try {
-      await rm(operation.committedDirectory, { recursive: true, force: true });
-    } catch {
-      confirmed = false;
-      noteCleanupFailure(operation, operation.committedDirectory);
+    if (operation.committedDirectory) {
+      try {
+        await rm(operation.committedDirectory, { recursive: true, force: true });
+      } catch {
+        confirmed = false;
+        noteCleanupFailure(operation, operation.committedDirectory);
+      }
     }
   }
   try {
@@ -413,7 +415,7 @@ async function commitFiles(operation: FileOperation, entries: Array<{ finalPath:
     await rm(operation.tempDir, { recursive: true, force: true });
     assertNotCancelled(signal);
   } catch (error) {
-    const cleanupConfirmed = await removeOperation(operation);
+    const cleanupConfirmed = await removeOperation(operation, Boolean(signal?.aborted));
     if (signal?.aborted && !cleanupConfirmed) throw cancellationCleanupError(operation);
     throw error;
   }
@@ -441,14 +443,14 @@ async function commitDirectory(operation: FileOperation & { outputDir: string },
     operation.committedDirectory = operation.outputDir;
     assertNotCancelled(signal);
   } catch (error) {
-    const cleanupConfirmed = await removeOperation(operation);
+    const cleanupConfirmed = await removeOperation(operation, Boolean(signal?.aborted));
     if (signal?.aborted && !cleanupConfirmed) throw cancellationCleanupError(operation);
     throw error;
   }
 }
 
 async function failAfterOperationCleanup(operation: FileOperation, error: unknown, signal?: AbortSignal): Promise<never> {
-  const cleanupConfirmed = await removeOperation(operation);
+  const cleanupConfirmed = await removeOperation(operation, Boolean(signal?.aborted));
   if (signal?.aborted && !cleanupConfirmed) throw cancellationCleanupError(operation);
   throw error;
 }
@@ -1056,7 +1058,7 @@ export class ImageWorkshop {
       assertNotCancelled(this.dependencies.signal);
       return { operation: 'atlas-pack', outputPaths: [outputPaths.png, outputPaths.json], manifestPath: outputPaths.manifest, manifest };
     } catch (error) {
-      const cleanupConfirmed = await removeOperation(operation);
+      const cleanupConfirmed = await removeOperation(operation, Boolean(this.dependencies.signal?.aborted));
       if (this.dependencies.signal?.aborted && !cleanupConfirmed) throw cancellationCleanupError(operation);
       if (error instanceof ImageWorkshopError) throw error;
       throw new ImageWorkshopError(`Atlas packing failed during ${stage}: ${error instanceof Error ? error.message : String(error)}`);

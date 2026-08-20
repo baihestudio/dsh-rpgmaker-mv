@@ -13,7 +13,7 @@ import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../s
 import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
 import { PNPM_VERSION, VISION_TOOLKIT_NPM_INTEGRITY, VISION_TOOLKIT_PACKAGE, VISION_TOOLKIT_VERSION, VISION_TOOL_NAMES } from '../src/vision-toolkit';
 import { findDshExecutable } from '../src/bootstrap';
-import { prepareRpgMakerLaunch } from '../src/rpgmaker';
+import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
 import { RPGMPACKER_NPM_INTEGRITY, RPGMPACKER_PACKAGE, RPGMPACKER_SCRIPT, RPGMPACKER_VERSION } from '../src/release';
 import { JS_RUNNER_ENV, XEROLO_RUNTIME_ENV, verifyWorkspaceMcpBundle, WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
@@ -678,6 +678,13 @@ describe('Windows release gate foundations', () => {
       await dshRuntime(runtime);
       await ensureHarnessLayout({ platform: 'win32', env, mutableRoot, dshHome, programRoot, runtimeDir: runtime });
       await writeFile(join(dshHome, '.credentials.yaml'), 'provider: local\n');
+      const presetRoot = join(dshHome, '.agent-presets');
+      await mkdir(join(dshHome, 'rpgmaker-mv'), { recursive: true });
+      await writeFile(join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml'), renderPresetOnlyPatch(presetRoot, 'rpgmaker'));
+      for (const presetId of CUSTOM_AGENT_PRESET_IDS) {
+        await mkdir(join(presetRoot, presetId), { recursive: true });
+        await writeFile(join(presetRoot, presetId, 'agent.cordis.yml'), '- id: persona\n');
+      }
       const report = await runDoctor({
         platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, commandRunner: prerequisiteRunner(),
         verifyAgentDependencies: async () => ({

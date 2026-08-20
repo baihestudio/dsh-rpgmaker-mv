@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -112,16 +113,6 @@ function fakeRelease(executableName: string, archive: string, executable: string
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
-}
-
-function signalThatAbortsAfter(readsBeforeAbort: number): AbortSignal {
-  let reads = 0;
-  return {
-    get aborted(): boolean {
-      reads += 1;
-      return reads >= readsBeforeAbort;
-    }
-  } as AbortSignal;
 }
 
 async function writeHelperState(helper: string): Promise<string> {
@@ -805,7 +796,7 @@ describe('Asset Workshop image correctness and atlas bounds', () => {
     }
   });
 
-  test('cancellation after the final file link/unlink removes outputs without touching the source', async () => {
+  test('cancellation after the final file link/unlink retains outputs without touching the source', async () => {
     const root = await temp('phase4-file-commit-cancel');
     try {
       const helper = await helperState(root);
@@ -818,19 +809,19 @@ describe('Asset Workshop image correctness and atlas bounds', () => {
         platform: 'win32',
         env: { PATH: '' },
         commandRunner: fake.run.bind(fake),
-        signal: signalThatAbortsAfter(16)
+        signal: { get aborted(): boolean { return existsSync(`${output}.manifest.json`); } } as AbortSignal
       });
       await expect(workshop.resizePixel({ input: TILE, output, scale: 2 })).rejects.toThrow(/cancelled/);
       expect(await readFile(TILE)).toEqual(sourceBefore);
-      expect(await Bun.file(output).exists()).toBe(false);
-      expect(await Bun.file(`${output}.manifest.json`).exists()).toBe(false);
+      expect(await Bun.file(output).exists()).toBe(true);
+      expect(await Bun.file(`${output}.manifest.json`).exists()).toBe(true);
       expect((await readdir(root)).some((name) => name.includes('.dsh-image-operation-'))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  test('cancellation after a directory rename removes the published directory without touching the source', async () => {
+  test('cancellation after a directory rename retains the published directory without touching the source', async () => {
     const root = await temp('phase4-directory-commit-cancel');
     try {
       const helper = await helperState(root);
@@ -843,11 +834,11 @@ describe('Asset Workshop image correctness and atlas bounds', () => {
         platform: 'win32',
         env: { PATH: '' },
         commandRunner: fake.run.bind(fake),
-        signal: signalThatAbortsAfter(7)
+        signal: { get aborted(): boolean { return existsSync(outputDir); } } as AbortSignal
       });
       await expect(workshop.sheetSlice({ input: SHEET, outputDir, cellWidth: 4, cellHeight: 4 })).rejects.toThrow(/cancelled/);
       expect(await readFile(SHEET)).toEqual(sourceBefore);
-      expect(await Bun.file(outputDir).exists()).toBe(false);
+      expect(existsSync(outputDir)).toBe(true);
       expect((await readdir(root)).some((name) => name.includes('cancelled-frames.dsh-staging'))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });

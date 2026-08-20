@@ -471,7 +471,8 @@ describe('image tool adapter seam', () => {
       setTreeTerminator((candidate) => { terminated.push(candidate); });
       const controller = new AbortController();
       const env = { ...process.env, DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' };
-      const promise = invokeImageOperation('resize-pixel', ['--input', 'a', '--output', 'b'], env, controller.signal);
+      const expectedTarget = join(root, 'b.png');
+      const promise = invokeImageOperation('resize-pixel', ['--input', 'a', '--output', 'b'], env, controller.signal, [{ path: expectedTarget, projectPath: 'b.png' }]);
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
       expect(spawnOptions).toBeDefined();
       expect(spawnOptions!.detached).toBe(process.platform !== 'win32');
@@ -479,7 +480,10 @@ describe('image tool adapter seam', () => {
       expect(terminated).toContain(child);
       child.exitCode = 0;
       child.emit('close', null);
-      await expect(promise).rejects.toThrow(/cancelled/);
+      await expect(promise).rejects.toMatchObject({
+        code: 'cancelled',
+        info: { expectedPaths: ['b.png'], processCleanupConfirmed: true }
+      });
     } finally {
       clearWorkshopRunner();
       clearChildSpawner();
@@ -487,6 +491,100 @@ describe('image tool adapter seam', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test('returns IMAGE_CANCELLATION_INCOMPLETE when a confirmed stop retains an expected target', async () => {
+    const root = await temp('adapter-retained-target');
+    try {
+      clearWorkshopRunner();
+      clearChildSpawner();
+      clearTreeTerminator();
+      const child = new EventEmitter() as EventEmitter & {
+        pid?: number;
+        exitCode: number | null;
+        signalCode: string | null;
+        kill: (signal?: string) => boolean;
+        stdout: PassThrough;
+        stderr: PassThrough;
+      };
+      child.pid = 4246;
+      child.exitCode = null;
+      child.signalCode = null;
+      child.kill = () => true;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      setChildSpawner(() => child);
+      setTreeTerminator(() => undefined);
+      const controller = new AbortController();
+      const target = join(root, 'retained.png');
+      const promise = invokeImageOperation('resize-pixel', ['--input', 'a', '--output', target], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal, [{ path: target, projectPath: 'retained.png' }]);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+      controller.abort();
+      await writeFile(target, 'retained by the stopped writer');
+      child.exitCode = 0;
+      child.emit('close', null);
+      await expect(promise).rejects.toMatchObject({
+        code: 'IMAGE_CANCELLATION_INCOMPLETE',
+        info: { expectedPaths: ['retained.png'], processCleanupConfirmed: true }
+      });
+    } finally {
+      clearChildSpawner();
+      clearTreeTerminator();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('escalates a POSIX process from TERM to KILL once within cleanup grace', async () => {
+    clearWorkshopRunner();
+    clearChildSpawner();
+    clearTreeTerminator();
+    const child = new EventEmitter() as EventEmitter & {
+      platform?: string;
+      exitCode: number | null;
+      signalCode: string | null;
+      kill: (signal?: string) => boolean;
+      stdout: PassThrough;
+      stderr: PassThrough;
+    };
+    child.platform = 'linux';
+    child.exitCode = null;
+    child.signalCode = null;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    const killSignals: Array<string | undefined> = [];
+    child.kill = (signal) => {
+      killSignals.push(signal);
+      return true;
+    };
+    const spawner = ((
+      _bun: string,
+      _args: string[],
+      options: Record<string, unknown>
+    ) => {
+      expect(options.detached).toBe(true);
+      return child;
+    }) as ((bun: string, args: string[], options: Record<string, unknown>) => typeof child) & { platform?: string };
+    spawner.platform = 'linux';
+    setChildSpawner(spawner);
+    setTreeTerminator((candidate, options) => {
+      expect(options).toMatchObject({ platform: 'linux', timeoutMs: 1000 });
+      candidate.kill('SIGTERM');
+      return new Promise<void>(() => undefined);
+    });
+    const controller = new AbortController();
+    try {
+      const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+      controller.abort();
+      await expect(promise).rejects.toMatchObject({
+        code: 'IMAGE_CANCELLATION_INCOMPLETE',
+        info: { processCleanupConfirmed: false }
+      });
+      expect(killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+    } finally {
+      clearChildSpawner();
+      clearTreeTerminator();
+    }
+  }, 7000);
 });
 
 describe('app-owned image tool plugin installation', () => {
@@ -943,18 +1041,24 @@ describe('release bundle', () => {
     setChildSpawner(() => child);
     setTreeTerminator(() => undefined);
     const controller = new AbortController();
+    const target = join(tmpdir(), `image-unconfirmed-${Date.now()}-${Math.random()}.png`);
     try {
-      const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal);
+      const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal, [{ path: target, projectPath: 'late.png' }]);
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
       controller.abort();
+      await writeFile(target, 'late writer output');
       child.exitCode = 0;
       child.emit('exit', 0, null);
-      await expect(promise).rejects.toMatchObject({ code: 'CLEANUP_UNCONFIRMED' });
+      await expect(promise).rejects.toMatchObject({
+        code: 'IMAGE_CANCELLATION_INCOMPLETE',
+        info: { expectedPaths: ['late.png'], processCleanupConfirmed: false }
+      });
       expect(child.listenerCount('close')).toBe(0);
       expect(child.listenerCount('exit')).toBe(0);
     } finally {
       clearChildSpawner();
       clearTreeTerminator();
+      await rm(target, { force: true });
     }
   }, 7000);
 
@@ -1002,7 +1106,10 @@ describe('release bundle', () => {
       const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal);
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
       controller.abort();
-      await expect(promise).rejects.toMatchObject({ code: 'CLEANUP_UNCONFIRMED' });
+      await expect(promise).rejects.toMatchObject({
+        code: 'IMAGE_CANCELLATION_INCOMPLETE',
+        info: { expectedPaths: [], processCleanupConfirmed: false }
+      });
       expect(terminationOptions).toMatchObject({ platform: 'win32', timeoutMs: 1000 });
       expect(killSignals).toEqual([undefined]);
       expect(child.listenerCount('close')).toBe(0);
@@ -1027,7 +1134,7 @@ describe('release bundle', () => {
       const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { BUN_EXECUTABLE: 'bun' }, controller.signal);
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
       controller.abort();
-      await expect(promise).rejects.toMatchObject({ code: 'TOOL_CANCELLED' });
+      await expect(promise).rejects.toMatchObject({ code: 'cancelled' });
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 35));
       expect(completed).toBe(true);
     } finally {
@@ -1052,6 +1159,10 @@ describe('release bundle', () => {
       const composition = await readFile(verified.hostCompositionPath, 'utf8');
       expect((composition.match(/id: timeout-policy/g) ?? [])).toHaveLength(1);
       expect((composition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(1);
+      await rm(verified.hostCompositionPath, { force: true });
+      const missingHost = await verifyTimeoutPolicyComposition(dshHome, presetRoot);
+      expect(missingHost.valid).toBe(false);
+      expect(missingHost.errors.join(' ')).toMatch(/shared Host composition was not found/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1063,10 +1174,12 @@ describe('release bundle', () => {
       const dshHome = join(root, 'dsh-home');
       const compositionPath = join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
       await mkdir(dirname(compositionPath), { recursive: true });
-      await writeFile(compositionPath, renderPresetOnlyPatch(join(dshHome, '.agent-presets'), 'asset-workshop'));
       const valid = '- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n';
       const validate = (stdout: string) => validatePresetComposition('dsh', compositionPath, root, 'win32', {}, async () => ({ exitCode: 0, stdout, stderr: '' }));
-      await expect(validate(valid)).resolves.toBeUndefined();
+      for (const presetId of CUSTOM_AGENT_PRESET_IDS) {
+        await writeFile(compositionPath, renderPresetOnlyPatch(join(dshHome, '.agent-presets'), presetId));
+        await expect(validate(valid)).resolves.toBeUndefined();
+      }
       await expect(validate('- id: agent-presets\n')).rejects.toThrow(/exactly one effective timeout-policy row; found 0/);
       await expect(validate(`${valid}- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n`)).rejects.toThrow(/exactly one effective timeout-policy row; found 2/);
     } finally {

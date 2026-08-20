@@ -24,6 +24,10 @@ export interface WorkshopChildHandle {
 }
 export type WorkshopChildSpawner = ((bun: string, args: string[], options: Record<string, unknown>) => WorkshopChildHandle) & { platform?: string };
 export type WorkshopTreeTerminator = (child: WorkshopChildHandle, options?: WorkshopTerminationOptions) => void | Promise<void>;
+export interface WorkshopExpectedTarget {
+  path: string;
+  projectPath: string;
+}
 export declare const IMAGE_OPERATION_CLEANUP_GRACE_MS: 5000;
 export declare function workshopEnvironment(env?: Record<string, string | undefined>): Record<string, string | undefined>;
 export declare function setWorkshopRunner(runner: WorkshopRunner): void;
@@ -32,4 +36,4 @@ export declare function setChildSpawner(spawner?: WorkshopChildSpawner): void;
 export declare function clearChildSpawner(): void;
 export declare function setTreeTerminator(terminator?: WorkshopTreeTerminator): void;
 export declare function clearTreeTerminator(): void;
-export declare function invokeImageOperation(operation: string, cliArgs: string[], env?: Record<string, string | undefined>, signal?: AbortSignal): Promise<Record<string, unknown>>;
+export declare function invokeImageOperation(operation: string, cliArgs: string[], env?: Record<string, string | undefined>, signal?: AbortSignal, expectedTargets?: WorkshopExpectedTarget[]): Promise<Record<string, unknown>>;

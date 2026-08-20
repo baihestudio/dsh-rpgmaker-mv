@@ -333,19 +333,16 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
       imagePlugin.packageDir
     ));
 
-    const timeoutPolicyPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
-    if ((await stat(timeoutPolicyPath).catch(() => undefined))?.isFile()) {
-      const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome);
-      checks.push(check(
-        'tool-call-timeout-policy',
-        'Shared DSH tool-call timeout policy',
-        timeoutPolicy.valid,
-        timeoutPolicy.valid
-          ? `One official timeout-policy Host row covers ${timeoutPolicy.coveredPresets.length} custom Agent presets`
-          : timeoutPolicy.errors.join('; '),
-        timeoutPolicy.hostCompositionPath
-      ));
-    }
+    const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome);
+    checks.push(check(
+      'tool-call-timeout-policy',
+      'Shared DSH tool-call timeout policy',
+      timeoutPolicy.valid,
+      timeoutPolicy.valid
+        ? `One official timeout-policy Host row covers ${timeoutPolicy.coveredPresets.length} custom Agent presets`
+        : timeoutPolicy.errors.join('; '),
+      timeoutPolicy.hostCompositionPath
+    ));
 
     const vision = await (options.verifyVisionToolkit ?? (context => verifyVisionToolkit({
       platform: context.platform,

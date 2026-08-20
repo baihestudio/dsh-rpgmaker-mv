@@ -10,7 +10,7 @@
  * argv element, never as shell-encoded text.
  */
 import { stat } from 'node:fs/promises'
-import { join, relative } from 'node:path'
+import { basename, join, relative } from 'node:path'
 import { resolveWorkspacePath } from './workspace.js'
 import { invokeImageOperation } from './workshop-client.js'
 
@@ -67,6 +67,10 @@ function agentWorkspace(exec) {
   const cwd = exec?.agent?.session?.header?.cwd
   if (!cwd) throw new Error('image workspace: an Agent session with a workspace cwd is required.')
   return String(cwd)
+}
+
+function expectedOutputTargets(workspace, paths) {
+  return paths.map((path) => ({ path, projectPath: toWorkspaceRelative(workspace, path) }))
 }
 
 /**
@@ -153,7 +157,7 @@ export function createImageResizePixelTool() {
       const cliArgs = ['--input', input, '--output', output]
       if (hasScale) cliArgs.push('--scale', String(args.scale))
       else cliArgs.push('--width', String(args.width), '--height', String(args.height))
-      const manifest = await invokeImageOperation('resize-pixel', cliArgs, undefined, exec?.signal)
+      const manifest = await invokeImageOperation('resize-pixel', cliArgs, undefined, exec?.signal, expectedOutputTargets(workspace, [output, `${output}.manifest.json`]))
       return operationResult(workspace, manifest, `${output}.manifest.json`)
     },
     presentCall: (args) => ({ card: 'generic', title: `Pixel-resize ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
@@ -199,7 +203,7 @@ export function createImageTrimPadTool() {
       if (args.trim === false) cliArgs.push('--no-trim')
       if (args.width !== undefined) cliArgs.push('--width', String(args.width), '--height', String(args.height))
       if (args.gravity !== undefined) cliArgs.push('--gravity', args.gravity)
-      const manifest = await invokeImageOperation('trim-pad', cliArgs, undefined, exec?.signal)
+      const manifest = await invokeImageOperation('trim-pad', cliArgs, undefined, exec?.signal, expectedOutputTargets(workspace, [output, `${output}.manifest.json`]))
       return operationResult(workspace, manifest, `${output}.manifest.json`)
     },
     presentCall: (args) => ({ card: 'generic', title: `Trim/pad ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
@@ -237,7 +241,7 @@ export function createImageSheetSliceTool() {
       if (await pathExists(outputDir)) {
         throw new Error(`image_sheet_slice output directory already exists: ${args.outputDir}. Choose a new directory; the source is never overwritten.`)
       }
-      const manifest = await invokeImageOperation('sheet-slice', ['--input', input, '--output-dir', outputDir, '--cell-width', String(args.cellWidth), '--cell-height', String(args.cellHeight)], undefined, exec?.signal)
+      const manifest = await invokeImageOperation('sheet-slice', ['--input', input, '--output-dir', outputDir, '--cell-width', String(args.cellWidth), '--cell-height', String(args.cellHeight)], undefined, exec?.signal, expectedOutputTargets(workspace, [outputDir, join(outputDir, 'manifest.json')]))
       return operationResult(workspace, manifest, join(outputDir, 'manifest.json'))
     },
     presentCall: (args) => ({ card: 'generic', title: `Slice sheet ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
@@ -279,7 +283,7 @@ export function createImageSheetAssembleTool() {
       if (await pathExists(output)) {
         throw new Error(`image_sheet_assemble output already exists: ${args.output}. Choose a new path; the sources are never overwritten.`)
       }
-      const manifest = await invokeImageOperation('sheet-assemble', ['--inputs-json', JSON.stringify(inputPaths), '--output', output, '--columns', String(args.columns)], undefined, exec?.signal)
+      const manifest = await invokeImageOperation('sheet-assemble', ['--inputs-json', JSON.stringify(inputPaths), '--output', output, '--columns', String(args.columns)], undefined, exec?.signal, expectedOutputTargets(workspace, [output, `${output}.manifest.json`]))
       return operationResult(workspace, manifest, `${output}.manifest.json`)
     },
     presentCall: (args) => ({ card: 'generic', title: `Assemble sheet (${Array.isArray(args.inputs) ? args.inputs.length : 0} cells)`, kind: 'execute', locations: (Array.isArray(args.inputs) ? args.inputs : []).map((path) => ({ path })) })
@@ -330,7 +334,10 @@ export function createImageAtlasPackTool() {
       if (args.padding !== undefined) cliArgs.push('--padding', String(args.padding))
       if (args.extrusion !== undefined) cliArgs.push('--extrusion', String(args.extrusion))
       if (args.fixedGrid === true) cliArgs.push('--fixed-grid')
-      const manifest = await invokeImageOperation('atlas-pack', cliArgs, undefined, exec?.signal)
+      const textureName = basename(outputDir).replace(/\.png$/i, '') || 'atlas'
+      const outputTexture = join(outputDir, `${textureName}.png`)
+      const outputFrames = join(outputDir, `${textureName}.json`)
+      const manifest = await invokeImageOperation('atlas-pack', cliArgs, undefined, exec?.signal, expectedOutputTargets(workspace, [outputDir, outputTexture, outputFrames, join(outputDir, 'manifest.json')]))
       return operationResult(workspace, manifest, join(outputDir, 'manifest.json'))
     },
     presentCall: (args) => ({ card: 'generic', title: `Pack atlas (${Array.isArray(args.inputs) ? args.inputs.length : 0} inputs)`, kind: 'execute', locations: (Array.isArray(args.inputs) ? args.inputs : []).map((path) => ({ path })) })
@@ -367,7 +374,7 @@ export function createImageOptimizePngTool() {
         throw new Error(`image_optimize_png output already exists: ${args.output}. Choose a new path; the source is never overwritten.`)
       }
       const level = args.level === undefined ? 4 : args.level
-      const manifest = await invokeImageOperation('optimize-png', ['--input', input, '--output', output, '--level', String(level)], undefined, exec?.signal)
+      const manifest = await invokeImageOperation('optimize-png', ['--input', input, '--output', output, '--level', String(level)], undefined, exec?.signal, expectedOutputTargets(workspace, [output, `${output}.manifest.json`]))
       return operationResult(workspace, manifest, `${output}.manifest.json`)
     },
     presentCall: (args) => ({ card: 'generic', title: `Optimize PNG ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })

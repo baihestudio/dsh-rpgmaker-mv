@@ -50,4 +50,3 @@ export {
   IMAGE_WORKSHOP_TOOL_NAMES
 } from './tools.js'
 export { resolveWorkspacePath, validateRelativePath, ImageWorkshopWorkspaceError } from './workspace.js'
-export { invokeImageOperation, setWorkshopRunner, clearWorkshopRunner, setChildSpawner, clearChildSpawner, setTreeTerminator, clearTreeTerminator, workshopEnvironment, IMAGE_OPERATION_CLEANUP_GRACE_MS } from './workshop-client.js'

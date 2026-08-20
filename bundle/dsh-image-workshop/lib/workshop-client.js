@@ -8,6 +8,7 @@
  * the DSH boundary, then bounded cleanup requires the Node child `close`
  * event and a non-running child before it is considered confirmed.
  */
+import { stat } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 
@@ -88,27 +89,45 @@ function isQuiescent(child, closeObserved) {
   return closeObserved && !isRunning(child)
 }
 
-function cancellationKind(signal) {
-  if (!signal) return 'cancelled'
-  const reason = signal.reason
-  const text = reason instanceof Error ? `${reason.name} ${reason.message}` : String(reason ?? '')
-  return /TOOL_TIMEOUT|timeout/i.test(text) ? 'timed-out' : 'cancelled'
-}
-
 function operationError(message, code, info = {}) {
   const error = new Error(message)
   error.code = code
-  error.info = { name: code === 'CLEANUP_UNCONFIRMED' ? 'CleanupUnconfirmedError' : 'ImageOperationError', code, ...info }
+  error.info = { name: code === 'IMAGE_CANCELLATION_INCOMPLETE' ? 'ImageCancellationIncompleteError' : 'ImageOperationError', code, ...info }
   return error
 }
 
-function cancellationError(operation, signal, cleanupConfirmed, pid) {
-  const kind = cancellationKind(signal)
+async function expectedTargetState(expectedTargets) {
+  let unknown = false
+  for (const target of expectedTargets) {
+    try {
+      await stat(target.path)
+      return 'exists'
+    } catch (error) {
+      if (error?.code !== 'ENOENT') unknown = true
+    }
+  }
+  return unknown ? 'unknown' : 'absent'
+}
+
+function cancellationError(operation, cleanupConfirmed, pid, expectedTargets = [], targetState = 'unknown') {
+  const expectedPaths = expectedTargets.map((target) => target.projectPath)
+  const info = { pid, expectedPaths, processCleanupConfirmed: cleanupConfirmed }
   if (!cleanupConfirmed) {
     const processId = pid === undefined ? 'unknown' : String(pid)
-    return operationError(`image workspace operation ${kind} cleanup-unconfirmed: the Harness CLI process tree (PID ${processId}) did not provide a quiescent close event within the ${IMAGE_OPERATION_CLEANUP_GRACE_MS}ms cleanup grace.`, 'CLEANUP_UNCONFIRMED', { pid, outcome: 'cleanup-unconfirmed' })
+    const targets = expectedPaths.length > 0 ? expectedPaths.join(', ') : 'none'
+    return operationError(`image workspace operation ${operation} cancellation incomplete: the Harness CLI process tree (PID ${processId}) did not provide a quiescent close event within the ${IMAGE_OPERATION_CLEANUP_GRACE_MS}ms cleanup grace; expected output paths remain uncertain (${targets}).`, 'IMAGE_CANCELLATION_INCOMPLETE', { ...info, outcome: 'cleanup-unconfirmed' })
   }
-  return operationError(`image workspace operation was ${kind}.`, kind === 'timed-out' ? 'TOOL_TIMEOUT' : 'TOOL_CANCELLED', { outcome: kind })
+  if (targetState !== 'absent') {
+    const targets = expectedPaths.length > 0 ? expectedPaths.join(', ') : 'none'
+    const state = targetState === 'exists' ? 'may already exist' : 'could not be checked'
+    return operationError(`image workspace operation ${operation} cancellation incomplete: expected output paths ${state} after the Harness CLI process tree stopped (${targets}).`, 'IMAGE_CANCELLATION_INCOMPLETE', { ...info, outcome: 'expected-target-uncertain' })
+  }
+  return operationError(`image workspace operation ${operation} was cancelled.`, 'cancelled', { ...info, outcome: 'cancelled' })
+}
+
+async function cancellationErrorFor(operation, cleanupConfirmed, pid, expectedTargets = []) {
+  const targetState = cleanupConfirmed ? await expectedTargetState(expectedTargets) : 'unknown'
+  return cancellationError(operation, cleanupConfirmed, pid, expectedTargets, targetState)
 }
 
 function defaultSpawn(bun, args, options) {
@@ -202,7 +221,7 @@ function cleanupListeners(child, signal, onAbort, onClose, onError, onExit, onSt
   child.stderr?.removeListener?.('data', onStderr)
 }
 
-async function runReal(operation, args, env, signal) {
+async function runReal(operation, args, env, signal, expectedTargets) {
   const cli = env.DSH_IMAGE_WORKSHOP_CLI
   if (!cli) {
     throw new Error('image workspace: DSH_IMAGE_WORKSHOP_CLI is not configured; the harness launcher must set it.')
@@ -210,7 +229,7 @@ async function runReal(operation, args, env, signal) {
   const bun = env.BUN_EXECUTABLE ?? 'bun'
   const spawnChild = childSpawner ?? defaultSpawn
   const terminateTree = treeTerminator ?? defaultTerminateTree
-  if (signal?.aborted) throw cancellationError(operation, signal, true)
+  if (signal?.aborted) throw await cancellationErrorFor(operation, true, undefined, expectedTargets)
   return new Promise((resolvePromise, rejectPromise) => {
     let child
     const requestedPlatform = childSpawner?.platform ?? process.platform
@@ -235,6 +254,7 @@ async function runReal(operation, args, env, signal) {
     let settled = false
     let closeObserved = false
     let forceKillAttempted = false
+    let cancellationSettling = false
     let forceKillTimer
     let cleanupTimer
     let terminationStarted = false
@@ -249,9 +269,12 @@ async function runReal(operation, args, env, signal) {
       else rejectPromise(value)
     }
 
-    const finishCancellation = (confirmed = isQuiescent(child, closeObserved)) => {
+    const finishCancellation = async (confirmed = isQuiescent(child, closeObserved)) => {
+      if (settled || cancellationSettling) return
+      cancellationSettling = true
+      const error = await cancellationErrorFor(operation, confirmed, child.pid, expectedTargets)
       if (settled) return
-      finish('reject', cancellationError(operation, signal, confirmed, child.pid))
+      finish('reject', error)
     }
 
     const escalate = () => {
@@ -265,13 +288,13 @@ async function runReal(operation, args, env, signal) {
       terminationStarted = true
       forceKillTimer = setTimeout(escalate, FORCE_KILL_DELAY_MS)
       cleanupTimer = setTimeout(() => {
-        if (aborted) finishCancellation()
+        if (aborted) void finishCancellation()
       }, IMAGE_OPERATION_CLEANUP_GRACE_MS)
       if (!isRunning(child)) return
       try {
         const result = terminateTree(child, { env, platform, timeoutMs: TERMINATION_COMMAND_TIMEOUT_MS })
         Promise.resolve(result).then(() => {
-          if (aborted && isQuiescent(child, closeObserved)) finishCancellation(true)
+          if (aborted && isQuiescent(child, closeObserved)) void finishCancellation(true)
         }, () => {
           // The bounded cleanup timer owns the final truth if termination fails.
         })
@@ -299,7 +322,7 @@ async function runReal(operation, args, env, signal) {
     }
     const onError = (error) => {
       if (aborted) {
-        if (isQuiescent(child, closeObserved)) finishCancellation(true)
+        if (isQuiescent(child, closeObserved)) void finishCancellation(true)
         return
       }
       finish('reject', error)
@@ -311,7 +334,7 @@ async function runReal(operation, args, env, signal) {
     const onClose = (code) => {
       closeObserved = true
       if (aborted) {
-        if (isQuiescent(child, closeObserved)) finishCancellation(true)
+        if (isQuiescent(child, closeObserved)) void finishCancellation(true)
         return
       }
       if (isRunning(child)) {
@@ -338,27 +361,32 @@ async function runReal(operation, args, env, signal) {
   })
 }
 
-function runInjected(runner, bun, args, env, signal, operation) {
-  if (signal?.aborted) return Promise.reject(cancellationError(operation, signal, true))
+async function runInjected(runner, bun, args, env, signal, operation, expectedTargets) {
+  if (signal?.aborted) throw await cancellationErrorFor(operation, true, undefined, expectedTargets)
   const value = Promise.resolve().then(() => runner(bun, args, env, signal))
   if (!signal) return value
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false
+    let cancellationStarted = false
     const onAbort = () => {
-      if (settled) return
-      settled = true
-      signal.removeEventListener('abort', onAbort)
-      rejectPromise(cancellationError(operation, signal, true))
+      if (settled || cancellationStarted) return
+      cancellationStarted = true
+      void cancellationErrorFor(operation, true, undefined, expectedTargets).then((error) => {
+        if (settled) return
+        settled = true
+        signal.removeEventListener('abort', onAbort)
+        rejectPromise(error)
+      })
     }
     signal.addEventListener('abort', onAbort, { once: true })
     if (signal.aborted) onAbort()
     value.then((result) => {
-      if (settled) return
+      if (settled || cancellationStarted) return
       settled = true
       signal.removeEventListener('abort', onAbort)
       resolvePromise(result)
     }, (error) => {
-      if (settled) return
+      if (settled || cancellationStarted) return
       settled = true
       signal.removeEventListener('abort', onAbort)
       rejectPromise(error)
@@ -372,13 +400,13 @@ function runInjected(runner, bun, args, env, signal, operation) {
  * (without the CLI entry) and the optional abort signal; the real path prepends
  * the harness CLI and owns bounded process-tree cleanup.
  */
-export async function invokeImageOperation(operation, cliArgs, env = process.env, signal) {
+export async function invokeImageOperation(operation, cliArgs, env = process.env, signal, expectedTargets = []) {
   const args = [operation, ...cliArgs]
   const safeEnv = workshopEnvironment(env ?? process.env)
   const stdout = workshopRunner
-    ? await runInjected(workshopRunner, safeEnv.BUN_EXECUTABLE ?? 'bun', args, safeEnv, signal, operation)
-    : await runReal(operation, args, safeEnv, signal)
-  if (signal?.aborted) throw cancellationError(operation, signal, true)
+    ? await runInjected(workshopRunner, safeEnv.BUN_EXECUTABLE ?? 'bun', args, safeEnv, signal, operation, expectedTargets)
+    : await runReal(operation, args, safeEnv, signal, expectedTargets)
+  if (signal?.aborted) throw await cancellationErrorFor(operation, true, undefined, expectedTargets)
   const trimmed = String(stdout ?? '').trim()
   let parsed
   try {
@@ -386,6 +414,6 @@ export async function invokeImageOperation(operation, cliArgs, env = process.env
   } catch {
     throw new Error(`image workspace CLI returned no parseable JSON for ${operation}.`)
   }
-  if (signal?.aborted) throw cancellationError(operation, signal, true)
+  if (signal?.aborted) throw await cancellationErrorFor(operation, true, undefined, expectedTargets)
   return parsed
 }
