@@ -23,7 +23,7 @@ export interface WorkshopChildHandle {
   stderr?: { on?: (event: string, listener: (...args: unknown[]) => void) => unknown; removeListener?: (event: string, listener: (...args: unknown[]) => void) => unknown };
 }
 export type WorkshopChildSpawner = ((bun: string, args: string[], options: Record<string, unknown>) => WorkshopChildHandle) & { platform?: string };
-export type WorkshopTreeTerminator = (child: WorkshopChildHandle, options?: WorkshopTerminationOptions) => void | Promise<void>;
+export type WorkshopTreeTerminator = (child: WorkshopChildHandle, options?: WorkshopTerminationOptions) => boolean | void | Promise<boolean | void>;
 export interface WorkshopExpectedTarget {
   path: string;
   projectPath: string;

@@ -1008,12 +1008,99 @@ describe('release bundle', () => {
         child.exitCode = 0;
         child.emit('close', null);
       }, 20);
-      await expect(promise).rejects.toThrow(/cancelled/);
+      await expect(promise).rejects.toMatchObject({
+        code: 'IMAGE_CANCELLATION_INCOMPLETE',
+        info: { processCleanupConfirmed: false }
+      });
       expect(child.listenerCount('close')).toBe(0);
       expect(child.listenerCount('error')).toBe(0);
       expect(child.listenerCount('exit')).toBe(0);
       expect(child.stdout.listenerCount('data')).toBe(0);
       expect(child.stderr.listenerCount('data')).toBe(0);
+    } finally {
+      clearChildSpawner();
+      clearTreeTerminator();
+    }
+  }, 7000);
+
+  test('does not confirm cleanup when the leader exits before tree termination starts', async () => {
+    clearWorkshopRunner();
+    clearChildSpawner();
+    clearTreeTerminator();
+    const child = new EventEmitter() as EventEmitter & {
+      pid?: number;
+      exitCode: number | null;
+      signalCode: string | null;
+      kill: (signal?: string) => boolean;
+      stdout: PassThrough;
+      stderr: PassThrough;
+    };
+    child.pid = 4247;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = () => true;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    setChildSpawner(() => child);
+    let terminationCalls = 0;
+    setTreeTerminator(() => {
+      terminationCalls += 1;
+    });
+    const controller = new AbortController();
+    try {
+      const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+      child.exitCode = 0;
+      controller.abort();
+      child.emit('close', null);
+      await expect(promise).rejects.toMatchObject({
+        code: 'IMAGE_CANCELLATION_INCOMPLETE',
+        info: { processCleanupConfirmed: false }
+      });
+      expect(terminationCalls).toBe(0);
+    } finally {
+      clearChildSpawner();
+      clearTreeTerminator();
+    }
+  });
+
+  test('does not confirm cleanup when tree termination rejects before the leader closes', async () => {
+    clearWorkshopRunner();
+    clearChildSpawner();
+    clearTreeTerminator();
+    const child = new EventEmitter() as EventEmitter & {
+      pid?: number;
+      exitCode: number | null;
+      signalCode: string | null;
+      kill: (signal?: string) => boolean;
+      stdout: PassThrough;
+      stderr: PassThrough;
+    };
+    child.pid = 4248;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = () => true;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    setChildSpawner(() => child);
+    let terminationCalls = 0;
+    setTreeTerminator(() => {
+      terminationCalls += 1;
+      return Promise.reject(new Error('tree termination rejected'));
+    });
+    const controller = new AbortController();
+    try {
+      const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+      controller.abort();
+      await Promise.resolve();
+      child.exitCode = 0;
+      child.emit('close', null);
+      await expect(promise).rejects.toMatchObject({
+        code: 'IMAGE_CANCELLATION_INCOMPLETE',
+        info: { processCleanupConfirmed: false }
+      });
+      expect(terminationCalls).toBe(1);
     } finally {
       clearChildSpawner();
       clearTreeTerminator();

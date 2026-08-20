@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, realpath, rename as fsRename, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rename as fsRename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -181,6 +181,68 @@ async function readJson(path: string): Promise<Record<string, unknown> | undefin
     return asRecord(JSON.parse(await readFile(path, 'utf8')));
   } catch {
     return undefined;
+  }
+}
+
+interface OwnedRpgMakerProfileSnapshotEntry {
+  source: string;
+  backup: string;
+  existed: boolean;
+}
+
+interface OwnedRpgMakerProfileSnapshot {
+  root: string;
+  entries: OwnedRpgMakerProfileSnapshotEntry[];
+}
+
+/** Snapshot only the four app-owned Agent presets and shared Host patch. */
+async function snapshotOwnedRpgMakerProfile(dshHome: string): Promise<OwnedRpgMakerProfileSnapshot> {
+  const root = await mkdtemp(join(dshHome, '.rpgmaker-profile-rollback-'));
+  const presetRoot = join(dshHome, '.agent-presets');
+  const sources = [
+    ...CUSTOM_AGENT_PRESET_IDS.map((presetId) => join(presetRoot, presetId)),
+    join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml')
+  ];
+  const entries: OwnedRpgMakerProfileSnapshotEntry[] = [];
+  try {
+    for (const [index, source] of sources.entries()) {
+      const existed = await pathExists(source);
+      const backup = join(root, String(index));
+      if (existed) await cp(source, backup, { recursive: true, force: false, errorOnExist: true });
+      entries.push({ source, backup, existed });
+    }
+    return { root, entries };
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function restoreOwnedRpgMakerProfile(snapshot: OwnedRpgMakerProfileSnapshot): Promise<void> {
+  for (const entry of snapshot.entries) {
+    await rm(entry.source, { recursive: true, force: true });
+    if (entry.existed) {
+      await mkdir(dirname(entry.source), { recursive: true });
+      await cp(entry.backup, entry.source, { recursive: true, force: false, errorOnExist: true });
+    }
+  }
+}
+
+async function withOwnedRpgMakerProfileRepair<T>(dshHome: string, operation: () => Promise<T>): Promise<T> {
+  await mkdir(dshHome, { recursive: true });
+  const snapshot = await snapshotOwnedRpgMakerProfile(dshHome);
+  try {
+    return await operation();
+  } catch (error) {
+    const original = error instanceof Error ? error : new Error(String(error));
+    try {
+      await restoreOwnedRpgMakerProfile(snapshot);
+    } catch (restoreError) {
+      throw new Error(`${original.message}; RPG Maker profile rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
+    }
+    throw original;
+  } finally {
+    await rm(snapshot.root, { recursive: true, force: true });
   }
 }
 
@@ -670,82 +732,85 @@ async function prepareUnlocked(options: RpgMakerDeploymentOptions, projectPath: 
   if (agentPreset !== RPGMAKER_PRESET_ID && agentPreset !== PLAYTEST_DEBUG_PRESET_ID && agentPreset !== ASSET_WORKSHOP_PRESET_ID && agentPreset !== BUILD_RELEASE_PRESET_ID) {
     throw new RpgMakerStartupError(`Unknown RPG Maker agent preset: ${agentPreset}`);
   }
-  const rpgmakerSourceRoot = options.sourceRoot ?? defaultSourceRoot(RPGMAKER_PRESET_ID);
-  const rpgmakerInstalled = await installPreset(rpgmakerSourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
-  await installPreset(defaultSourceRoot(PLAYTEST_DEBUG_PRESET_ID), paths.dshHome, codePresetPath, PLAYTEST_DEBUG_PRESET_ID);
-  await installPreset(defaultSourceRoot(ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
-  await installPreset(defaultSourceRoot(BUILD_RELEASE_PRESET_ID), paths.dshHome, codePresetPath, BUILD_RELEASE_PRESET_ID);
-  let imageToolchain: ImageToolchain | undefined;
-  const installedImageManifest = join(options.imageToolchainRoot ?? join(paths.programRoot, 'tools', 'image-workshop'), 'toolchain.json');
-  if (agentPreset === ASSET_WORKSHOP_PRESET_ID || await pathExists(installedImageManifest)) {
-    try {
-      const preparationOptions: ImageToolchainPreparationOptions = {
-        platform,
-        env: options.env,
-        dshHome: paths.dshHome,
-        toolchainRoot: options.imageToolchainRoot,
-        helperRuntimeDir: options.imageHelperRuntimeDir,
-        imageMagickExecutable: options.imageMagickExecutable,
-        imageMagickSha256: options.imageMagickSha256,
-        imageMagickUrl: options.imageMagickUrl,
-        imageMagickRelease: options.imageMagickRelease,
-        oxipngExecutable: options.oxipngExecutable,
-        oxipngSha256: options.oxipngSha256,
-        oxipngUrl: options.oxipngUrl,
-        oxipngRelease: options.oxipngRelease,
-        installOxipng: true,
-        downloadArchive: options.downloadArchive,
-        extractArchive: options.extractArchive,
-        archiveExtractorExecutable: options.archiveExtractorExecutable,
-        renamePath: options.renamePath,
-        bunExecutable: options.bunExecutable,
-        commandRunner: options.commandRunner
-      };
-      imageToolchain = (await prepareImageToolchain(preparationOptions)).toolchain;
-    } catch (error) {
-      throw new RpgMakerStartupError(`Asset Workshop toolchain is not ready: ${redactSensitive(error instanceof Error ? error.message : String(error), options.env ?? process.env)}`);
+
+  return withOwnedRpgMakerProfileRepair(paths.dshHome, async () => {
+    const rpgmakerSourceRoot = options.sourceRoot ?? defaultSourceRoot(RPGMAKER_PRESET_ID);
+    const rpgmakerInstalled = await installPreset(rpgmakerSourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
+    await installPreset(defaultSourceRoot(PLAYTEST_DEBUG_PRESET_ID), paths.dshHome, codePresetPath, PLAYTEST_DEBUG_PRESET_ID);
+    await installPreset(defaultSourceRoot(ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
+    await installPreset(defaultSourceRoot(BUILD_RELEASE_PRESET_ID), paths.dshHome, codePresetPath, BUILD_RELEASE_PRESET_ID);
+    let imageToolchain: ImageToolchain | undefined;
+    const installedImageManifest = join(options.imageToolchainRoot ?? join(paths.programRoot, 'tools', 'image-workshop'), 'toolchain.json');
+    if (agentPreset === ASSET_WORKSHOP_PRESET_ID || await pathExists(installedImageManifest)) {
+      try {
+        const preparationOptions: ImageToolchainPreparationOptions = {
+          platform,
+          env: options.env,
+          dshHome: paths.dshHome,
+          toolchainRoot: options.imageToolchainRoot,
+          helperRuntimeDir: options.imageHelperRuntimeDir,
+          imageMagickExecutable: options.imageMagickExecutable,
+          imageMagickSha256: options.imageMagickSha256,
+          imageMagickUrl: options.imageMagickUrl,
+          imageMagickRelease: options.imageMagickRelease,
+          oxipngExecutable: options.oxipngExecutable,
+          oxipngSha256: options.oxipngSha256,
+          oxipngUrl: options.oxipngUrl,
+          oxipngRelease: options.oxipngRelease,
+          installOxipng: true,
+          downloadArchive: options.downloadArchive,
+          extractArchive: options.extractArchive,
+          archiveExtractorExecutable: options.archiveExtractorExecutable,
+          renamePath: options.renamePath,
+          bunExecutable: options.bunExecutable,
+          commandRunner: options.commandRunner
+        };
+        imageToolchain = (await prepareImageToolchain(preparationOptions)).toolchain;
+      } catch (error) {
+        throw new RpgMakerStartupError(`Asset Workshop toolchain is not ready: ${redactSensitive(error instanceof Error ? error.message : String(error), options.env ?? process.env)}`);
+      }
     }
-  }
-  const installed = agentPreset === RPGMAKER_PRESET_ID
-    ? rpgmakerInstalled
-    : { presetRoot: rpgmakerInstalled.presetRoot, presetDir: join(rpgmakerInstalled.presetRoot, agentPreset) };
-  const backupGuidance = await backupIgnoreGuidance(projectPath);
-  const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
-  await mkdir(dirname(compositionPath), { recursive: true });
-  await writeFile(compositionPath, renderMcpPatch(mcpRunner, mcp.executable, installed.presetRoot, agentPreset));
-  const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome, installed.presetRoot);
-  if (!timeoutPolicy.valid) throw new RpgMakerStartupError(`DSH timeout policy composition is not usable: ${timeoutPolicy.errors.join('; ')}`);
-  const dshExecutable = options.dshExecutable ?? await findDshExecutable(paths.runtimeDir, platform);
-  if (!dshExecutable) throw new RpgMakerStartupError('Pinned DSH executable was not found; refusing to launch an unvalidated RPG Maker composition.');
-  const dshRunner = options.commandRunner ?? runCommand;
-  let compositionCheck;
-  try {
-    compositionCheck = await dshRunner(dshExecutable, ['--profile', RPGMAKER_DSH_PROFILE, '--patch', compositionPath, '--dump-config'], { cwd: projectPath, env, platform, timeoutMs: 60_000 });
-  } catch (error) {
-    throw new RpgMakerStartupError(`DSH composition validation could not start: ${redactSensitive(error instanceof Error ? error.message : String(error), options.env ?? process.env)}`);
-  }
-  if (compositionCheck.exitCode !== 0) throw new RpgMakerStartupError(`DSH composition validation failed: ${redactSensitive(compositionCheck.stderr || compositionCheck.stdout, options.env ?? process.env)}`);
-  const dumpedIds = topLevelIds(compositionCheck.stdout);
-  if (!dumpedIds.includes('mcp-rpgmaker-mv') || dumpedIds.filter((id) => id === 'mcp-rpgmaker-mv').length !== 1) throw new RpgMakerStartupError('DSH composition validation did not contain exactly one RPG Maker MCP host row.');
-  const effectiveTimeoutRows = effectiveTimeoutPolicyRows(compositionCheck.stdout);
-  if (effectiveTimeoutRows.length !== 1) throw new RpgMakerStartupError(`DSH composition validation must contain exactly one effective ${DSH_TOOL_TIMEOUT_POLICY_ROW_ID} row; found ${effectiveTimeoutRows.length}.`);
-  if (!isOfficialTimeoutPolicyRow(effectiveTimeoutRows[0])) throw new RpgMakerStartupError(`DSH composition validation did not contain the official ${DSH_TOOL_TIMEOUT_POLICY_PACKAGE} row.`);
-  if (!/id: agent-presets/.test(compositionCheck.stdout)) throw new RpgMakerStartupError('DSH composition validation did not expose the agent-presets row.');
-  return {
-    mcpRuntimeDir,
-    mcpExecutable: mcpRunner,
-    mcpScript: mcp.executable,
-    mcpArgs,
-    mcpPackageVersion: mcp.packageVersion,
-    presetRoot: installed.presetRoot,
-    presetDir: installed.presetDir,
-    codePresetPath,
-    compositionPath,
-    toolNames: discovered.tools.map((tool) => tool.name),
-    backupGuidance,
-    agentPreset,
-    ...(imageToolchain ? { imageToolchain } : {})
-  };
+    const installed = agentPreset === RPGMAKER_PRESET_ID
+      ? rpgmakerInstalled
+      : { presetRoot: rpgmakerInstalled.presetRoot, presetDir: join(rpgmakerInstalled.presetRoot, agentPreset) };
+    const backupGuidance = await backupIgnoreGuidance(projectPath);
+    const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
+    await mkdir(dirname(compositionPath), { recursive: true });
+    await writeFile(compositionPath, renderMcpPatch(mcpRunner, mcp.executable!, installed.presetRoot, agentPreset));
+    const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome, installed.presetRoot);
+    if (!timeoutPolicy.valid) throw new RpgMakerStartupError(`DSH timeout policy composition is not usable: ${timeoutPolicy.errors.join('; ')}`);
+    const dshExecutable = options.dshExecutable ?? await findDshExecutable(paths.runtimeDir, platform);
+    if (!dshExecutable) throw new RpgMakerStartupError('Pinned DSH executable was not found; refusing to launch an unvalidated RPG Maker composition.');
+    const dshRunner = options.commandRunner ?? runCommand;
+    let compositionCheck;
+    try {
+      compositionCheck = await dshRunner(dshExecutable, ['--profile', RPGMAKER_DSH_PROFILE, '--patch', compositionPath, '--dump-config'], { cwd: projectPath, env, platform, timeoutMs: 60_000 });
+    } catch (error) {
+      throw new RpgMakerStartupError(`DSH composition validation could not start: ${redactSensitive(error instanceof Error ? error.message : String(error), options.env ?? process.env)}`);
+    }
+    if (compositionCheck.exitCode !== 0) throw new RpgMakerStartupError(`DSH composition validation failed: ${redactSensitive(compositionCheck.stderr || compositionCheck.stdout, options.env ?? process.env)}`);
+    const dumpedIds = topLevelIds(compositionCheck.stdout);
+    if (!dumpedIds.includes('mcp-rpgmaker-mv') || dumpedIds.filter((id) => id === 'mcp-rpgmaker-mv').length !== 1) throw new RpgMakerStartupError('DSH composition validation did not contain exactly one RPG Maker MCP host row.');
+    const effectiveTimeoutRows = effectiveTimeoutPolicyRows(compositionCheck.stdout);
+    if (effectiveTimeoutRows.length !== 1) throw new RpgMakerStartupError(`DSH composition validation must contain exactly one effective ${DSH_TOOL_TIMEOUT_POLICY_ROW_ID} row; found ${effectiveTimeoutRows.length}.`);
+    if (!isOfficialTimeoutPolicyRow(effectiveTimeoutRows[0])) throw new RpgMakerStartupError(`DSH composition validation did not contain the official ${DSH_TOOL_TIMEOUT_POLICY_PACKAGE} row.`);
+    if (!/id: agent-presets/.test(compositionCheck.stdout)) throw new RpgMakerStartupError('DSH composition validation did not expose the agent-presets row.');
+    return {
+      mcpRuntimeDir,
+      mcpExecutable: mcpRunner,
+      mcpScript: mcp.executable!,
+      mcpArgs,
+      mcpPackageVersion: mcp.packageVersion!,
+      presetRoot: installed.presetRoot,
+      presetDir: installed.presetDir,
+      codePresetPath,
+      compositionPath,
+      toolNames: discovered.tools.map((tool) => tool.name),
+      backupGuidance,
+      agentPreset,
+      ...(imageToolchain ? { imageToolchain } : {})
+    };
+  });
 }
 
 export async function prepareRpgMakerDeployment(options: RpgMakerDeploymentOptions): Promise<RpgMakerDeployment> {
@@ -920,32 +985,34 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   const codePresetPath = await findCodeComposition(paths.runtimeDir);
   const sourceRoot = options.sourceRoot ?? defaultSourceRoot(RPGMAKER_PRESET_ID);
   const shippedPresetRoot = dirname(sourceRoot);
-  const installed = await installPreset(sourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
-  await installPreset(join(shippedPresetRoot, PLAYTEST_DEBUG_PRESET_ID), paths.dshHome, codePresetPath, PLAYTEST_DEBUG_PRESET_ID);
-  await installPreset(join(shippedPresetRoot, ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
-  await installPreset(join(shippedPresetRoot, BUILD_RELEASE_PRESET_ID), paths.dshHome, codePresetPath, BUILD_RELEASE_PRESET_ID);
-
   await mkdir(paths.neutralLandingDir, { recursive: true });
-  const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
-  await mkdir(dirname(compositionPath), { recursive: true });
-  await writeFile(compositionPath, renderPresetOnlyPatch(installed.presetRoot, agentPreset));
-  const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome, installed.presetRoot);
-  if (!timeoutPolicy.valid) throw new RpgMakerStartupError(`DSH timeout policy composition is not usable: ${timeoutPolicy.errors.join('; ')}`);
-  await validatePresetComposition(dshExecutable, compositionPath, paths.neutralLandingDir, platform, env, options.commandRunner ?? runCommand);
+  return withOwnedRpgMakerProfileRepair(paths.dshHome, async () => {
+    const installed = await installPreset(sourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
+    await installPreset(join(shippedPresetRoot, PLAYTEST_DEBUG_PRESET_ID), paths.dshHome, codePresetPath, PLAYTEST_DEBUG_PRESET_ID);
+    await installPreset(join(shippedPresetRoot, ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
+    await installPreset(join(shippedPresetRoot, BUILD_RELEASE_PRESET_ID), paths.dshHome, codePresetPath, BUILD_RELEASE_PRESET_ID);
 
-  return {
-    dshExecutable,
-    mcporterRuntimeDir,
-    xeroloRuntimeDir,
-    xeroloScript: mcp.executable,
-    jsRunner,
-    presetRoot: installed.presetRoot,
-    presetDir: join(installed.presetRoot, agentPreset),
-    codePresetPath,
-    compositionPath,
-    agentPreset,
-    workspaceMcpBundle
-  };
+    const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
+    await mkdir(dirname(compositionPath), { recursive: true });
+    await writeFile(compositionPath, renderPresetOnlyPatch(installed.presetRoot, agentPreset));
+    const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome, installed.presetRoot);
+    if (!timeoutPolicy.valid) throw new RpgMakerStartupError(`DSH timeout policy composition is not usable: ${timeoutPolicy.errors.join('; ')}`);
+    await validatePresetComposition(dshExecutable, compositionPath, paths.neutralLandingDir, platform, env, options.commandRunner ?? runCommand);
+
+    return {
+      dshExecutable,
+      mcporterRuntimeDir,
+      xeroloRuntimeDir,
+      xeroloScript: mcp.executable!,
+      jsRunner,
+      presetRoot: installed.presetRoot,
+      presetDir: join(installed.presetRoot, agentPreset),
+      codePresetPath,
+      compositionPath,
+      agentPreset,
+      workspaceMcpBundle
+    };
+  });
 }
 
 export interface RpgMakerLaunchResult extends LaunchResult {

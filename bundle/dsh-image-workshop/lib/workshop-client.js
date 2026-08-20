@@ -115,7 +115,7 @@ function cancellationError(operation, cleanupConfirmed, pid, expectedTargets = [
   if (!cleanupConfirmed) {
     const processId = pid === undefined ? 'unknown' : String(pid)
     const targets = expectedPaths.length > 0 ? expectedPaths.join(', ') : 'none'
-    return operationError(`image workspace operation ${operation} cancellation incomplete: the Harness CLI process tree (PID ${processId}) did not provide a quiescent close event within the ${IMAGE_OPERATION_CLEANUP_GRACE_MS}ms cleanup grace; expected output paths remain uncertain (${targets}).`, 'IMAGE_CANCELLATION_INCOMPLETE', { ...info, outcome: 'cleanup-unconfirmed' })
+    return operationError(`image workspace operation ${operation} cancellation incomplete: cleanup of the Harness CLI process tree (PID ${processId}) could not be confirmed within the ${IMAGE_OPERATION_CLEANUP_GRACE_MS}ms cleanup grace; expected output paths remain uncertain (${targets}).`, 'IMAGE_CANCELLATION_INCOMPLETE', { ...info, outcome: 'cleanup-unconfirmed' })
   }
   if (targetState !== 'absent') {
     const targets = expectedPaths.length > 0 ? expectedPaths.join(', ') : 'none'
@@ -165,7 +165,7 @@ function waitForTerminationCommand(child, timeoutMs) {
  * performs one direct-child/process-group force escalation.
  */
 async function defaultTerminateTree(child, options = {}) {
-  if (!isRunning(child)) return
+  if (!isRunning(child)) return false
   const platform = options.platform ?? process.platform
   if (platform === 'win32' && child.pid !== undefined) {
     const taskkill = options.env?.SystemRoot
@@ -177,12 +177,12 @@ async function defaultTerminateTree(child, options = {}) {
       windowsHide: true
     })
     await waitForTerminationCommand(killer, options.timeoutMs ?? TERMINATION_COMMAND_TIMEOUT_MS)
-    return
+    return true
   }
   if (child.pid !== undefined && platform !== 'win32') {
     try {
       process.kill(-child.pid, 'SIGTERM')
-      return
+      return true
     } catch {
       // Fall through to the direct child handle when the group is already gone
       // or the test-owned handle has no real process group.
@@ -190,6 +190,7 @@ async function defaultTerminateTree(child, options = {}) {
   }
   try {
     if (!child.kill('SIGTERM')) throw new Error('the child process rejected termination')
+    return true
   } catch (error) {
     throw operationError(`the image CLI process could not be terminated: ${error instanceof Error ? error.message : String(error)}`, 'CLEANUP_UNCONFIRMED')
   }
@@ -258,6 +259,7 @@ async function runReal(operation, args, env, signal, expectedTargets) {
     let forceKillTimer
     let cleanupTimer
     let terminationStarted = false
+    let terminationStatus = 'not-started'
 
     const finish = (kind, value) => {
       if (settled) return
@@ -269,9 +271,10 @@ async function runReal(operation, args, env, signal, expectedTargets) {
       else rejectPromise(value)
     }
 
-    const finishCancellation = async (confirmed = isQuiescent(child, closeObserved)) => {
+    const finishCancellation = async () => {
       if (settled || cancellationSettling) return
       cancellationSettling = true
+      const confirmed = terminationStatus === 'succeeded' && isQuiescent(child, closeObserved)
       const error = await cancellationErrorFor(operation, confirmed, child.pid, expectedTargets)
       if (settled) return
       finish('reject', error)
@@ -290,16 +293,27 @@ async function runReal(operation, args, env, signal, expectedTargets) {
       cleanupTimer = setTimeout(() => {
         if (aborted) void finishCancellation()
       }, IMAGE_OPERATION_CLEANUP_GRACE_MS)
-      if (!isRunning(child)) return
+      if (!isRunning(child)) {
+        terminationStatus = 'skipped'
+        if (closeObserved) void finishCancellation()
+        return
+      }
+      terminationStatus = 'pending'
       try {
         const result = terminateTree(child, { env, platform, timeoutMs: TERMINATION_COMMAND_TIMEOUT_MS })
-        Promise.resolve(result).then(() => {
-          if (aborted && isQuiescent(child, closeObserved)) void finishCancellation(true)
+        Promise.resolve(result).then((completed) => {
+          terminationStatus = completed === false ? 'failed' : 'succeeded'
+          if (aborted && isQuiescent(child, closeObserved)) void finishCancellation()
         }, () => {
-          // The bounded cleanup timer owns the final truth if termination fails.
+          terminationStatus = 'failed'
+          // A direct close after an unsuccessful tree request is not proof of
+          // descendant cleanup; settle it as unconfirmed without waiting for
+          // the final grace timer when the child is already quiescent.
+          if (aborted && isQuiescent(child, closeObserved)) void finishCancellation()
         })
       } catch {
-        // The bounded cleanup timer owns the final truth if termination fails.
+        terminationStatus = 'failed'
+        if (aborted && isQuiescent(child, closeObserved)) void finishCancellation()
       }
     }
 
@@ -322,7 +336,7 @@ async function runReal(operation, args, env, signal, expectedTargets) {
     }
     const onError = (error) => {
       if (aborted) {
-        if (isQuiescent(child, closeObserved)) void finishCancellation(true)
+        if (terminationStatus !== 'pending' && isQuiescent(child, closeObserved)) void finishCancellation()
         return
       }
       finish('reject', error)
@@ -334,7 +348,7 @@ async function runReal(operation, args, env, signal, expectedTargets) {
     const onClose = (code) => {
       closeObserved = true
       if (aborted) {
-        if (isQuiescent(child, closeObserved)) void finishCancellation(true)
+        if (terminationStatus !== 'pending' && isQuiescent(child, closeObserved)) void finishCancellation()
         return
       }
       if (isRunning(child)) {

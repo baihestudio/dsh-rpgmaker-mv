@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { installPreset, prepareRpgMakerDeployment, launchRpgmakerProject, RpgMakerStartupError, resolveMcpRunner, verifyMcpRuntime, type McpToolDefinition } from '../src/rpgmaker';
+import { CUSTOM_AGENT_PRESET_IDS, installPreset, prepareRpgMakerDeployment, launchRpgmakerProject, RpgMakerStartupError, resolveMcpRunner, verifyMcpRuntime, type McpToolDefinition } from '../src/rpgmaker';
 import { runCommand } from '../src/process';
 import { DSH_VERSION } from '../src/config';
 import { backupIgnoreGuidance } from '../src/project';
@@ -172,6 +172,8 @@ describe('RPG Maker MCP deployment', () => {
       expect(composition).toContain('- patch:\n    id: agent-presets');
       expect(composition).toContain('default: rpgmaker');
       expect((composition.match(/id: mcp-rpgmaker-mv/g) ?? [])).toHaveLength(1);
+      expect((composition.match(/id: timeout-policy/g) ?? [])).toHaveLength(1);
+      expect((composition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(1);
       const presetComposition = await readFile(join(deployment.presetDir, 'agent.cordis.yml'), 'utf8');
       expect(presetComposition).toContain('code-tool');
       expect(presetComposition).not.toContain('dsh-mcp-client');
@@ -193,6 +195,8 @@ describe('RPG Maker MCP deployment', () => {
         expect(installedComposition).toContain('customSkillDirs');
         expect(installedComposition).not.toContain('generic Code persona');
         expect(installedComposition).not.toContain('dsh-mcp-client');
+        expect(installedComposition).not.toContain('timeout-policy');
+        expect(installedComposition).not.toContain('@deepseek-ai/dsh-tool-call-timeout-policy');
       }
       expect(composition).not.toContain('DEEPSEEK_API_KEY');
       expect(deployment.presetRoot).toContain('.agent-presets');
@@ -210,6 +214,9 @@ describe('RPG Maker MCP deployment', () => {
         schemaProbe
       });
       expect(addCalls).toBe(1);
+      const repairedComposition = await readFile(join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml'), 'utf8');
+      expect((repairedComposition.match(/id: timeout-policy/g) ?? [])).toHaveLength(1);
+      expect((repairedComposition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(1);
       const debug = await prepareRpgMakerDeployment({
         platform: 'win32',
         dshHome,
@@ -227,6 +234,63 @@ describe('RPG Maker MCP deployment', () => {
       expect(JSON.parse(await readFile(join(debug.presetDir, '.dsh-rpgmaker-owned.json'), 'utf8')).presetId).toBe('playtest-debug');
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('restores owned presets and the Host patch after policy or config-dump validation fails', async () => {
+    for (const failure of ['effective-policy', 'config-dump'] as const) {
+      const root = await temp(`phase2-profile-rollback-${failure}`);
+      try {
+        const project = await makeProject(root);
+        const runtime = await makeDshRuntime(root);
+        const dshHome = join(root, 'dsh-home');
+        const bun = join(root, 'bun.exe');
+        await writeFile(bun, 'fixture');
+        const prior = new Map<string, string>();
+        for (const presetId of CUSTOM_AGENT_PRESET_IDS) {
+          const presetDir = join(dshHome, '.agent-presets', presetId);
+          await mkdir(presetDir, { recursive: true });
+          const files = new Map<string, string>([
+            [join(presetDir, 'preset.yml'), `prior ${presetId} metadata\n`],
+            [join(presetDir, 'agent.cordis.yml'), `prior ${presetId} composition\n`],
+            [join(presetDir, '.dsh-rpgmaker-owned.json'), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId, format: 1 })}\n`],
+            [join(presetDir, 'prior.txt'), `prior ${presetId} sentinel\n`]
+          ]);
+          for (const [path, content] of files) {
+            await writeFile(path, content);
+            prior.set(path, content);
+          }
+        }
+        const compositionPath = join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
+        const priorComposition = 'prior shared Host composition\n';
+        await mkdir(dirname(compositionPath), { recursive: true });
+        await writeFile(compositionPath, priorComposition);
+        prior.set(compositionPath, priorComposition);
+
+        const commandRunner = async (command: string, args: string[], options: { cwd?: string }) => {
+          if (args[0] === 'add') await makeMcpRuntime(options.cwd!);
+          if (args.includes('--dump-config')) {
+            return failure === 'effective-policy'
+              ? { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: agent-presets\n', stderr: '' }
+              : { exitCode: 1, stdout: '', stderr: 'synthetic DSH config dump failure' };
+          }
+          return { exitCode: 0, stdout: '', stderr: '' };
+        };
+        await expect(prepareRpgMakerDeployment({
+          platform: 'win32',
+          dshHome,
+          runtimeDir: runtime,
+          projectPath: project,
+          sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'),
+          jsExecutable: bun,
+          commandRunner,
+          schemaProbe: async () => ({ tools: toolNames() })
+        })).rejects.toThrow(failure === 'effective-policy' ? /exactly one effective timeout-policy row/ : /DSH composition validation failed/);
+
+        for (const [path, content] of prior) expect(await readFile(path, 'utf8')).toBe(content);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
     }
   });
 
