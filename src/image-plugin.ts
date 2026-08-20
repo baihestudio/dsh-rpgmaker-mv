@@ -19,7 +19,7 @@ export const IMAGE_WORKSHOP_PLUGIN_LICENSE = 'MIT';
 export const IMAGE_WORKSHOP_PLUGIN_PROFILE = 'web';
 export const IMAGE_WORKSHOP_PLUGIN_ENTRYPOINT = 'lib/index.js';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const IMAGE_WORKSHOP_PLUGIN_SHA256 = 'c792fccd65a74e7e6cd2267ac45debbe105e3ebe7a33280922e2f51cfaaf85d1';
+export const IMAGE_WORKSHOP_PLUGIN_SHA256 = 'b15ae5d717ec010588f72daf5dbeb63829703b3fd5e73814a3d24b80ad2656b6';
 export const IMAGE_WORKSHOP_BUNDLE_RELATIVE = join('bundle', 'dsh-image-workshop');
 /** Archive entries always use POSIX separators, including on Windows. */
 export const IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE = 'bundle/dsh-image-workshop';
@@ -229,7 +229,7 @@ export async function verifyImageWorkshopPlugin(options: ImageWorkshopPluginOpti
     const ownedReal = await realpath(paths.programRoot).catch(() => paths.programRoot);
     const installedReal = await realpath(installedDir).catch(() => undefined);
     installedResolved = installedReal ?? installedDir;
-    // DSH rc.7 installs a file: dependency in one of two supported forms:
+    // DSH rc.8 installs a file: dependency in one of two supported forms:
     // (a) a link resolving to the exact app-owned bundle, or (b) an ordinary
     // exact-hash package copy at the canonical profile node_modules path.
     // A broken or misdirected link (resolving elsewhere) is rejected and

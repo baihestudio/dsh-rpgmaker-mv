@@ -1003,7 +1003,7 @@ describe('real DSH Agent seam', () => {
             expect(namesA.some((name) => /[0-9a-f]{8,}/.test(name))).toBe(false);
             const updateRecord = assemblyA.tools.find((tool) => tool.name === 'rpgmaker_update_record');
             expect(updateRecord?.parameters).toMatchObject({ type: 'object', properties: { type: { type: 'string' } } });
-            // Code mode (DSH rc.7 shipped preset): the complete stable tool set
+            // Code mode (DSH rc.8 shipped preset): the complete stable tool set
             // must also be carried in the assembly's tools:sdk section, which
             // is the surface the model actually sees before the first request.
             const sdkText = (assemblyA.sections.find((section) => (section as { name?: string })?.name === 'tools:sdk') as { text?: string } | undefined)?.text ?? '';

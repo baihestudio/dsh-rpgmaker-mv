@@ -1,7 +1,7 @@
 /**
- * Deterministic DSH rc.7 Agent-seam harness owned by the Ticket 01 tests.
+ * Deterministic DSH rc.8 Agent-seam harness owned by the Ticket 01 tests.
  *
- * It replicates exactly the rc.7 plugin surface the dsh-workspace-mcp bundle
+ * It replicates exactly the rc.8 plugin surface the dsh-workspace-mcp bundle
  * depends on — a root context shared by the Host row and preset-mounted
  * composition rows, synchronous tool registration in the composition context,
  * and `system-prompt/assemble`/tool execution contexts that carry the actual
@@ -62,7 +62,7 @@ class ToolRegistry {
       const index = this.entries.indexOf(definition);
       if (index >= 0) this.entries.splice(index, 1);
     };
-    // Mirror rc.7: a scoped `ctx.tools.register` is a scope effect that
+    // Mirror rc.8: a scoped `ctx.tools.register` is a scope effect that
     // unwinds when the agent context is disposed.
     this.effects.push(disposer);
     return disposer;

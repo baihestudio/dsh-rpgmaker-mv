@@ -19,7 +19,7 @@ export interface AgentCapability {
 export interface AgentInitializer {
   readonly init: (agent: AgentBinding) => Promise<AgentCapability>;
 }
-/** rc.7's per-assembly context; `agent` is absent for agentless diagnostics. */
+/** rc.8's per-assembly context; `agent` is absent for agentless diagnostics. */
 export interface AgentAssemblyContext {
   readonly scope?: object;
   readonly agent?: AgentBinding;

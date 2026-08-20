@@ -13,7 +13,7 @@ The package has two plugin entry points:
 - `@baihestudio/dsh-workspace-mcp/agent` — the Agent access layer mounted by a
   preset composition. Its apply context is the composition child and has no
   bound Agent; it synchronously registers the 41 manifest-backed tools, then
-  uses rc.7's assembly context and tool execution context to initialize the
+  uses rc.8's assembly context and tool execution context to initialize the
   actual Agent/session cwd. The composition, not this package, decides which
   Agents receive the row.
 

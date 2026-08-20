@@ -18,13 +18,13 @@ export const inject = ['tools']
 
 /** Agent plugin entry: register manifest tools synchronously in this scope. */
 export function apply(ctx) {
-  // Preset compositions are mounted in a standing child context. rc.7 only
+  // Preset compositions are mounted in a standing child context. rc.8 only
   // associates an actual Agent with the assembly context and tool execution,
   // not with this composition context.
   const host = hostForRoot(ctx.root)
   if (!host) throw new Error('dsh-workspace-mcp/agent: no Host service is bound to this root context')
 
-  // Synchronous manifest-backed registration: DSH rc.7 collects tool-provider
+  // Synchronous manifest-backed registration: DSH rc.8 collects tool-provider
   // schemas before the system-prompt/assemble waterfall, so the first
   // assembly already carries every stable rpgmaker_* tool. Initialization is
   // per Agent and starts only once the runtime supplies that Agent.

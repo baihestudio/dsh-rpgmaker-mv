@@ -38,7 +38,7 @@ function renderJson(value) {
 }
 
 /**
- * DSH rc.7 invokes `output.render(args, value)`: a pure projection of the
+ * DSH rc.8 invokes `output.render(args, value)`: a pure projection of the
  * validated canonical `value` (never the arguments) into model-facing content.
  * The model-facing summary must use project-relative paths only.
  */

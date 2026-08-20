@@ -12,7 +12,7 @@
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
    - 7-Zip (`7zip.7zip`; extracts the pinned ImageMagick `.7z` archive)
-4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, extracts the pinned portable ImageMagick with the verified 7-Zip, stages the pinned DSH `0.1.0-rc.7` runtime with Bun, installs the exact RPG Maker MCP, build packager, and app-owned image tool plugin (scoped to 游戏图片素材助手), then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, four presets, and neutral composition as needed.
+4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, extracts the pinned portable ImageMagick with the verified 7-Zip, stages the pinned DSH `0.1.0-rc.8` runtime with Bun (npm integrity `sha512-VQU5NlomrKLRgcXuOf+sxWFvqxPA8q9vMhrKPlPPXiOJEhGlGlAdiyxZvZxkCVI+v0zbhe21cY3/luLyxpSzzA==`), installs the exact RPG Maker MCP, build packager, and app-owned image tool plugin (scoped to 游戏图片素材助手), then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, four presets, and neutral composition as needed.
 
 No Git clone, npm install, or manual package command is needed for this path. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported repair path; a previous runtime is retained by the staged runtime swap for recovery. If post-swap bootstrap, metadata, or shortcut creation fails, the prior program tree is restored and the failed new tree is retained as a named diagnostic/recovery directory.
 
@@ -43,7 +43,7 @@ the effective composition from the neutral landing directory. The bundle's
 profile patch inserts only the Host service entry point; each shipped preset
 composition mounts the `/agent` entry point in Agent scope. The generated
 RPG Maker Host patch selects the Agent preset but does not insert a timeout
-policy: pinned DSH rc.7's `web` profile owns the official Host row
+policy: pinned DSH rc.8's `web` profile owns the official Host row
 `id: timeout-policy` / `@deepseek-ai/dsh-tool-call-timeout-policy`. Launch
 preparation and Doctor validate the effective `web --dump-config` composition
 and require exactly one official row across all four custom presets; the

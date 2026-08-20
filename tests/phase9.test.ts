@@ -1061,7 +1061,7 @@ describe('app-owned image tool plugin installation', () => {
       const profile = join(dshHome, 'profiles', 'web');
       const installedDir = join(profile, 'node_modules', IMAGE_WORKSHOP_PLUGIN_PACKAGE);
       await mkdir(dirname(installedDir), { recursive: true });
-      // Real DSH rc.7 packs a file: dependency into the profile node_modules
+      // Real DSH rc.8 packs a file: dependency into the profile node_modules
       // as a plain directory copy rather than a symlink. Use a relative spec
       // to cover resolution against the profile directory.
       await cp(bundleDir, installedDir, { recursive: true });
@@ -1593,7 +1593,7 @@ describe('release bundle', () => {
   test('mounts under the shipped entry with only the required tools service', async () => {
     expect(imageWorkshopPlugin.name).toBe(IMAGE_WORKSHOP_PLUGIN_PACKAGE);
     // `logger` is optional (used via `?.`); declaring it as an injected service
-    // would fail DSH rc.7 preset recompose when no `logger` service is resolved.
+    // would fail DSH rc.8 preset recompose when no `logger` service is resolved.
     expect(imageWorkshopPlugin.inject).toEqual(['tools']);
     const registered: string[] = [];
     let disposed = 0;
