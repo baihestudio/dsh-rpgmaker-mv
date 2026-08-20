@@ -32,9 +32,62 @@ function Assert-NotReparsePoint {
     [Parameter(Mandatory = $true)][string]$Label
   )
 
-  $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+  $item = Get-ExistingItem -Path $Path -Label $Label
   if ($null -ne $item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw "Refusing to touch $Label through a reparse point: $Path"
+  }
+}
+
+function Get-ExistingItem {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+
+  try {
+    return Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  } catch {
+    if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound) {
+      return $null
+    }
+    throw "Could not inspect $Label at $Path; refusing to continue: $($_.Exception.Message)"
+  }
+}
+
+function Assert-NoNestedReparsePoints {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+
+  $root = Get-ExistingItem -Path $Path -Label $Label
+  if ($null -eq $root) {
+    return
+  }
+  if (($root.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing to remove $Label because it is a reparse point: $Path"
+  }
+  if (-not $root.PSIsContainer) {
+    return
+  }
+
+  $pending = [System.Collections.Generic.Stack[string]]::new()
+  [void]$pending.Push($root.FullName)
+  while ($pending.Count -gt 0) {
+    $current = $pending.Pop()
+    try {
+      $children = @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)
+    } catch {
+      throw "Could not inspect $Label beneath $current; refusing to continue: $($_.Exception.Message)"
+    }
+    foreach ($child in $children) {
+      if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to remove $Label through a nested reparse point: $($child.FullName)"
+      }
+      if ($child.PSIsContainer) {
+        [void]$pending.Push($child.FullName)
+      }
+    }
   }
 }
 
@@ -46,7 +99,7 @@ function Remove-GeneratedRoot {
   )
 
   Assert-ChildPath -Root $StateRoot -Candidate $Candidate -Label $Label
-  $item = Get-Item -LiteralPath $Candidate -Force -ErrorAction SilentlyContinue
+  $item = Get-ExistingItem -Path $Candidate -Label $Label
   if ($null -eq $item) {
     Write-Output "$Label already absent: $Candidate"
     return
@@ -93,6 +146,9 @@ Assert-NotReparsePoint -Path (Join-Path $dshHome 'cache') -Label 'generated cach
 Assert-ChildPath -Root $mutableRoot -Candidate $dshHome -Label 'DSH_HOME'
 Assert-ChildPath -Root $dshHome -Candidate $webProfile -Label 'generated Web profile'
 Assert-ChildPath -Root $dshHome -Candidate $visionCache -Label 'Vision cache'
+
+Assert-NoNestedReparsePoints -Path $webProfile -Label 'generated Web profile'
+Assert-NoNestedReparsePoints -Path $visionCache -Label 'Vision cache'
 
 Write-Output 'DSH Web port 3081 is not active.'
 Write-Output "Resetting only the generated app-owned Web profile and Vision cache under: $dshHome"

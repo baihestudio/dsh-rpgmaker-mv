@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +9,7 @@ import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
-import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, NUC_WEB_PROFILE_RESET_RELATIVE, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
+import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
 import { PNPM_VERSION } from '../src/profile';
@@ -910,7 +911,7 @@ describe('Windows release gate foundations', () => {
 
       const pwsh = await resolveWindowsPwsh({ platform: 'win32', env: process.env });
       expect(pwsh).toBeDefined();
-      const script = join(REPOSITORY_ROOT, 'scripts', 'reset-nuc-web-profile.ps1');
+      const script = join(REPOSITORY_ROOT, 'dev', 'reset-nuc-web-profile.ps1');
       const env = { ...process.env, LOCALAPPDATA: localAppData };
       const runReset = () => runCommand(pwsh!, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', script], { platform: 'win32', env, timeoutMs: 30_000 });
 
@@ -930,6 +931,113 @@ describe('Windows release gate foundations', () => {
       expect(second.exitCode).toBe(0);
       expect(second.stdout).toMatch(/already absent/i);
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('development NUC cleanup refuses an active DSH Web listener without changing state', async () => {
+    if (process.platform !== 'win32') return;
+    const root = await temp('phase7-nuc-web-profile-reset-active');
+    const listener = createServer();
+    let ownsListener = false;
+    try {
+      const localAppData = join(root, 'Local AppData');
+      const dshHome = join(localAppData, 'BaiheStudio', 'DSH-RPGMaker-MV', 'state');
+      const webProfile = join(dshHome, 'profiles', 'web');
+      const visionCache = join(dshHome, 'cache', 'dsh-vision-toolkit');
+      await mkdir(webProfile, { recursive: true });
+      await mkdir(visionCache, { recursive: true });
+      await writeFile(join(webProfile, 'generated.json'), '{}\n');
+      await writeFile(join(visionCache, 'runtime.json'), '{}\n');
+
+      try {
+        await new Promise<void>((resolvePromise, reject) => {
+          listener.once('error', reject);
+          listener.listen(3081, '127.0.0.1', () => resolvePromise());
+        });
+        ownsListener = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+      }
+
+      const pwsh = await resolveWindowsPwsh({ platform: 'win32', env: process.env });
+      expect(pwsh).toBeDefined();
+      const env = { ...process.env, LOCALAPPDATA: localAppData };
+      const result = await runCommand(pwsh!, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(REPOSITORY_ROOT, 'dev', 'reset-nuc-web-profile.ps1')], { platform: 'win32', env, timeoutMs: 30_000 });
+      expect(result.exitCode).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toMatch(/3081|active|listen/i);
+      expect(await Bun.file(join(webProfile, 'generated.json')).exists()).toBe(true);
+      expect(await Bun.file(join(visionCache, 'runtime.json')).exists()).toBe(true);
+    } finally {
+      if (ownsListener) await new Promise<void>((resolvePromise) => listener.close(() => resolvePromise()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('development NUC cleanup rejects nested junctions and preserves their external target', async () => {
+    if (process.platform !== 'win32') return;
+    const root = await temp('phase7-nuc-web-profile-reset-junction');
+    const junction = join(root, 'Local AppData', 'BaiheStudio', 'DSH-RPGMaker-MV', 'state', 'profiles', 'web', 'external-junction');
+    try {
+      const localAppData = join(root, 'Local AppData');
+      const dshHome = join(localAppData, 'BaiheStudio', 'DSH-RPGMaker-MV', 'state');
+      const webProfile = join(dshHome, 'profiles', 'web');
+      const visionCache = join(dshHome, 'cache', 'dsh-vision-toolkit');
+      const externalTarget = join(root, 'external target');
+      await mkdir(webProfile, { recursive: true });
+      await mkdir(visionCache, { recursive: true });
+      await mkdir(externalTarget, { recursive: true });
+      await writeFile(join(webProfile, 'generated.json'), '{}\n');
+      await writeFile(join(visionCache, 'runtime.json'), '{}\n');
+      await writeFile(join(externalTarget, 'must-survive.txt'), 'external fixture\n');
+      await symlink(externalTarget, junction, 'junction');
+
+      const pwsh = await resolveWindowsPwsh({ platform: 'win32', env: process.env });
+      expect(pwsh).toBeDefined();
+      const env = { ...process.env, LOCALAPPDATA: localAppData };
+      const result = await runCommand(pwsh!, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(REPOSITORY_ROOT, 'dev', 'reset-nuc-web-profile.ps1')], { platform: 'win32', env, timeoutMs: 30_000 });
+      expect(result.exitCode).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toMatch(/reparse|junction|refus/i);
+      expect(await readFile(join(externalTarget, 'must-survive.txt'), 'utf8')).toBe('external fixture\n');
+      expect(await readFile(join(webProfile, 'generated.json'), 'utf8')).toBe('{}\n');
+      expect((await stat(junction)).isDirectory()).toBe(true);
+    } finally {
+      await unlink(junction).catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('development NUC cleanup preflights both roots before deleting either one', async () => {
+    if (process.platform !== 'win32') return;
+    const root = await temp('phase7-nuc-web-profile-reset-preflight');
+    const junction = join(root, 'Local AppData', 'BaiheStudio', 'DSH-RPGMaker-MV', 'state', 'cache', 'dsh-vision-toolkit', 'external-junction');
+    try {
+      const localAppData = join(root, 'Local AppData');
+      const dshHome = join(localAppData, 'BaiheStudio', 'DSH-RPGMaker-MV', 'state');
+      const webProfile = join(dshHome, 'profiles', 'web');
+      const visionCache = join(dshHome, 'cache', 'dsh-vision-toolkit');
+      const externalTarget = join(root, 'external target');
+      const firstMarker = join(webProfile, 'must-not-delete.txt');
+      const secondMarker = join(visionCache, 'generated.json');
+      await mkdir(webProfile, { recursive: true });
+      await mkdir(visionCache, { recursive: true });
+      await mkdir(externalTarget, { recursive: true });
+      await writeFile(firstMarker, 'first root\n');
+      await writeFile(secondMarker, 'second root\n');
+      await writeFile(join(externalTarget, 'must-survive.txt'), 'external fixture\n');
+      await symlink(externalTarget, junction, 'junction');
+
+      const pwsh = await resolveWindowsPwsh({ platform: 'win32', env: process.env });
+      expect(pwsh).toBeDefined();
+      const env = { ...process.env, LOCALAPPDATA: localAppData };
+      const result = await runCommand(pwsh!, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(REPOSITORY_ROOT, 'dev', 'reset-nuc-web-profile.ps1')], { platform: 'win32', env, timeoutMs: 30_000 });
+      expect(result.exitCode).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toMatch(/reparse|junction|refus/i);
+      expect(await readFile(firstMarker, 'utf8')).toBe('first root\n');
+      expect(await readFile(secondMarker, 'utf8')).toBe('second root\n');
+      expect(await readFile(join(externalTarget, 'must-survive.txt'), 'utf8')).toBe('external fixture\n');
+    } finally {
+      await unlink(junction).catch(() => undefined);
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -1241,7 +1349,7 @@ describe('Windows release gate foundations', () => {
       expect(inspection.entries).toContain('Install.cmd');
       expect(inspection.entries).toContain('src/cli.ts');
       expect(inspection.entries).toContain('src/profile.ts');
-      expect(inspection.entries).toContain(NUC_WEB_PROFILE_RESET_RELATIVE);
+      expect(inspection.entries.some((entry) => entry === 'dev/reset-nuc-web-profile.ps1' || entry.endsWith('/reset-nuc-web-profile.ps1'))).toBe(false);
       expect(inspection.entries).not.toContain('src/profile-repair.ts');
       expect(inspection.entries).not.toContain('src/vision-toolkit.ts');
       expect(inspection.entries.some((entry) => entry.includes('phase8') || entry.includes('vision-toolkit'))).toBe(false);
