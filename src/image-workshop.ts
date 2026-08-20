@@ -980,7 +980,7 @@ export class ImageWorkshop {
           scaleMethod: 'NEAREST_NEIGHBOR',
           exporter: 'JsonHash',
           textureFormat: 'png'
-        }));
+        }), this.dependencies.signal);
         files = await Promise.race([
           packPromise,
           ...(abortPromise ? [abortPromise] : [])

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import {
   imageCommandStage,
   imageDiagnosticContextFromEnvironment,
+  runImageDiagnosticStage,
   withImageDiagnostics,
   writeImageDiagnostic
 } from '../src/image-diagnostics';
@@ -54,14 +55,25 @@ describe('image diagnostics', () => {
       const logPath = join(root, 'logs', 'image-workshop.jsonl');
       const secret = 'diagnostic-secret-never-written';
       const context = imageDiagnosticContextFromEnvironment({
-        DSH_IMAGE_WORKSHOP_OPERATION_ID: 'ticket02-operation',
-        DSH_IMAGE_WORKSHOP_TOOL_NAME: 'image_trim_pad',
+        DSH_IMAGE_WORKSHOP_OPERATION_ID: '00000000-0000-4000-8000-000000000002',
+        DSH_IMAGE_WORKSHOP_TOOL_NAME: 'caller-tool-token',
+        DSH_IMAGE_WORKSHOP_OPERATION: 'caller-operation-token',
         DSH_IMAGE_WORKSHOP_INPUT_LABELS: JSON.stringify(['/absolute/source.png', 'sprites/hero.png']),
         DSH_IMAGE_WORKSHOP_OUTPUT_LABELS: JSON.stringify(['out.png', 'out.png.manifest.json']),
         DSH_IMAGE_WORKSHOP_OPTIONS: JSON.stringify({ width: 64, gravity: 'center', path: 'C:\\secret' }),
         DSH_IMAGE_WORKSHOP_LOG: logPath,
         DEEPSEEK_API_KEY: secret
-      });
+      }, { operation: 'trim-pad' });
+      const invalidContext = imageDiagnosticContextFromEnvironment({
+        DSH_IMAGE_WORKSHOP_OPERATION_ID: 'caller-operation-token',
+        DSH_IMAGE_WORKSHOP_TOOL_NAME: 'caller-tool-token',
+        DSH_IMAGE_WORKSHOP_OPERATION: 'caller-operation-token'
+      }, { operation: 'inspect' });
+      expect(invalidContext.operationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(invalidContext.operationId).not.toBe('caller-operation-token');
+      expect(invalidContext.toolName).toBe('image_inspect');
+      expect(invalidContext.operation).toBe('inspect');
+
       const runner = withImageDiagnostics(async () => ({
         exitCode: 1,
         stdout: `${secret} ${'raw stdout command token '.repeat(1000)}`,
@@ -79,7 +91,7 @@ describe('image diagnostics', () => {
       await waitForFile(logPath);
       const records = await readJsonLines(logPath);
       expect(records).toHaveLength(2);
-      expect(records[0]).toMatchObject({ event: 'start', operationId: 'ticket02-operation', stage: 'pixel-dimension-probe', executable: 'magick.exe' });
+      expect(records[0]).toMatchObject({ event: 'start', operationId: '00000000-0000-4000-8000-000000000002', operation: 'trim-pad', toolName: 'image_trim_pad', stage: 'pixel-dimension-probe', executable: 'magick.exe' });
       expect(records[0].inputs).toEqual(['sprites/hero.png']);
       expect(records[0].expectedPaths).toEqual(['out.png', 'out.png.manifest.json']);
       expect(records[0].options).toEqual({ width: 64, gravity: 'center' });
@@ -90,8 +102,10 @@ describe('image diagnostics', () => {
       expect(JSON.stringify(records)).not.toContain('raw stderr image bytes');
       expect(JSON.stringify(records)).not.toContain('C:\\tools');
       expect(JSON.stringify(records)).not.toContain('RGBA:');
+      expect(JSON.stringify(records)).not.toContain('caller-tool-token');
+      expect(JSON.stringify(records)).not.toContain('caller-operation-token');
 
-      const unmatched = imageDiagnosticContextFromEnvironment({ DSH_IMAGE_WORKSHOP_OPERATION_ID: 'stalled-after-restart', DSH_IMAGE_WORKSHOP_LOG: logPath });
+      const unmatched = imageDiagnosticContextFromEnvironment({ DSH_IMAGE_WORKSHOP_OPERATION_ID: '00000000-0000-4000-8000-000000000003', DSH_IMAGE_WORKSHOP_LOG: logPath });
       await writeImageDiagnostic(unmatched, {
         event: 'start',
         stage: 'metadata-inspection',
@@ -99,7 +113,7 @@ describe('image diagnostics', () => {
         startedAt: new Date().toISOString()
       });
       const restarted = await readJsonLines(logPath);
-      expect(restarted.at(-1)).toMatchObject({ event: 'start', operationId: 'stalled-after-restart', stage: 'metadata-inspection', executable: 'magick.exe' });
+      expect(restarted.at(-1)).toMatchObject({ event: 'start', operationId: '00000000-0000-4000-8000-000000000003', stage: 'metadata-inspection', executable: 'magick.exe' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -115,13 +129,23 @@ describe('image diagnostics', () => {
       const diagnosticsModule = new URL('../bundle/dsh-image-workshop/lib/diagnostics.js', import.meta.url).href;
       await writeFile(cliPath, [
         `const { appendImageDiagnostic, createImageDiagnosticContext, diagnosticEntry } = await import(${JSON.stringify(diagnosticsModule)});`,
-        "const context = createImageDiagnosticContext(process.argv[3] ?? 'inspect', process.env, { toolName: process.env.DSH_IMAGE_WORKSHOP_TOOL_NAME });",
+        "const context = createImageDiagnosticContext(process.argv[3] ?? 'inspect', process.env);",
         "await appendImageDiagnostic(context, diagnosticEntry(context, 'start', 'toolchain-version-check', 'test-owned-cli'));",
         "await appendImageDiagnostic(context, diagnosticEntry(context, 'terminal', 'toolchain-version-check', 'test-owned-cli', { outcome: 'completed' }));",
         "console.log(JSON.stringify({ path: 'sprites/hero.png', width: 1, height: 1, format: 'PNG', channels: 'srgba', hasAlpha: true, opaque: false, bytes: 1, sha256: 'x' }));",
         ''
       ].join('\n'));
-      const env = { DSH_IMAGE_WORKSHOP_CLI: cliPath, BUN_EXECUTABLE: process.execPath, DSH_IMAGE_WORKSHOP_LOG: logPath };
+      const inheritedOperationId = '00000000-0000-4000-8000-000000000004';
+      const maliciousTool = 'caller-tool-token';
+      const maliciousOperation = 'caller-operation-token';
+      const env = {
+        DSH_IMAGE_WORKSHOP_CLI: cliPath,
+        BUN_EXECUTABLE: process.execPath,
+        DSH_IMAGE_WORKSHOP_LOG: logPath,
+        DSH_IMAGE_WORKSHOP_OPERATION_ID: inheritedOperationId,
+        DSH_IMAGE_WORKSHOP_TOOL_NAME: maliciousTool,
+        DSH_IMAGE_WORKSHOP_OPERATION: maliciousOperation
+      };
       const result = await invokeImageOperation('inspect', ['--input', 'sprites/hero.png'], env, undefined, [], {
         toolName: 'image_inspect',
         inputLabels: ['sprites/hero.png']
@@ -134,10 +158,97 @@ describe('image diagnostics', () => {
       expect(cliRecords).toHaveLength(2);
       const operationIds = new Set([...pluginRecords, ...cliRecords].map((record) => record.operationId));
       expect(operationIds.size).toBe(1);
+      expect(pluginRecords[0].operationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(pluginRecords[0].operationId).not.toBe(inheritedOperationId);
       expect(pluginRecords[0].operationId).toBe(cliRecords[0].operationId);
+      expect(records.every((record) => record.toolName === 'image_inspect')).toBe(true);
+      expect(records.every((record) => record.operation === 'inspect')).toBe(true);
+      expect(JSON.stringify(records)).not.toContain(maliciousTool);
+      expect(JSON.stringify(records)).not.toContain(maliciousOperation);
     } finally {
       clearWorkshopRunner();
       clearChildSpawner();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps child output out of plugin errors and durable diagnostics', async () => {
+    const root = await temp('image-plugin-child-output');
+    try {
+      clearWorkshopRunner();
+      clearChildSpawner();
+      const logPath = join(root, 'logs', 'image-workshop.jsonl');
+      const cliPath = join(root, 'test-owned-failing-image-cli.mjs');
+      const token = 'ghp_child-output-token-never-surfaces';
+      const binaryText = String.fromCharCode(0, 1, 255, 80, 78, 71, 137, 0);
+      const absolutePath = join(root, 'absolute-output.png');
+      const commandText = 'magick --input /private/secret/source.png --output /private/secret/output.png';
+      await writeFile(cliPath, [
+        `process.stdout.write(${JSON.stringify(`${token} ${binaryText} ${absolutePath} ${commandText}`)});`,
+        `process.stderr.write(${JSON.stringify(`${token} ${binaryText} ${absolutePath} ${commandText}`)});`,
+        'process.exitCode = 23;',
+        ''
+      ].join('\n'));
+      const error = await invokeImageOperation('inspect', ['--input', 'sprites/hero.png'], {
+        DSH_IMAGE_WORKSHOP_CLI: cliPath,
+        BUN_EXECUTABLE: process.execPath,
+        DSH_IMAGE_WORKSHOP_LOG: logPath
+      }).then(() => undefined, (failure) => failure as Error & { code?: string; info?: Record<string, unknown> });
+      expect(error).toMatchObject({ code: 'CHILD_EXIT_NONZERO', info: { stage: 'harness-cli-spawn', exitCode: 23, executable: 'bun' } });
+      expect(error?.message).not.toContain(token);
+      expect(error?.message).not.toContain(binaryText);
+      expect(error?.message).not.toContain(absolutePath);
+      expect(error?.message).not.toContain(commandText);
+      const records = await readJsonLines(logPath);
+      expect(records.some((record) => record.event === 'terminal' && record.stage === 'harness-cli-spawn' && record.errorCode === 'CHILD_EXIT_NONZERO' && record.exitCode === 23)).toBe(true);
+      expect(JSON.stringify(records)).not.toContain(token);
+      expect(JSON.stringify(records)).not.toContain(binaryText);
+      expect(JSON.stringify(records)).not.toContain(absolutePath);
+      expect(JSON.stringify(records)).not.toContain(commandText);
+    } finally {
+      clearWorkshopRunner();
+      clearChildSpawner();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('records truthful cancellation cleanup for native external stages and atlas helper', async () => {
+    const root = await temp('image-stage-cancellation');
+    try {
+      const logPath = join(root, 'logs', 'image-workshop.jsonl');
+      const context = imageDiagnosticContextFromEnvironment({
+        DSH_IMAGE_WORKSHOP_OPERATION_ID: '00000000-0000-4000-8000-000000000005',
+        DSH_IMAGE_WORKSHOP_LOG: logPath
+      }, { operation: 'trim-pad' });
+      const nativeController = new AbortController();
+      nativeController.abort('manual cancellation');
+      const nativeRunner = withImageDiagnostics(async () => ({ exitCode: 130, stdout: '', stderr: '' }), context, { nativeCommandRunner: true });
+      await nativeRunner('C:\\tools\\magick.exe', ['-format', '%w %h', 'info:'], { signal: nativeController.signal });
+
+      const uncertainController = new AbortController();
+      uncertainController.abort('manual cancellation');
+      const uncertainRunner = withImageDiagnostics(async () => {
+        throw Object.assign(new Error('native cleanup was not confirmed'), { processTreeTerminated: false });
+      }, context, { nativeCommandRunner: true });
+      await expect(uncertainRunner('C:\\tools\\oxipng.exe', ['-o', '4'], { signal: uncertainController.signal })).rejects.toThrow('native cleanup was not confirmed');
+
+      const atlasController = new AbortController();
+      atlasController.abort('manual cancellation');
+      const atlasContext = imageDiagnosticContextFromEnvironment({
+        DSH_IMAGE_WORKSHOP_OPERATION_ID: '00000000-0000-4000-8000-000000000006',
+        DSH_IMAGE_WORKSHOP_LOG: logPath
+      }, { operation: 'atlas-pack' });
+      await expect(runImageDiagnosticStage(atlasContext, 'atlas-helper', 'free-tex-packer-core', async () => {
+        throw new Error('atlas child-like output must not be logged');
+      }, atlasController.signal)).rejects.toThrow('atlas child-like output must not be logged');
+
+      const records = await readJsonLines(logPath);
+      expect(records).toContainEqual(expect.objectContaining({ stage: 'pixel-dimension-probe', event: 'terminal', outcome: 'cancelled', processCleanupConfirmed: true }));
+      expect(records).toContainEqual(expect.objectContaining({ stage: 'oxipng', event: 'terminal', outcome: 'cancelled', processCleanupConfirmed: false }));
+      expect(records).toContainEqual(expect.objectContaining({ stage: 'atlas-helper', event: 'terminal', outcome: 'cancelled', processCleanupConfirmed: true, errorCode: 'CANCELLED' }));
+      expect(JSON.stringify(records)).not.toContain('native cleanup was not confirmed');
+      expect(JSON.stringify(records)).not.toContain('atlas child-like output must not be logged');
+    } finally {
       await rm(root, { recursive: true, force: true });
     }
   });

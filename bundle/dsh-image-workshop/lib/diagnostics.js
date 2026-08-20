@@ -10,8 +10,16 @@ const DIAGNOSTIC_LABEL_LIMIT = 160
 const DIAGNOSTIC_LABELS_LIMIT = 16
 const DIAGNOSTIC_OPTIONS_LIMIT = 16
 const DIAGNOSTIC_RECORD_LIMIT = 8 * 1024
-const OPERATION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/
-const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/
+const OPERATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const IMAGE_OPERATION_TOOL_NAMES = Object.freeze({
+  inspect: 'image_inspect',
+  'resize-pixel': 'image_resize_pixel',
+  'trim-pad': 'image_trim_pad',
+  'sheet-slice': 'image_sheet_slice',
+  'sheet-assemble': 'image_sheet_assemble',
+  'atlas-pack': 'image_atlas_pack',
+  'optimize-png': 'image_optimize_png'
+})
 const SAFE_ERROR_CODES = new Set([
   'CHILD_EXIT_NONZERO',
   'COMMAND_FAILED',
@@ -74,8 +82,14 @@ function operationId(value) {
   return value && OPERATION_ID_PATTERN.test(value) ? value : randomUUID()
 }
 
-function safeToken(value) {
-  return typeof value === 'string' && SAFE_TOKEN_PATTERN.test(value) ? value : undefined
+function safeSignal(value) {
+  return typeof value === 'string' && /^[A-Z0-9_]{1,32}$/.test(value) ? value : undefined
+}
+
+function toolNameForOperation(operation) {
+  return Object.prototype.hasOwnProperty.call(IMAGE_OPERATION_TOOL_NAMES, operation)
+    ? IMAGE_OPERATION_TOOL_NAMES[operation]
+    : undefined
 }
 
 function safeErrorCode(value) {
@@ -107,10 +121,11 @@ export function createImageDiagnosticContext(operation, env = process.env, metad
     env.GITHUB_TOKEN,
     env.GITLAB_TOKEN
   ].filter((value) => typeof value === 'string' && value.length > 0)
+  const toolName = toolNameForOperation(operation)
   return {
     operationId: operationId(metadata.operationId ?? env.DSH_IMAGE_WORKSHOP_OPERATION_ID),
     operation,
-    toolName: safeToken(metadata.toolName) ?? safeToken(env.DSH_IMAGE_WORKSHOP_TOOL_NAME),
+    ...(toolName ? { toolName } : {}),
     inputLabels: boundedLabels(metadata.inputLabels),
     outputLabels: boundedLabels(metadata.outputLabels),
     options: safeOptions(metadata.options),
@@ -128,19 +143,22 @@ function recordFor(context, record) {
   const options = context.options
     ? Object.fromEntries(Object.entries(context.options).map(([key, value]) => [key, typeof value === 'string' ? redactText(value, context) : value]))
     : undefined
+  const toolName = toolNameForOperation(context.operation)
   return {
     schemaVersion: 1,
     at: new Date().toISOString(),
     event: record.event,
     operationId: operationId(context.operationId),
-    toolName: safeToken(context.toolName) ?? safeToken(context.operation) ?? 'image-operation',
-    ...(safeToken(context.operation) ? { operation: context.operation } : {}),
+    toolName: toolName ?? 'image-operation',
+    ...(toolName ? { operation: context.operation } : {}),
     stage,
     ...(executableName(record.executable) ? { executable: executableName(record.executable) } : {}),
     ...(inputs ? { inputs } : {}),
     ...(outputs ? { outputs, expectedPaths: outputs } : {}),
     ...(options ? { options } : {}),
     ...(Number.isInteger(record.pid) && record.pid >= 0 ? { pid: record.pid } : {}),
+    ...(Number.isInteger(record.exitCode) ? { exitCode: record.exitCode } : {}),
+    ...(safeSignal(record.signal) ? { signal: record.signal } : {}),
     ...(record.startedAt ? { startedAt: record.startedAt } : {}),
     ...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
     ...(Number.isFinite(record.elapsedMs) ? { elapsedMs: Math.max(0, Math.round(record.elapsedMs)) } : {}),
@@ -158,6 +176,8 @@ function encodedRecord(context, record) {
     stage: record.stage,
     executable: record.executable,
     pid: record.pid,
+    exitCode: record.exitCode,
+    signal: record.signal,
     startedAt: record.startedAt,
     finishedAt: record.finishedAt,
     elapsedMs: record.elapsedMs,
@@ -180,6 +200,7 @@ async function appendBoundedLine(path, line) {
 
 export function appendImageDiagnostic(context, record) {
   if (!context.logPath) return Promise.resolve()
+  context.operationId = operationId(context.operationId)
   const previous = context.writeChain ?? Promise.resolve()
   const next = previous.then(() => appendBoundedLine(context.logPath, encodedRecord(context, record))).catch(() => undefined)
   context.writeChain = next
@@ -199,6 +220,8 @@ export function diagnosticEntry(context, event, stage, executable, values = {}) 
     stage,
     executable,
     ...(values.pid !== undefined ? { pid: values.pid } : {}),
+    ...(values.exitCode !== undefined ? { exitCode: values.exitCode } : {}),
+    ...(values.signal !== undefined ? { signal: values.signal } : {}),
     ...(values.startedAt ? { startedAt: values.startedAt } : {}),
     ...(values.finishedAt ? { finishedAt: values.finishedAt } : {}),
     ...(values.elapsedMs !== undefined ? { elapsedMs: values.elapsedMs } : {}),

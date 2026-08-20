@@ -49,6 +49,24 @@ interface ParsedArgs {
   flags: Set<string>;
 }
 
+const IMAGE_OPERATION_TOOL_NAMES: Readonly<Record<string, string>> = {
+  inspect: 'image_inspect',
+  'resize-pixel': 'image_resize_pixel',
+  'trim-pad': 'image_trim_pad',
+  'sheet-slice': 'image_sheet_slice',
+  'sheet-assemble': 'image_sheet_assemble',
+  'atlas-pack': 'image_atlas_pack',
+  'optimize-png': 'image_optimize_png'
+};
+
+function imageToolName(operation: string): string {
+  const toolName = Object.prototype.hasOwnProperty.call(IMAGE_OPERATION_TOOL_NAMES, operation)
+    ? IMAGE_OPERATION_TOOL_NAMES[operation]
+    : undefined;
+  if (!toolName) throw new Error(`Unknown image operation ${operation}.`);
+  return toolName;
+}
+
 function parseArgs(argv: string[]): ParsedArgs {
   const [first, ...rest] = argv;
   const command = first && !first.startsWith('-') ? first : 'launch';
@@ -236,13 +254,14 @@ function inputList(parsed: ParsedArgs): string[] {
 async function runImageCommand(parsed: ParsedArgs, dependencies: CliDependencies, io: CliIO, signal?: AbortSignal): Promise<void> {
   const operation = parsed.positionals[0] ?? option(parsed.values, 'operation');
   if (!operation) throw new Error('Image operation is required.');
+  imageToolName(operation);
   const imageEnv = dependencies.env ?? process.env;
-  const diagnostics = imageDiagnosticContextFromEnvironment(imageEnv);
+  const diagnostics = imageDiagnosticContextFromEnvironment(imageEnv, { operation });
   const baseCommandRunner = dependencies.commandRunner ?? runCommand;
   const commandRunner = withImageDiagnostics((command, args, options) => baseCommandRunner(command, args, {
     ...options,
     signal: signal ?? options.signal
-  }), diagnostics);
+  }), diagnostics, { nativeCommandRunner: dependencies.commandRunner === undefined });
   const toolchainOptions: ImageToolchainOptions = {
     platform: dependencies.platform,
     env: dependencies.env,

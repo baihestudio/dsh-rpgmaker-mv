@@ -13,8 +13,7 @@ const DIAGNOSTIC_LABEL_LIMIT = 160;
 const DIAGNOSTIC_LABELS_LIMIT = 16;
 const DIAGNOSTIC_OPTIONS_LIMIT = 16;
 const DIAGNOSTIC_RECORD_LIMIT = 8 * 1024;
-const OPERATION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
-const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+const OPERATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SAFE_OPTION_KEYS = new Set([
   'scale', 'width', 'height', 'trim', 'gravity', 'cellWidth', 'cellHeight',
   'columns', 'inputCount', 'maxSize', 'padding', 'extrusion', 'fixedGrid', 'level'
@@ -33,6 +32,15 @@ const SAFE_STAGE_NAMES = new Set([
 
 type DiagnosticOutcome = 'completed' | 'failed' | 'timed-out' | 'cancelled' | 'cleanup-unconfirmed';
 type DiagnosticErrorCode = 'CHILD_EXIT_NONZERO' | 'COMMAND_FAILED' | 'ATLAS_HELPER_FAILED' | 'CANCELLED' | 'TOOL_TIMEOUT';
+const IMAGE_OPERATION_TOOL_NAMES: Readonly<Record<string, string>> = {
+  inspect: 'image_inspect',
+  'resize-pixel': 'image_resize_pixel',
+  'trim-pad': 'image_trim_pad',
+  'sheet-slice': 'image_sheet_slice',
+  'sheet-assemble': 'image_sheet_assemble',
+  'atlas-pack': 'image_atlas_pack',
+  'optimize-png': 'image_optimize_png'
+};
 const SAFE_ERROR_CODES: ReadonlySet<DiagnosticErrorCode> = new Set([
   'CHILD_EXIT_NONZERO',
   'COMMAND_FAILED',
@@ -51,6 +59,7 @@ export interface ImageDiagnosticContext {
   logPath?: string;
   /** Kept in memory only to redact app-owned labels and options; child output is never passed here. */
   redactionValues?: string[];
+  cleanupConfirmed?: boolean;
   writeChain?: Promise<void>;
 }
 
@@ -59,6 +68,8 @@ export interface ImageDiagnosticRecord {
   stage: string;
   executable?: string;
   pid?: number;
+  exitCode?: number;
+  signal?: string;
   startedAt?: string;
   finishedAt?: string;
   elapsedMs?: number;
@@ -128,14 +139,14 @@ function parseOptions(value: string | undefined): Record<string, string | number
   }
 }
 
-function safeToken(value: unknown): string | undefined {
-  return typeof value === 'string' && SAFE_TOKEN_PATTERN.test(value) ? value : undefined;
-}
-
 function executableName(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const name = basename(value.replaceAll('\\', '/'));
   return name.length <= DIAGNOSTIC_LABEL_LIMIT ? name : name.slice(-DIAGNOSTIC_LABEL_LIMIT);
+}
+
+function safeSignal(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[A-Z0-9_]{1,32}$/.test(value) ? value : undefined;
 }
 
 function operationId(value: string | undefined): string {
@@ -153,7 +164,10 @@ export function imageDiagnosticLogPath(env: Record<string, string | undefined> =
   return undefined;
 }
 
-export function imageDiagnosticContextFromEnvironment(env: Record<string, string | undefined> = process.env): ImageDiagnosticContext {
+export function imageDiagnosticContextFromEnvironment(
+  env: Record<string, string | undefined> = process.env,
+  metadata: { operation?: string } = {}
+): ImageDiagnosticContext {
   const redactionValues = [
     env.DEEPSEEK_API_KEY,
     env.DSH_API_KEY,
@@ -163,10 +177,12 @@ export function imageDiagnosticContextFromEnvironment(env: Record<string, string
     env.GITHUB_TOKEN,
     env.GITLAB_TOKEN
   ].filter((value): value is string => Boolean(value));
+  const operation = metadata.operation && Object.prototype.hasOwnProperty.call(IMAGE_OPERATION_TOOL_NAMES, metadata.operation)
+    ? metadata.operation
+    : undefined;
   return {
     operationId: operationId(env.DSH_IMAGE_WORKSHOP_OPERATION_ID),
-    ...(safeToken(env.DSH_IMAGE_WORKSHOP_TOOL_NAME) ? { toolName: env.DSH_IMAGE_WORKSHOP_TOOL_NAME } : {}),
-    ...(safeToken(env.DSH_IMAGE_WORKSHOP_OPERATION) ? { operation: env.DSH_IMAGE_WORKSHOP_OPERATION } : {}),
+    ...(operation ? { operation, toolName: IMAGE_OPERATION_TOOL_NAMES[operation] } : {}),
     inputLabels: parseLabels(env.DSH_IMAGE_WORKSHOP_INPUT_LABELS),
     outputLabels: parseLabels(env.DSH_IMAGE_WORKSHOP_OUTPUT_LABELS),
     options: parseOptions(env.DSH_IMAGE_WORKSHOP_OPTIONS),
@@ -182,19 +198,24 @@ function recordFor(context: ImageDiagnosticContext, record: ImageDiagnosticRecor
   const options = context.options
     ? Object.fromEntries(Object.entries(context.options).map(([key, value]) => [key, typeof value === 'string' ? boundedText(value, context) : value]))
     : undefined;
+  const toolName = context.operation && Object.prototype.hasOwnProperty.call(IMAGE_OPERATION_TOOL_NAMES, context.operation)
+    ? IMAGE_OPERATION_TOOL_NAMES[context.operation]
+    : undefined;
   return {
     schemaVersion: 1,
     at: new Date().toISOString(),
     event: record.event,
-    operationId: context.operationId ?? 'unknown',
-    toolName: safeToken(context.toolName) ?? safeToken(context.operation) ?? 'image-operation',
-    ...(safeToken(context.operation) ? { operation: context.operation } : {}),
+    operationId: operationId(context.operationId),
+    toolName: toolName ?? 'image-operation',
+    ...(toolName ? { operation: context.operation } : {}),
     stage,
     ...(executableName(record.executable) ? { executable: executableName(record.executable) } : {}),
     ...(inputs ? { inputs } : {}),
     ...(outputs ? { outputs, expectedPaths: outputs } : {}),
     ...(options ? { options } : {}),
     ...(record.pid !== undefined && Number.isInteger(record.pid) && record.pid >= 0 ? { pid: record.pid } : {}),
+    ...(record.exitCode !== undefined && Number.isInteger(record.exitCode) ? { exitCode: record.exitCode } : {}),
+    ...(safeSignal(record.signal) ? { signal: record.signal } : {}),
     ...(record.startedAt ? { startedAt: record.startedAt } : {}),
     ...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
     ...(record.elapsedMs !== undefined && Number.isFinite(record.elapsedMs) ? { elapsedMs: Math.max(0, Math.round(record.elapsedMs)) } : {}),
@@ -212,6 +233,8 @@ function encodedRecord(context: ImageDiagnosticContext, record: ImageDiagnosticR
     stage: record.stage,
     executable: record.executable,
     pid: record.pid,
+    exitCode: record.exitCode,
+    signal: record.signal,
     startedAt: record.startedAt,
     finishedAt: record.finishedAt,
     elapsedMs: record.elapsedMs,
@@ -235,7 +258,7 @@ async function appendBoundedLine(path: string, line: string): Promise<void> {
 
 export async function writeImageDiagnostic(context: ImageDiagnosticContext, record: ImageDiagnosticRecord): Promise<void> {
   if (!context.logPath) return;
-  context.operationId ??= randomUUID();
+  context.operationId = operationId(context.operationId);
   const previous = context.writeChain ?? Promise.resolve();
   const next = previous.then(() => appendBoundedLine(context.logPath!, encodedRecord(context, record))).catch(() => undefined);
   context.writeChain = next;
@@ -267,7 +290,23 @@ export function imageCommandStage(command: string, args: string[]): string | und
   return undefined;
 }
 
-export function withImageDiagnostics(runner: CommandRunner, context: ImageDiagnosticContext): CommandRunner {
+export interface ImageDiagnosticRunnerOptions {
+  /** The built-in command executor settles only after its child cleanup completes. */
+  nativeCommandRunner?: boolean;
+}
+
+function processTreeCleanupConfirmed(error: unknown): boolean {
+  if (error === null || typeof error !== 'object') return false;
+  const candidate = error as { processCleanupConfirmed?: unknown; processTreeTerminated?: unknown };
+  const value = candidate.processCleanupConfirmed ?? candidate.processTreeTerminated;
+  return typeof value === 'boolean' ? value : false;
+}
+
+export function withImageDiagnostics(
+  runner: CommandRunner,
+  context: ImageDiagnosticContext,
+  runnerOptions: ImageDiagnosticRunnerOptions = {}
+): CommandRunner {
   return async (command: string, args: string[], options: CommandOptions): Promise<CommandResult> => {
     const stage = imageCommandStage(command, args);
     if (!stage) return runner(command, args, options);
@@ -276,18 +315,31 @@ export function withImageDiagnostics(runner: CommandRunner, context: ImageDiagno
     await writeImageDiagnostic(context, { event: 'start', stage, executable: command, startedAt });
     try {
       const result = await runner(command, args, options);
+      const timedOut = result.exitCode === 124 || (options.signal?.aborted && cancellationErrorCode(options.signal) === 'TOOL_TIMEOUT');
+      const cancelled = Boolean(options.signal?.aborted) || result.exitCode === 124;
+      const resultCleanup = (result as CommandResult & { processCleanupConfirmed?: unknown; processTreeTerminated?: unknown }).processCleanupConfirmed
+        ?? (result as CommandResult & { processTreeTerminated?: unknown }).processTreeTerminated;
+      const cleanupConfirmed = cancelled
+        ? typeof resultCleanup === 'boolean' ? resultCleanup : runnerOptions.nativeCommandRunner === true
+        : undefined;
+      if (cleanupConfirmed !== undefined) context.cleanupConfirmed = cleanupConfirmed;
       await writeImageDiagnostic(context, {
         event: 'terminal',
         stage,
         executable: command,
+        exitCode: result.exitCode,
         startedAt,
         finishedAt: new Date().toISOString(),
         elapsedMs: Date.now() - startedTime,
-        outcome: options.signal?.aborted ? cancellationOutcome(options.signal) : result.exitCode === 0 ? 'completed' : 'failed',
-        ...(result.exitCode === 0 ? {} : { errorCode: options.signal?.aborted ? cancellationErrorCode(options.signal) : 'CHILD_EXIT_NONZERO' })
+        outcome: cancelled ? timedOut ? 'timed-out' : 'cancelled' : result.exitCode === 0 ? 'completed' : 'failed',
+        ...(cancelled ? { processCleanupConfirmed: cleanupConfirmed } : {}),
+        ...(cancelled || result.exitCode !== 0 ? { errorCode: cancelled ? timedOut ? 'TOOL_TIMEOUT' : cancellationErrorCode(options.signal) : 'CHILD_EXIT_NONZERO' } : {})
       });
       return result;
     } catch (error) {
+      const cancelled = Boolean(options.signal?.aborted);
+      const cleanupConfirmed = cancelled ? processTreeCleanupConfirmed(error) : undefined;
+      if (cleanupConfirmed !== undefined) context.cleanupConfirmed = cleanupConfirmed;
       await writeImageDiagnostic(context, {
         event: 'terminal',
         stage,
@@ -295,8 +347,9 @@ export function withImageDiagnostics(runner: CommandRunner, context: ImageDiagno
         startedAt,
         finishedAt: new Date().toISOString(),
         elapsedMs: Date.now() - startedTime,
-        outcome: options.signal?.aborted ? cancellationOutcome(options.signal) : 'failed',
-        errorCode: options.signal?.aborted ? cancellationErrorCode(options.signal) : 'COMMAND_FAILED'
+        outcome: cancelled ? cancellationOutcome(options.signal) : 'failed',
+        ...(cancelled ? { processCleanupConfirmed: cleanupConfirmed } : {}),
+        errorCode: cancelled ? cancellationErrorCode(options.signal) : 'COMMAND_FAILED'
       });
       throw error;
     }
@@ -307,7 +360,8 @@ export async function runImageDiagnosticStage<T>(
   context: ImageDiagnosticContext | undefined,
   stage: 'atlas-helper',
   executable: string,
-  action: () => Promise<T>
+  action: () => Promise<T>,
+  signal?: AbortSignal
 ): Promise<T> {
   if (!context) return action();
   const startedAt = new Date().toISOString();
@@ -315,10 +369,35 @@ export async function runImageDiagnosticStage<T>(
   await writeImageDiagnostic(context, { event: 'start', stage, executable, startedAt });
   try {
     const value = await action();
+    if (signal?.aborted) {
+      await writeImageDiagnostic(context, {
+        event: 'terminal',
+        stage,
+        executable,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        elapsedMs: Date.now() - startedTime,
+        outcome: cancellationOutcome(signal),
+        processCleanupConfirmed: true,
+        errorCode: cancellationErrorCode(signal)
+      });
+      return value;
+    }
     await writeImageDiagnostic(context, { event: 'terminal', stage, executable, startedAt, finishedAt: new Date().toISOString(), elapsedMs: Date.now() - startedTime, outcome: 'completed' });
     return value;
   } catch (error) {
-    await writeImageDiagnostic(context, { event: 'terminal', stage, executable, startedAt, finishedAt: new Date().toISOString(), elapsedMs: Date.now() - startedTime, outcome: 'failed', errorCode: 'ATLAS_HELPER_FAILED' });
+    const cancelled = Boolean(signal?.aborted);
+    await writeImageDiagnostic(context, {
+      event: 'terminal',
+      stage,
+      executable,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      elapsedMs: Date.now() - startedTime,
+      outcome: cancelled ? cancellationOutcome(signal) : 'failed',
+      ...(cancelled ? { processCleanupConfirmed: true } : {}),
+      errorCode: cancelled ? cancellationErrorCode(signal) : 'ATLAS_HELPER_FAILED'
+    });
     throw error;
   }
 }

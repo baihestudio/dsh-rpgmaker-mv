@@ -8,9 +8,10 @@
  * the DSH boundary, then bounded cleanup requires the Node child `close`
  * event and a non-running child before it is considered confirmed.
  */
+import { randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { appendImageDiagnostic, createImageDiagnosticContext, diagnosticAbortOutcome, diagnosticEntry } from './diagnostics.js'
 
 const SECRET_KEYS = [
@@ -22,6 +23,24 @@ const SECRET_KEYS = [
   'GITHUB_TOKEN',
   'GITLAB_TOKEN'
 ]
+const OWNED_DIAGNOSTIC_ENV_KEYS = [
+  'DSH_IMAGE_WORKSHOP_OPERATION_ID',
+  'DSH_IMAGE_WORKSHOP_TOOL_NAME',
+  'DSH_IMAGE_WORKSHOP_OPERATION',
+  'DSH_IMAGE_WORKSHOP_INPUT_LABELS',
+  'DSH_IMAGE_WORKSHOP_OUTPUT_LABELS',
+  'DSH_IMAGE_WORKSHOP_OPTIONS'
+]
+const IMAGE_OPERATION_TOOL_NAMES = Object.freeze({
+  inspect: 'image_inspect',
+  'resize-pixel': 'image_resize_pixel',
+  'trim-pad': 'image_trim_pad',
+  'sheet-slice': 'image_sheet_slice',
+  'sheet-assemble': 'image_sheet_assemble',
+  'atlas-pack': 'image_atlas_pack',
+  'optimize-png': 'image_optimize_png'
+})
+const SAFE_SIGNAL_PATTERN = /^[A-Z0-9_]{1,32}$/
 
 /** The only grace after the official tool budget that this plugin owns. */
 export const IMAGE_OPERATION_CLEANUP_GRACE_MS = 5000
@@ -39,9 +58,6 @@ const FORCE_KILL_DELAY_MS = 1000
  * overflow instead of parsing a truncated manifest.
  */
 const MANIFEST_OUTPUT_LIMIT = 4 * 1024 * 1024
-
-/** Bounded tail for error text; errors never carry the full canonical manifest. */
-const ERROR_OUTPUT_LIMIT = 16 * 1024
 
 /** Test-owned seams; production uses real child processes. */
 let workshopRunner
@@ -100,9 +116,10 @@ function scheduleCleanupTimer(callback) {
 /** Environment passed to the Image Workshop subprocess; credential values are never forwarded. */
 export function workshopEnvironment(env = process.env) {
   const safe = { ...env }
-  for (const key of SECRET_KEYS) {
-    const found = Object.keys(safe).find((candidate) => candidate.toLowerCase() === key.toLowerCase())
-    if (found) delete safe[found]
+  for (const key of [...SECRET_KEYS, ...OWNED_DIAGNOSTIC_ENV_KEYS]) {
+    for (const candidate of Object.keys(safe)) {
+      if (candidate.toLowerCase() === key.toLowerCase()) delete safe[candidate]
+    }
   }
   return safe
 }
@@ -120,6 +137,35 @@ function operationError(message, code, info = {}) {
   error.code = code
   error.info = { name: code === 'IMAGE_CANCELLATION_INCOMPLETE' ? 'ImageCancellationIncompleteError' : 'ImageOperationError', code, ...info }
   return error
+}
+
+function executableName(value) {
+  const name = basename(String(value ?? '').replaceAll('\\', '/'))
+  return name || 'unknown-executable'
+}
+
+function safeSignal(value) {
+  return typeof value === 'string' && SAFE_SIGNAL_PATTERN.test(value) ? value : undefined
+}
+
+function toolNameForOperation(operation) {
+  return Object.prototype.hasOwnProperty.call(IMAGE_OPERATION_TOOL_NAMES, operation)
+    ? IMAGE_OPERATION_TOOL_NAMES[operation]
+    : undefined
+}
+
+function childFailure(operation, executable, stage, code = 'COMMAND_FAILED', facts = {}) {
+  const exitCode = Number.isInteger(facts.exitCode) ? facts.exitCode : undefined
+  const signal = safeSignal(facts.signal)
+  const status = signal ? `signal ${signal}` : exitCode === undefined ? 'unknown status' : `exit code ${exitCode}`
+  const safeExecutable = executableName(executable)
+  return operationError(`image workspace operation ${operation} failed at ${stage} (${safeExecutable}, ${status}).`, code, {
+    stage,
+    executable: safeExecutable,
+    ...(facts.pid !== undefined ? { pid: facts.pid } : {}),
+    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(signal ? { signal } : {})
+  })
 }
 
 async function expectedTargetState(expectedTargets) {
@@ -222,8 +268,12 @@ async function defaultTerminateTree(child, options = {}) {
     // A direct-child fallback is cleanup effort, never proof that descendants
     // in the intended process tree stopped.
     return false
-  } catch (error) {
-    throw operationError(`the image CLI process could not be terminated: ${error instanceof Error ? error.message : String(error)}`, 'CLEANUP_UNCONFIRMED')
+  } catch {
+    throw operationError('the image CLI process could not be terminated.', 'CLEANUP_UNCONFIRMED', {
+      stage: 'termination',
+      executable: 'image-cli',
+      pid: child.pid
+    })
   }
 }
 
@@ -274,8 +324,8 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
         windowsHide: true,
         detached: requestedPlatform !== 'win32'
       })
-    } catch (error) {
-      rejectPromise(error)
+    } catch {
+      rejectPromise(childFailure(operation, bun, 'harness-cli-spawn'))
       return
     }
     // Test-owned child seams may expose a platform. Production ChildProcess
@@ -283,7 +333,6 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
     const platform = child.platform ?? requestedPlatform
     context.pid = child.pid
     let stdout = ''
-    let stderr = ''
     let stdoutOverflow = false
     let aborted = false
     let settled = false
@@ -415,22 +464,21 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
         stdout = ''
       }
     }
-    const onStderr = (chunk) => {
-      stderr += chunk
-      if (stderr.length > ERROR_OUTPUT_LIMIT) stderr = stderr.slice(-ERROR_OUTPUT_LIMIT)
+    const onStderr = () => {
+      // Drain child stderr without retaining or exposing it.
     }
-    const onError = (error) => {
+    const onError = () => {
       if (aborted) {
         if (canSettleCancellation()) void finishCancellation()
         return
       }
-      finish('reject', error)
+      finish('reject', childFailure(operation, bun, 'harness-cli-spawn'))
     }
     const onExit = () => {
       // Node emits `exit` before inherited stdio has drained. It is evidence
       // that the process exited, not evidence that the child is quiescent.
     }
-    const onClose = (code) => {
+    const onClose = (code, childSignal) => {
       closeObserved = true
       if (aborted) {
         if (canSettleCancellation()) void finishCancellation()
@@ -445,7 +493,11 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
         return
       }
       if (code === 0) finish('resolve', stdout)
-      else finish('reject', new Error(`image workspace CLI failed (exit ${code ?? 'signal'}): ${(stderr.trim() || stdout.trim()).slice(-ERROR_OUTPUT_LIMIT)}`))
+      else finish('reject', childFailure(operation, bun, 'harness-cli-spawn', 'CHILD_EXIT_NONZERO', {
+        pid: child.pid,
+        exitCode: code,
+        signal: childSignal ?? child.signalCode
+      }))
     }
 
     child.stdout?.on('data', onStdout)
@@ -462,7 +514,11 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
 
 async function runInjected(runner, bun, args, env, signal, operation, expectedTargets) {
   if (signal?.aborted) throw await cancellationErrorFor(operation, true, undefined, expectedTargets)
-  const value = Promise.resolve().then(() => runner(bun, args, env, signal))
+  const value = Promise.resolve()
+    .then(() => runner(bun, args, env, signal))
+    .catch(() => {
+      throw childFailure(operation, bun, 'harness-cli-spawn')
+    })
   if (!signal) return value
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false
@@ -500,15 +556,15 @@ async function runInjected(runner, bun, args, env, signal, operation, expectedTa
  * the harness CLI and owns bounded process-tree cleanup.
  */
 export async function invokeImageOperation(operation, cliArgs, env = process.env, signal, expectedTargets = [], diagnostics = {}) {
+  const toolName = toolNameForOperation(operation)
+  if (!toolName) throw operationError('image workspace operation is not an app-owned image command.', 'COMMAND_FAILED', { stage: 'harness-cli-spawn', executable: 'image-plugin' })
   const args = [operation, ...cliArgs]
   const rawEnv = env ?? process.env
   const safeEnv = workshopEnvironment(rawEnv)
-  const context = createImageDiagnosticContext(operation, rawEnv, diagnostics)
+  const context = createImageDiagnosticContext(operation, rawEnv, { ...diagnostics, operationId: randomUUID(), toolName })
   const operationEnv = {
     ...safeEnv,
     DSH_IMAGE_WORKSHOP_OPERATION_ID: context.operationId,
-    DSH_IMAGE_WORKSHOP_TOOL_NAME: context.toolName ?? operation,
-    DSH_IMAGE_WORKSHOP_OPERATION: operation,
     ...(context.inputLabels ? { DSH_IMAGE_WORKSHOP_INPUT_LABELS: JSON.stringify(context.inputLabels) } : {}),
     ...(context.outputLabels ? { DSH_IMAGE_WORKSHOP_OUTPUT_LABELS: JSON.stringify(context.outputLabels) } : {}),
     ...(context.options ? { DSH_IMAGE_WORKSHOP_OPTIONS: JSON.stringify(context.options) } : {})
@@ -520,7 +576,10 @@ export async function invokeImageOperation(operation, cliArgs, env = process.env
     const stdout = workshopRunner
       ? await runInjected(workshopRunner, safeEnv.BUN_EXECUTABLE ?? 'bun', args, operationEnv, signal, operation, expectedTargets)
       : await runReal(operation, args, operationEnv, signal, expectedTargets, context)
-    if (signal?.aborted) throw await cancellationErrorFor(operation, true, context.pid, expectedTargets)
+    if (signal?.aborted) {
+      context.cleanupConfirmed ??= true
+      throw await cancellationErrorFor(operation, true, context.pid, expectedTargets)
+    }
     const trimmed = String(stdout ?? '').trim()
     let parsed
     try {
@@ -537,34 +596,38 @@ export async function invokeImageOperation(operation, cliArgs, env = process.env
     }))
     return parsed
   } catch (error) {
-    const failure = error instanceof Error ? error : new Error(String(error))
+    const failure = error instanceof Error ? error : new Error('image workspace operation failed.')
     if (context.terminationLog) await context.terminationLog
+    const failureInfo = failure.info && typeof failure.info === 'object' ? failure.info : {}
     const incomplete = failure.code === 'IMAGE_CANCELLATION_INCOMPLETE'
     const timedOut = failure.code === 'TOOL_TIMEOUT' || (signal?.aborted && diagnosticAbortOutcome(signal) === 'timed-out')
     const cancelled = failure.code === 'cancelled' || incomplete || timedOut || signal?.aborted
-    if (cancelled && context.cleanupConfirmed === undefined) context.cleanupConfirmed = true
+    if (cancelled && context.cleanupConfirmed === undefined) context.cleanupConfirmed = context.pid === undefined
     const errorCode = incomplete
       ? 'IMAGE_CANCELLATION_INCOMPLETE'
       : timedOut
         ? 'TOOL_TIMEOUT'
         : cancelled
           ? 'CANCELLED'
-          : 'COMMAND_FAILED'
+          : failure.code === 'CHILD_EXIT_NONZERO'
+            ? 'CHILD_EXIT_NONZERO'
+            : 'COMMAND_FAILED'
+    const cancellationOutcome = context.cleanupConfirmed === false
+      ? 'cleanup-unconfirmed'
+      : timedOut
+        ? 'timed-out'
+        : signal
+          ? diagnosticAbortOutcome(signal)
+          : 'cancelled'
     await appendImageDiagnostic(context, diagnosticEntry(context, 'terminal', 'harness-cli-spawn', safeEnv.BUN_EXECUTABLE ?? 'bun', {
       pid: context.pid,
+      exitCode: Number.isInteger(failureInfo.exitCode) ? failureInfo.exitCode : undefined,
+      signal: safeSignal(failureInfo.signal),
       startedAt,
       finishedAt: new Date().toISOString(),
       elapsedMs: Date.now() - startedTime,
-      outcome: incomplete && context.cleanupConfirmed === false
-        ? 'cleanup-unconfirmed'
-        : cancelled
-          ? timedOut
-            ? 'timed-out'
-            : signal
-              ? diagnosticAbortOutcome(signal)
-              : 'cancelled'
-          : 'failed',
-      ...(cancelled || context.cleanupConfirmed !== undefined ? { processCleanupConfirmed: context.cleanupConfirmed } : {}),
+      outcome: cancelled ? cancellationOutcome : 'failed',
+      ...(cancelled ? { processCleanupConfirmed: context.cleanupConfirmed } : {}),
       errorCode
     }))
     throw failure
