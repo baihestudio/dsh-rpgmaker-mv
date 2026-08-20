@@ -1,12 +1,13 @@
+import type { AgentAssemblyContext, McpToolDefinition } from './tools.js';
+
 type Disposer = () => void | Promise<void>;
 
 export declare const name: string;
 export declare const inject: readonly ['tools'];
 export declare function apply(ctx: {
   root: object;
-  agent: { id: string; session: { header: { cwd?: string } } };
-  tools: { register: (definition: any) => Disposer };
-  on: (event: string, listener: (...args: any[]) => unknown) => Disposer;
+  tools: { register: (definition: McpToolDefinition) => Disposer };
+  on: (event: 'system-prompt/assemble', listener: (assembly: unknown, context: AgentAssemblyContext, next: () => Promise<unknown>) => unknown) => Disposer;
   logger?: { info?: (...args: unknown[]) => void };
 }): void;
 export {
@@ -39,4 +40,5 @@ export {
   MCPORTER_CALL_TIMEOUT_MS
 } from './workspace.js';
 export { toModelName, createMcpTool } from './tools.js';
+export type { AgentAssemblyContext, AgentBinding, AgentCapability, AgentInitializer, McpToolDefinition } from './tools.js';
 export type { HostState } from './mcport-host.js';

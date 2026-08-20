@@ -11,9 +11,10 @@ The package has two plugin entry points:
   workspace server cache, and the pooled Xerolo children. It registers no
   tools and contains no preset roster knowledge.
 - `@baihestudio/dsh-workspace-mcp/agent` — the Agent access layer mounted by a
-  preset composition. It runs in the Agent scope, synchronously registers the
-  41 manifest-backed tools, and gates `system-prompt/assemble` on live
-  workspace initialization. The composition, not this package, decides which
+  preset composition. Its apply context is the composition child and has no
+  bound Agent; it synchronously registers the 41 manifest-backed tools, then
+  uses rc.7's assembly context and tool execution context to initialize the
+  actual Agent/session cwd. The composition, not this package, decides which
   Agents receive the row.
 
 The Host and Agent layers share the Host generation through a WeakMap keyed by
@@ -36,10 +37,10 @@ published into the Cordis ROOT realm.
 - Generates stable Agent-scoped names `rpgmaker_<raw Xerolo name>` from the
   machine-generated, content-digest-pinned manifest of the exact-pinned
   package's 41 tool names, descriptions, and input schemas. Registration is
-  synchronous in the mounted Agent row, before DSH's pre-waterfall schema
-  collection, and uses one registration factory rather than hand-written
-  wrappers. Workspace hashes, session ids, and MCP transport details never
-  enter model-facing names.
+  synchronous in the mounted composition row, before DSH's pre-waterfall
+  schema collection, and uses one registration factory rather than
+  hand-written wrappers. Workspace hashes, session ids, and MCP transport
+  details never enter model-facing names.
 - Verifies the pinned manifest before acquiring a workspace server, then
   compares live `tools/list` names and supported schemas against it before any
   execution. Missing, duplicate, drifted, invalid, or unsupported definitions

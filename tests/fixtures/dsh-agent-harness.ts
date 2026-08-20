@@ -3,9 +3,9 @@
  *
  * It replicates exactly the rc.7 plugin surface the dsh-workspace-mcp bundle
  * depends on — a root context shared by the Host row and preset-mounted
- * Agent rows, agent-scoped `ctx.tools.register()`/`on('system-prompt/assemble')`
- * effects that unwind on disposal, and a `system-prompt/assemble` waterfall
- * whose base tool schemas come from the agent's tool registry. It never
+ * composition rows, synchronous tool registration in the composition context,
+ * and `system-prompt/assemble`/tool execution contexts that carry the actual
+ * Agent. The composition context deliberately has no `ctx.agent`; it never
  * touches a live DSH home, profile, or runtime.
  */
 export interface HarnessToolSchema {
@@ -18,8 +18,8 @@ export interface HarnessToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  output: { schema: Record<string, unknown>; render: (args: unknown, value: unknown) => Array<{ type: string; text: string }> };
-  execute: (args: Record<string, unknown>, exec: { signal?: AbortSignal }) => Promise<unknown>;
+  output: { schema: Record<string, unknown>; render: (args: Record<string, unknown>, value: unknown) => Array<{ type: string; text: string }> };
+  execute: (args: Record<string, unknown>, exec: { agent?: HarnessAgent; signal: AbortSignal }) => Promise<unknown>;
 }
 
 export interface HarnessAgent {
@@ -36,6 +36,12 @@ export interface PromptAssembly {
 }
 
 type Listener = (...args: unknown[]) => unknown;
+type HarnessAssemblyContext = {
+  scope?: object;
+  agent?: { id: string; session: { header: { cwd?: string; agentPreset?: string } } };
+  signal?: AbortSignal;
+};
+type AssemblyListener = (assembly: unknown, context: HarnessAssemblyContext, next: () => Promise<unknown>) => unknown;
 type Disposer = () => void | Promise<void>;
 type EffectSetup = () => void | Disposer | Promise<void | Disposer>;
 
@@ -90,7 +96,7 @@ export class HarnessScope {
   readonly tools: ToolRegistry;
   readonly logger: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void };
   readonly root: object;
-  agent!: HarnessAgent;
+  private assemblyAgent!: HarnessAgent;
   disposed = false;
   private disposalPromise: Promise<void> | undefined;
 
@@ -105,7 +111,13 @@ export class HarnessScope {
     if (label) this.logger.info(`harness scope ${label} created`);
   }
 
-  on(event: string, listener: Listener): () => void {
+  bindAgent(agent: HarnessAgent): void {
+    this.assemblyAgent = agent;
+  }
+
+  on(event: 'system-prompt/assemble', listener: AssemblyListener): () => void;
+  on(event: string, listener: Listener): () => void;
+  on(event: string, listener: (...args: any[]) => unknown): () => void {
     const listeners = this.listeners.get(event) ?? [];
     listeners.push(listener);
     this.listeners.set(event, listeners);
@@ -170,7 +182,11 @@ export class HarnessScope {
       const listener = listeners[index];
       index += 1;
       if (!listener) return assembly;
-      const result = await listener(assembly, { scope: undefined, signal: new AbortController().signal }, next);
+      const result = await listener(assembly, {
+        scope: this.assemblyAgent,
+        agent: this.assemblyAgent,
+        signal: new AbortController().signal
+      }, next);
       return result as PromptAssembly;
     };
     return next();
@@ -202,6 +218,6 @@ export function createHarnessAgent(
 ): HarnessAgent {
   const ctx = new HarnessScope(`agent:${id}`, logger, root);
   const agent = { id, session: { header }, ctx };
-  ctx.agent = agent;
+  ctx.bindAgent(agent);
   return agent;
 }

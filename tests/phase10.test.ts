@@ -17,7 +17,7 @@ import {
   verifyWorkspaceMcpBundle
 } from '../src/workspace-mcp';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
-import { HarnessScope, createHarnessAgent } from './fixtures/dsh-agent-harness';
+import { HarnessScope, createHarnessAgent, type HarnessAgent } from './fixtures/dsh-agent-harness';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -166,6 +166,12 @@ function createComposedAgent(
   const agent = createHarnessAgent(id, header, root, logger);
   agentBundle.apply(agent.ctx);
   return agent;
+}
+
+async function executeAgentTool(agent: HarnessAgent, name: string, args: Record<string, unknown>): Promise<unknown> {
+  const definition = agent.ctx.tools.get(name);
+  if (!definition) throw new Error(`harness tool ${name} is not registered for Agent ${agent.id}`);
+  return definition.execute(args, { agent, signal: new AbortController().signal });
 }
 
 describe('app-owned MCPorter runtime verification', () => {
@@ -936,10 +942,7 @@ describe('real DSH Agent seam', () => {
             await Promise.all([oldDisposal, duplicateOldDisposal]);
             expect(hostBundle.hostState(oldCtx).closed).toBe(true);
             expect(hostBundle.hostState(newCtx).closed).toBe(false);
-            const info = await newAgent.ctx.tools.get('rpgmaker_get_project_info')!.execute(
-              {},
-              { signal: new AbortController().signal }
-            ) as { gameTitle: string };
+            const info = await executeAgentTool(newAgent, 'rpgmaker_get_project_info', {}) as { gameTitle: string };
             expect(info.gameTitle).toBe('Host generations');
 
             const newDisposal = newCtx.dispose();
@@ -980,7 +983,19 @@ describe('real DSH Agent seam', () => {
             // and waits for discovery + live manifest parity, with no workspace
             // hash, session id, or MCP prefix in any name.
             const agentA = createComposedAgent(agentBundle, 'agent-a', { cwd: project, agentPreset: 'rpgmaker' }, hostCtx.root);
-            const assemblyA = await agentA.ctx.assemble();
+            // The row is applied to a preset composition context, not Agent.ctx;
+            // the actual Agent arrives later through assembly/tool execution.
+            expect((agentA.ctx as unknown as { agent?: unknown }).agent).toBeUndefined();
+            const assemblyPromise = agentA.ctx.assemble();
+            const infoDefinition = agentA.ctx.tools.get('rpgmaker_get_project_info');
+            expect(infoDefinition).toBeDefined();
+            expect('timeoutMs' in infoDefinition!).toBe(false);
+            // Assembly and the first tool call share one Agent-keyed
+            // initialization promise; neither can outrun discovery.
+            const [assemblyA, info] = await Promise.all([
+              assemblyPromise,
+              infoDefinition!.execute({}, { agent: agentA, signal: new AbortController().signal })
+            ]) as [Awaited<typeof assemblyPromise>, { gameTitle: string }];
             const namesA = assemblyA.tools.map((tool) => tool.name).sort();
             expect(namesA).toEqual(expectedNames);
             expect(namesA.every((name) => /^rpgmaker_[a-z][a-z0-9_]*$/.test(name))).toBe(true);
@@ -994,10 +1009,6 @@ describe('real DSH Agent seam', () => {
             const sdkText = (assemblyA.sections.find((section) => (section as { name?: string })?.name === 'tools:sdk') as { text?: string } | undefined)?.text ?? '';
             expect(expectedNames.every((name) => sdkText.includes(name))).toBe(true);
 
-            const infoDefinition = agentA.ctx.tools.get('rpgmaker_get_project_info');
-            expect(infoDefinition).toBeDefined();
-            expect('timeoutMs' in infoDefinition!).toBe(false);
-            const info = await infoDefinition!.execute({}, { signal: new AbortController().signal }) as { gameTitle: string };
             expect(info.gameTitle).toBe('Probe Game');
 
             // A second Agent in the same workspace reuses one pooled server and
@@ -1006,8 +1017,8 @@ describe('real DSH Agent seam', () => {
             const assemblyB = await agentB.ctx.assemble();
             expect(assemblyB.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
             expect(hostBundle.hostState(hostCtx).workspaces).toEqual([canonicalProject]);
-            await agentA.ctx.tools.get('rpgmaker_create_record')!.execute({ type: 'actors', data: { name: 'Hero' } }, { signal: new AbortController().signal });
-            const records = await agentB.ctx.tools.get('rpgmaker_list_records')!.execute({ type: 'actors' }, { signal: new AbortController().signal }) as Array<{ name: string }>;
+            await executeAgentTool(agentA, 'rpgmaker_create_record', { type: 'actors', data: { name: 'Hero' } });
+            const records = await executeAgentTool(agentB, 'rpgmaker_list_records', { type: 'actors' }) as Array<{ name: string }>;
             expect(records.some((record) => record.name === 'Hero')).toBe(true);
 
             // Disposing one Agent removes only its registrations; the pooled
@@ -1015,7 +1026,7 @@ describe('real DSH Agent seam', () => {
             agentA.ctx.dispose();
             expect(agentA.ctx.tools.schemas()).toEqual([]);
             expect(agentA.ctx.listeners.has('system-prompt/assemble')).toBe(false);
-            const stillWarm = await agentB.ctx.tools.get('rpgmaker_get_project_info')!.execute({}, { signal: new AbortController().signal }) as { gameTitle: string };
+            const stillWarm = await executeAgentTool(agentB, 'rpgmaker_get_project_info', {}) as { gameTitle: string };
             expect(stillWarm.gameTitle).toBe('Probe Game');
             expect(hostBundle.hostState(hostCtx).workspaces).toEqual([canonicalProject]);
 
@@ -1114,33 +1125,15 @@ describe('real DSH Agent seam', () => {
 
             // Calls through different Agents in A share state, while B's
             // separate process has no access to A's in-memory state or files.
-            await agentsA[0].ctx.tools.get('rpgmaker_create_record')!.execute(
-              { type: 'actors', data: { name: 'Hero A' } },
-              { signal: new AbortController().signal }
-            );
-            const recordsA = await agentsA[1].ctx.tools.get('rpgmaker_list_records')!.execute(
-              { type: 'actors' },
-              { signal: new AbortController().signal }
-            ) as Array<{ name: string }>;
-            const recordsB = await agentB.ctx.tools.get('rpgmaker_list_records')!.execute(
-              { type: 'actors' },
-              { signal: new AbortController().signal }
-            ) as Array<{ name: string }>;
+            await executeAgentTool(agentsA[0], 'rpgmaker_create_record', { type: 'actors', data: { name: 'Hero A' } });
+            const recordsA = await executeAgentTool(agentsA[1], 'rpgmaker_list_records', { type: 'actors' }) as Array<{ name: string }>;
+            const recordsB = await executeAgentTool(agentB, 'rpgmaker_list_records', { type: 'actors' }) as Array<{ name: string }>;
             expect(recordsA.some((record) => record.name === 'Hero A')).toBe(true);
             expect(recordsB).toEqual([]);
 
-            await agentsA[2].ctx.tools.get('rpgmaker_update_system')!.execute(
-              { data: { gameTitle: 'Workspace A changed' } },
-              { signal: new AbortController().signal }
-            );
-            const infoA = await agentsA[3].ctx.tools.get('rpgmaker_get_project_info')!.execute(
-              {},
-              { signal: new AbortController().signal }
-            ) as { gameTitle: string };
-            const infoB = await agentB.ctx.tools.get('rpgmaker_get_project_info')!.execute(
-              {},
-              { signal: new AbortController().signal }
-            ) as { gameTitle: string };
+            await executeAgentTool(agentsA[2], 'rpgmaker_update_system', { data: { gameTitle: 'Workspace A changed' } });
+            const infoA = await executeAgentTool(agentsA[3], 'rpgmaker_get_project_info', {}) as { gameTitle: string };
+            const infoB = await executeAgentTool(agentB, 'rpgmaker_get_project_info', {}) as { gameTitle: string };
             expect(infoA.gameTitle).toBe('Workspace A changed');
             expect(infoB.gameTitle).toBe('Workspace B');
 
@@ -1149,28 +1142,19 @@ describe('real DSH Agent seam', () => {
             // independently usable throughout.
             agentsA[0].ctx.dispose();
             expect(agentsA[0].ctx.tools.schemas()).toEqual([]);
-            const warmA = await agentsA[1].ctx.tools.get('rpgmaker_get_project_info')!.execute(
-              {},
-              { signal: new AbortController().signal }
-            ) as { gameTitle: string };
+            const warmA = await executeAgentTool(agentsA[1], 'rpgmaker_get_project_info', {}) as { gameTitle: string };
             expect(warmA.gameTitle).toBe('Workspace A changed');
             for (const agent of agentsA.slice(1)) agent.ctx.dispose();
             expect(hostBundle.hostState(hostCtx).workspaces.sort()).toEqual([canonicalA, canonicalB].sort());
             const agentAAfterLast = createComposedAgent(agentBundle, 'workspace-a-after-last', { cwd: join(projectA, '.'), agentPreset: 'rpgmaker' }, hostCtx.root);
             const assemblyAAfterLast = await agentAAfterLast.ctx.assemble();
             expect(assemblyAAfterLast.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
-            const warmAfterLast = await agentAAfterLast.ctx.tools.get('rpgmaker_get_project_info')!.execute(
-              {},
-              { signal: new AbortController().signal }
-            ) as { gameTitle: string };
+            const warmAfterLast = await executeAgentTool(agentAAfterLast, 'rpgmaker_get_project_info', {}) as { gameTitle: string };
             expect(warmAfterLast.gameTitle).toBe('Workspace A changed');
             const startsAfterLast = (await readFile(tracePath, 'utf8')).trim().split(/\r?\n/).filter(Boolean);
             expect(startsAfterLast).toHaveLength(2);
             agentAAfterLast.ctx.dispose();
-            const warmB = await agentB.ctx.tools.get('rpgmaker_get_project_info')!.execute(
-              {},
-              { signal: new AbortController().signal }
-            ) as { gameTitle: string };
+            const warmB = await executeAgentTool(agentB, 'rpgmaker_get_project_info', {}) as { gameTitle: string };
             expect(warmB.gameTitle).toBe('Workspace B');
 
             await hostCtx.dispose();
@@ -1225,10 +1209,7 @@ describe('real DSH Agent seam', () => {
             expect(healthyAssembly.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
             expect(hostBundle.hostState(hostCtx).workspaces.sort()).toEqual([canonicalFailed, canonicalHealthy].sort());
 
-            const healthyInfo = await healthyAgent.ctx.tools.get('rpgmaker_get_project_info')!.execute(
-              {},
-              { signal: new AbortController().signal }
-            ) as { gameTitle: string };
+            const healthyInfo = await executeAgentTool(healthyAgent, 'rpgmaker_get_project_info', {}) as { gameTitle: string };
             expect(healthyInfo.gameTitle).toBe('Healthy workspace');
 
             // A failed acquisition is cached for this Host generation: a later
@@ -1243,10 +1224,7 @@ describe('real DSH Agent seam', () => {
 
             failedAgent.ctx.dispose();
             retryAgent.ctx.dispose();
-            const stillHealthy = await healthyAgent.ctx.tools.get('rpgmaker_get_project_info')!.execute(
-              {},
-              { signal: new AbortController().signal }
-            ) as { gameTitle: string };
+            const stillHealthy = await executeAgentTool(healthyAgent, 'rpgmaker_get_project_info', {}) as { gameTitle: string };
             expect(stillHealthy.gameTitle).toBe('Healthy workspace');
 
             await hostCtx.dispose();
@@ -1314,9 +1292,8 @@ describe('real DSH Agent seam', () => {
             const loggerAssembly = await loggerAgent.ctx.assemble();
             expect(loggerAssembly.tools.map((tool) => tool.name).sort()).toEqual(expectedNames);
             expect(logs).toContainEqual([
-              'dsh-workspace-mcp synchronously registered %d manifest tools for agent %s',
-              expectedNames.length,
-              'with-logger'
+              'dsh-workspace-mcp synchronously registered %d manifest tools',
+              expectedNames.length
             ]);
             expect(logs.some((args) => (
               args[0] === 'dsh-workspace-mcp initialized workspace server %s (%d tools matched the pinned manifest)'

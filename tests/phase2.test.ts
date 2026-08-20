@@ -65,13 +65,16 @@ async function makePhase2MountFixture(root: string): Promise<{
   const environmentModule = join(runtime, 'environment.mjs');
   const bundleEntry = join(runtime, 'workspace-bundle.mjs');
   const dshAgent = join(runtime, 'dsh-agent', 'lib', 'index.js');
+  const dshAgentPresets = join(runtime, 'dsh-agent-presets', 'lib', 'index.js');
   const neutralLanding = join(root, 'neutral');
   const traceFile = join(root, 'mount-trace.jsonl');
   await mkdir(join(runtime, 'dsh', 'lib'), { recursive: true });
   await mkdir(join(runtime, 'dsh-agent', 'lib'), { recursive: true });
+  await mkdir(join(runtime, 'dsh-agent-presets', 'lib'), { recursive: true });
   await mkdir(neutralLanding, { recursive: true });
   await writeFile(join(runtime, 'package.json'), JSON.stringify({ type: 'module' }));
   await writeFile(dshAgent, 'export function assembleContextFor(agent) { return agent; }\n');
+  await writeFile(dshAgentPresets, 'export function livePresetMounts() { return []; }\n');
   await writeFile(environmentModule, 'export function createLaunchEnvironmentSnapshot(layers) { return Object.assign({}, ...layers.map((layer) => layer.values)); }\n');
   await writeFile(bundleEntry, `
 export const MCPORTER_RUNTIME_ENV = ${JSON.stringify(MCPORTER_RUNTIME_ENV)};

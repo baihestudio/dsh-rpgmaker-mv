@@ -11,6 +11,7 @@ const hostBundle = await import(pathToFileURL(hostBundleEntry).href)
 const agentBundle = await import(pathToFileURL(agentBundleEntry).href)
 const runtimePaths = agentBundle.resolveRuntimePaths(process.env)
 const { assembleContextFor } = await import(new URL('../../dsh-agent/lib/index.js', pathToFileURL(process.env.PROFILE_FILE)).href)
+const { livePresetMounts } = await import(new URL('../../dsh-agent-presets/lib/index.js', pathToFileURL(process.env.PROFILE_FILE)).href)
 const environment = environmentModule.createLaunchEnvironmentSnapshot([{
   source: 'process',
   values: Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && key !== 'DEEPSEEK_API_KEY' && key !== 'DSH_API_KEY'))
@@ -75,13 +76,21 @@ try {
     const handle = await agentLoop.createAgent(mounted.ctx, {
       sessionId,
       meta: { cwd: project, agentPreset: 'rpgmaker' },
-      setup: async (agentCtx) => { await presets.mount(agentCtx, 'rpgmaker') }
+      setup: async (agentCtx) => {
+        if (!agentCtx.agent) throw new Error('rc.7 Agent setup did not supply agentCtx.agent')
+        await presets.mount(agentCtx, 'rpgmaker')
+      }
     })
     handles.push(handle)
     return handle
   }
 
   const first = await createAgent('phase2-real-workspace-a')
+  const compositionMount = livePresetMounts().find((mount) => mount.presetId === 'rpgmaker')
+  if (!compositionMount) throw new Error('rc.7 did not expose the mounted rpgmaker composition')
+  if (compositionMount.fiber.ctx.agent !== undefined) {
+    throw new Error('preset composition unexpectedly received ctx.agent; Agent must arrive at assembly/execution seams')
+  }
   const immediateSchemas = first.agent?.ctx?.tools?.schemas?.(first.agent?.ctx?.agent)
   if (!Array.isArray(immediateSchemas)) throw new Error('Agent tool provider did not expose synchronous schemas')
   const expectedNames = agentBundle.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort()

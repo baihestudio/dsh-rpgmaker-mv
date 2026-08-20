@@ -27,8 +27,8 @@ export function toModelName(rawName) {
   return `${TOOL_NAME_PREFIX}${rawName}`
 }
 
-/** One generated tool bound to a workspace's pooled server. */
-export function createMcpTool(rawTool, workspace) {
+/** One generated tool bound to a capability-local Agent initializer. */
+export function createMcpTool(rawTool, capability) {
   const name = toModelName(rawTool.name)
   return {
     name,
@@ -36,9 +36,11 @@ export function createMcpTool(rawTool, workspace) {
     parameters: normalizeSchema(rawTool.inputSchema),
     output: { schema: {}, render: renderResult },
     execute: async (args, exec) => {
-      const { host, canonical, paths } = await workspace.init
+      const agent = exec?.agent
+      if (!agent) throw new Error(`dsh-workspace-mcp: ${name} execution supplied no Agent`)
+      const { host, canonical, paths } = await capability.init(agent)
       const result = await host.callWorkspaceTool(paths, canonical, rawTool.name, args ?? {}, {
-        signal: exec?.signal
+        signal: exec.signal
       })
       return canonicalMcpValue(result)
     },

@@ -23,7 +23,7 @@ export const WORKSPACE_MCP_BUNDLE_PATCH = './cordis.patch.yml';
 export const WORKSPACE_MCP_ROW_ID = 'workspace-mcp';
 export const WORKSPACE_MCP_AGENT_ROW_ID = 'workspace-mcp-agent';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const WORKSPACE_MCP_SHA256 = 'f5d9777bae8ea5cfefe9051d3223ed13a65db661975a33848318d283775b54d3';
+export const WORKSPACE_MCP_SHA256 = 'e005a35c4941d7c46f9188506d645c70f6158425b1d6d6291da49b563ed497ec';
 export const WORKSPACE_MCP_BUNDLE_RELATIVE = join('bundle', 'dsh-workspace-mcp');
 /** Archive entries always use POSIX separators, including on Windows. */
 export const WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE = 'bundle/dsh-workspace-mcp';
