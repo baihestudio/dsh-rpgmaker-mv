@@ -877,7 +877,7 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('development NUC cleanup resets only generated roots and is idempotent', async () => {
+  test('development NUC cleanup uses the native no-listener path, resets only generated roots, and is idempotent', async () => {
     if (process.platform !== 'win32') return;
     const root = await temp('phase7-nuc-web-profile-reset');
     try {
@@ -917,6 +917,7 @@ describe('Windows release gate foundations', () => {
 
       const first = await runReset();
       expect(first.exitCode).toBe(0);
+      expect(first.stdout).toMatch(/DSH Web port 3081 is not active/i);
       expect(first.stdout).toMatch(/Reset complete/i);
       expect(await Bun.file(webProfile).exists()).toBe(false);
       expect(await Bun.file(visionCache).exists()).toBe(false);

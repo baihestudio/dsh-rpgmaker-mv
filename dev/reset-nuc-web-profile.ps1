@@ -123,7 +123,10 @@ if (-not [System.IO.Path]::IsPathRooted($env:LOCALAPPDATA)) {
 }
 
 try {
-  $listeners = @(Get-NetTCPConnection -LocalPort 3081 -State Listen -ErrorAction Stop)
+  $listeners = @(
+    Get-NetTCPConnection -ErrorAction Stop |
+      Where-Object { $_.State -eq 'Listen' -and $_.LocalPort -eq 3081 }
+  )
 } catch {
   throw "Could not verify whether DSH Web port 3081 is active; refusing to run: $($_.Exception.Message)"
 }
