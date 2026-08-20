@@ -18,6 +18,8 @@
     "phase6:real": "bun run scripts/phase6-real-acceptance.ts",
     "phase6:windows-manual": "bun run scripts/phase6-windows-manual-gate.ts",
     "phase7:real": "bun run scripts/phase7-real-acceptance.ts",
+    "phase7:windows-installed": "bun run scripts/phase7-windows-installed-gate.ts",
+    "image:windows-hung-child": "node scripts/image-plugin-windows-hung-child-probe.mjs",
     "release:zip": "bun run scripts/build-release-zip.ts"
   },
   "type": "module"

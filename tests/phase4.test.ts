@@ -1,12 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { runCli } from '../src/cli';
 import {
   createImageWorkshop,
+  defaultExtractArchive,
   ensureImageHelperRuntime,
   prepareImageToolchain,
   resolveImageToolchain,
@@ -138,6 +140,8 @@ class FakeImageTools {
     [resolve(ORANGE), grid(2, 2, [ORANGE_PIXEL, ORANGE_PIXEL, ORANGE_PIXEL, ORANGE_PIXEL])]
   ]);
   readonly opaque = new Set<string>();
+  /** Virtual-canvas page geometry of produced images; absent means full size. */
+  readonly pages = new Map<string, { width: number; height: number }>();
   readonly calls: Array<{ command: string; args: string[]; options: CommandOptions }> = [];
   failFor?: string;
   racePath?: string;
@@ -194,7 +198,7 @@ class FakeImageTools {
       return { exitCode: 0, stdout: '', stderr: '' };
     }
     if (args[0] === 'pm') return { exitCode: 0, stdout: '', stderr: '' };
-    if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: agent-presets\n', stderr: '' };
+    if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: mcp-rpgmaker-mv\n- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n', stderr: '' };
     if (command.toLowerCase().includes('oxipng')) {
       const source = this.sourcePath(args.slice().reverse()) ?? args.at(-1)!;
       const output = args[args.indexOf('--out') + 1];
@@ -204,12 +208,55 @@ class FakeImageTools {
       await this.materialize(output);
       return { exitCode: 0, stdout: '', stderr: '' };
     }
+    if (args.includes('-format') && args[args.indexOf('-format') + 1] === '%w %h') {
+      const path = this.sourcePath(args) ?? this.outputPath(args);
+      const value = path ? this.virtual(path) : undefined;
+      if (!value) return { exitCode: 1, stdout: '', stderr: 'unknown image' };
+      return { exitCode: 0, stdout: `${value.width} ${value.height}\n`, stderr: '' };
+    }
     if (args.includes('-format')) {
       const path = this.sourcePath(args) ?? this.outputPath(args);
       const value = path ? this.virtual(path) : undefined;
       if (!value) return { exitCode: 1, stdout: '', stderr: 'unknown image' };
       const alpha = args.includes('-alpha') ? args[args.indexOf('-alpha') + 1] === 'on' : !this.opaque.has(resolve(path!));
       return { exitCode: 0, stdout: `${value.width}|${value.height}|PNG|${alpha ? 'srgba' : 'srgb'}|${alpha ? 'False' : 'True'}\n`, stderr: '' };
+    }
+    const rawRgba = args.find((value) => value.startsWith('RGBA:'));
+    const rawGridRead = args.find((value) => value.startsWith('RGBA:') || value.startsWith('RGB:'));
+    if (rawGridRead && args.includes('-size')) {
+      // trim/pad compose: ImageMagick reads the JS-composed raw grid and
+      // encodes it to PNG; hidden RGB under transparent pixels survives.
+      const [width, height] = args[args.indexOf('-size') + 1].split('x').map(Number);
+      const channels = rawGridRead.startsWith('RGBA:') ? 4 : 3;
+      const rawPath = rawGridRead.slice(rawGridRead.startsWith('RGBA:') ? 'RGBA:'.length : 'RGB:'.length);
+      const bytes = await readFile(resolve(rawPath));
+      const pixels: string[] = [];
+      for (let index = 0; index < width * height; index += 1) {
+        const offset = index * channels;
+        const alpha = channels === 4 ? bytes[offset + 3] : 255;
+        pixels.push([bytes[offset], bytes[offset + 1], bytes[offset + 2], alpha].map((value) => value.toString(16).padStart(2, '0')).join('').toUpperCase());
+      }
+      const output = this.outputPath(args)!;
+      this.writeVirtual(output, grid(width, height, pixels));
+      await this.materialize(output);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }
+    if (rawRgba) {
+      const rawPath = rawRgba.slice('RGBA:'.length);
+      const path = this.sourcePath(args) ?? this.outputPath(args);
+      const value = path ? this.virtual(path) : undefined;
+      if (!value) return { exitCode: 1, stdout: '', stderr: 'unknown image' };
+      await mkdir(dirname(resolve(rawPath)), { recursive: true });
+      const bytes = Buffer.alloc(value.width * value.height * 4);
+      for (let index = 0; index < value.pixels.length; index += 1) {
+        const pixel = value.pixels[index];
+        bytes[index * 4] = Number.parseInt(pixel.slice(0, 2), 16);
+        bytes[index * 4 + 1] = Number.parseInt(pixel.slice(2, 4), 16);
+        bytes[index * 4 + 2] = Number.parseInt(pixel.slice(4, 6), 16);
+        bytes[index * 4 + 3] = Number.parseInt(pixel.slice(6, 8), 16);
+      }
+      await writeFile(resolve(rawPath), bytes);
+      return { exitCode: 0, stdout: '', stderr: '' };
     }
     if (args.at(-1) === 'txt:-') {
       const path = this.sourcePath(args) ?? this.outputPath(args);
@@ -223,8 +270,8 @@ class FakeImageTools {
     const source = input ? this.virtual(input) : undefined;
     const output = this.outputPath(args);
     if (!source || !output) return { exitCode: 1, stdout: '', stderr: 'fake ImageMagick could not identify input/output' };
-    if (args.includes('-resize')) {
-      const match = args[args.indexOf('-resize') + 1].match(/^(\d+)x(\d+)!$/)!;
+    if (args.includes('-sample') || args.includes('-resize')) {
+      const match = args[args.indexOf(args.includes('-sample') ? '-sample' : '-resize') + 1].match(/^(\d+)x(\d+)!$/)!;
       const scale = Number(match[1]) / source.width;
       const pixels: string[] = [];
       for (let y = 0; y < source.height; y += 1) for (let sy = 0; sy < scale; sy += 1) for (let x = 0; x < source.width; x += 1) for (let sx = 0; sx < scale; sx += 1) pixels.push(source.pixels[y * source.width + x]);
@@ -234,12 +281,20 @@ class FakeImageTools {
       const cropArgument = args.includes('-crop') ? args[args.indexOf('-crop') + 1] : `${source.width}x${source.height}`;
       const match = cropArgument.match(/^(\d+)x(\d+)$/)!;
       if (output.includes('%04d')) {
+        // Model virtual-canvas page geometry: -crop tiles the sheet only when
+        // the page covers the full image (or was reset by an earlier +repage);
+        // a stale page (assembled sheets before the fix) yields a single tile.
+        const page = input ? this.pages.get(resolve(input)) : undefined;
+        const repage = args.indexOf('+repage');
+        const reset = repage >= 0 && repage < args.indexOf('-crop');
+        const fullPage = reset || page === undefined || (page.width === source.width && page.height === source.height);
         let index = 0;
         for (let y = 0; y < source.height; y += Number(match[2])) for (let x = 0; x < source.width; x += Number(match[1])) {
           const path = output.replace('%04d', String(index).padStart(4, '0'));
           this.writeVirtual(path, crop(source, x, y, Number(match[1]), Number(match[2])));
           await this.materialize(path);
           index += 1;
+          if (!fullPage) break;
         }
       } else {
         let value = source;
@@ -253,7 +308,12 @@ class FakeImageTools {
           const padded = Array(width * height).fill(NONE);
           const left = Math.floor((width - value.width) / 2);
           const top = Math.floor((height - value.height) / 2);
-          for (let y = 0; y < value.height; y += 1) for (let x = 0; x < value.width; x += 1) padded[(top + y) * width + left + x] = value.pixels[y * value.width + x];
+          for (let y = 0; y < value.height; y += 1) for (let x = 0; x < value.width; x += 1) {
+            // Model real ImageMagick: -extent normalizes hidden RGB under fully
+            // transparent pixels (alpha 00) to transparent black.
+            const pixel = value.pixels[y * value.width + x];
+            padded[(top + y) * width + left + x] = pixel.slice(-2) === '00' ? NONE : pixel;
+          }
           value = grid(width, height, padded);
         }
         this.writeVirtual(output, value);
@@ -261,11 +321,19 @@ class FakeImageTools {
       }
     } else if (args.includes('+append')) {
       const sourcePaths = args.filter((value) => this.grids.has(resolve(value)));
-      this.writeVirtual(output, appendHorizontal(sourcePaths.map((path) => this.grids.get(resolve(path))!)));
+      const assembled = appendHorizontal(sourcePaths.map((path) => this.grids.get(resolve(path))!));
+      const first = this.grids.get(resolve(sourcePaths[0]))!;
+      const firstPage = this.pages.get(resolve(sourcePaths[0])) ?? { width: first.width, height: first.height };
+      this.writeVirtual(output, assembled);
+      this.pages.set(resolve(output), args.indexOf('+repage') > args.indexOf('+append') ? { width: assembled.width, height: assembled.height } : firstPage);
       await this.materialize(output);
     } else if (args.includes('-append')) {
       const sourcePaths = args.filter((value) => this.grids.has(resolve(value)));
-      this.writeVirtual(output, appendVertical(sourcePaths.map((path) => this.grids.get(resolve(path))!)));
+      const assembled = appendVertical(sourcePaths.map((path) => this.grids.get(resolve(path))!));
+      const first = this.grids.get(resolve(sourcePaths[0]))!;
+      const firstPage = this.pages.get(resolve(sourcePaths[0])) ?? { width: first.width, height: first.height };
+      this.writeVirtual(output, assembled);
+      this.pages.set(resolve(output), args.indexOf('+repage') > args.indexOf('-append') ? { width: assembled.width, height: assembled.height } : firstPage);
       await this.materialize(output);
     } else {
       this.writeVirtual(output, source);
@@ -402,6 +470,43 @@ describe('Asset Workshop trust and safe outputs', () => {
     }
   });
 
+  test('routes .7z archives to verified 7-Zip and .zip archives to tar', async () => {
+    const root = await temp('phase4-archive-extractor');
+    try {
+      const calls: Array<{ command: string; args: string[] }> = [];
+      const runner = async (command: string, args: string[]): Promise<CommandResult> => {
+        calls.push({ command, args });
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+      const options = { commandRunner: runner };
+      const operation = { platform: 'win32', env: { PATH: '' }, executableName: 'magick.exe', version: '7.1.2-29', kind: 'ImageMagick' as const };
+      const sevenZipArchive = join(root, 'ImageMagick-7.1.2-29-portable-Q16-x64.7z');
+      const zipArchive = join(root, 'tool.zip');
+      const sevenZipDest = join(root, 'seven-out');
+      const zipDest = join(root, 'zip-out');
+
+      await defaultExtractArchive(sevenZipArchive, sevenZipDest, operation, options);
+      expect(calls.at(-1)).toEqual({ command: '7z', args: ['x', sevenZipArchive, `-o${sevenZipDest}`, '-y'] });
+
+      await defaultExtractArchive(zipArchive, zipDest, operation, options);
+      expect(calls.at(-1)).toEqual({ command: 'tar', args: ['-xf', zipArchive, '-C', zipDest] });
+
+      // A verified 7-Zip path is honored for .7z archives.
+      const verified = join(root, 'Program Files', '7-Zip', '7z.exe');
+      await defaultExtractArchive(sevenZipArchive, sevenZipDest, operation, { ...options, sevenZipExecutable: verified });
+      expect(calls.at(-1)).toEqual({ command: verified, args: ['x', sevenZipArchive, `-o${sevenZipDest}`, '-y'] });
+
+      // An explicit tar-style override on a .7z archive still receives 7z-style
+      // args and fails with that extractor's own error rather than silently
+      // sending tar args to 7-Zip.
+      const explicit = join(root, 'custom-extractor.exe');
+      await expect(defaultExtractArchive(sevenZipArchive, sevenZipDest, operation, { ...options, archiveExtractorExecutable: explicit })).resolves.toBeUndefined();
+      expect(calls.at(-1)).toEqual({ command: explicit, args: ['x', sevenZipArchive, `-o${sevenZipDest}`, '-y'] });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('rejects a downloaded archive before extraction and leaves the active native tool untouched', async () => {
     const root = await temp('phase4-native-failure');
     try {
@@ -464,6 +569,62 @@ describe('Asset Workshop trust and safe outputs', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test('pixel-safe scale 2 on a 576x288 RGBA image verifies without the text-capacity ceiling', async () => {
+    const root = await temp('phase4-large-resize');
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const source = join(root, 'img', 'faces', 'nannvzhu.png');
+      await mkdir(dirname(source), { recursive: true });
+      await writeFile(source, 'fixture png');
+      const fake = new FakeImageTools();
+      const sourcePixels: string[] = [];
+      for (let index = 0; index < 576 * 288; index += 1) sourcePixels.push(index % 7 === 0 ? NONE : RED);
+      fake.grids.set(resolve(source), grid(576, 288, sourcePixels));
+      const workshop = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake) });
+      const output = join(root, 'img', 'faces', 'nannvzhu.ticket02-scale2.png');
+      const result = await workshop.resizePixel({ input: source, output, scale: 2 });
+      expect(result.manifest.outputs[0]).toMatchObject({ width: 1152, height: 576 });
+      expect(result.outputPaths).toContain(output);
+      expect(await Bun.file(output).exists()).toBe(true);
+      expect(await Bun.file(result.manifestPath).exists()).toBe(true);
+      const manifest = JSON.parse(await readFile(result.manifestPath, 'utf8'));
+      expect(manifest.operation).toBe('resize-pixel');
+      expect(manifest.fidelity.pixelsMatch).toBe(true);
+      expect(manifest.verificationLevel).toBe('decoded-pixels');
+      expect(await readFile(source, 'utf8')).toBe('fixture png');
+      expect(await readFile(join(root, 'img', 'faces', 'nannvzhu.ticket02-scale2.png.manifest.json'), 'utf8')).toContain('resize-pixel');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('pixel-safe scale 2 preserves hidden RGB under fully transparent pixels and uses sample semantics', async () => {
+    const root = await temp('phase4-transparent-resize');
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const source = join(root, 'img', 'faces', 'transparent-white.png');
+      await mkdir(dirname(source), { recursive: true });
+      await writeFile(source, 'fixture png');
+      const fake = new FakeImageTools();
+      const transparentWhite = 'FFFFFF00';
+      fake.grids.set(resolve(source), grid(2, 1, [transparentWhite, RED]));
+      const workshop = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake) });
+      const output = join(root, 'img', 'faces', 'transparent-white-scale2.png');
+      const result = await workshop.resizePixel({ input: source, output, scale: 2 });
+      expect(result.manifest.outputs[0]).toMatchObject({ width: 4, height: 2 });
+      const resized = [...fake.grids.values()].find((entry) => entry.width === 4 && entry.height === 2);
+      expect(resized?.pixels[0]).toBe(transparentWhite);
+      expect(fake.calls.some((call) => call.args.includes('-sample') && !call.args.includes('-resize'))).toBe(true);
+      expect(result.manifest.options).toMatchObject({ scale: 2, operator: 'sample' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Asset Workshop image correctness and atlas bounds', () => {
@@ -513,6 +674,98 @@ describe('Asset Workshop image correctness and atlas bounds', () => {
     }
   });
 
+  test('trim/pad preserves hidden RGB under fully transparent content pixels', async () => {
+    // Canonicalize the disposable root: the workshop stores staged paths under
+    // realpath()ed parents (on macOS /var is a symlink to /private/var), so
+    // path-keyed fake lookups must use the same canonical prefix.
+    const root = await realpath(await temp('phase4-trimpad-hidden-rgb'));
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const source = join(root, 'img', 'faces', 'frame-0000.png');
+      await mkdir(dirname(source), { recursive: true });
+      await writeFile(source, 'fixture png');
+      const fake = new FakeImageTools();
+      const workshop = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake) });
+      // Visible 2x2 content with a hidden-RGB (transparent white) pixel inside
+      // its bounds; -extent would normalize that pixel to transparent black.
+      fake.grids.set(resolve(source), grid(4, 4, [NONE, NONE, NONE, NONE, NONE, RED, 'FFFFFF00', NONE, NONE, RED, RED, NONE, NONE, NONE, NONE, NONE]));
+      const padded = join(root, 'img', 'faces', 'frame-0000-padded.png');
+      const result = await workshop.trimPad({ input: source, output: padded, trim: true, width: 6, height: 6 });
+      expect(result.manifest.outputs[0]).toMatchObject({ width: 6, height: 6 });
+      // trimmed 2x2 content centered in 6x6 => offset (2,2); the hidden-RGB
+      // pixel sits at trimmed (1,0) => absolute (3,2) => index 15. The grid is
+      // keyed under its staged path, so find it by dimensions.
+      const paddedGrid = [...fake.grids.entries()].find(([key, entry]) => key.startsWith(root) && entry.width === 6 && entry.height === 6)![1];
+      expect(paddedGrid.pixels[2 * 6 + 3]).toBe('FFFFFF00');
+      expect(result.manifest.options).toMatchObject({ composer: 'decoded-grid' });
+      // pad-only: source top-left is transparent white, so the placed content
+      // top-left (absolute (1,1) in 6x6) must keep FFFFFF00.
+      const padOnly = join(root, 'img', 'faces', 'pad-only.png');
+      fake.grids.set(resolve(source), grid(4, 4, ['FFFFFF00', RED, NONE, NONE, RED, RED, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE]));
+      const padResult = await workshop.trimPad({ input: source, output: padOnly, trim: false, width: 6, height: 6 });
+      const padGrid = [...fake.grids.entries()].filter(([key, entry]) => key.startsWith(root) && entry.width === 6 && entry.height === 6).at(-1)![1];
+      expect(padGrid.pixels[1 * 6 + 1]).toBe('FFFFFF00');
+      expect(padResult.manifest.options).toMatchObject({ composer: 'decoded-grid' });
+      expect(fake.calls.filter((call) => call.args.some((value) => value.startsWith('-size'))).every((call) => !call.args.includes('-extent'))).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reassembled sheets clear page metadata and slice into every frame again', async () => {
+    const root = await realpath(await temp('phase4-sheet-page'));
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const fake = new FakeImageTools();
+      const workshop = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake) });
+      const frames = await workshop.sheetSlice({ input: SHEET, outputDir: join(root, 'frames'), cellWidth: 4, cellHeight: 4 });
+      expect(frames.outputPaths).toHaveLength(2);
+      // The fake models the CLI, not the atomic commit rename, so bridge the
+      // staged -> committed transition for the frames before assembling them.
+      fake.grids.set(resolve(frames.outputPaths[0]), grid(4, 4, Array(16).fill(GREEN)));
+      fake.grids.set(resolve(frames.outputPaths[1]), grid(4, 4, Array(16).fill(YELLOW)));
+      const assembled = await workshop.sheetAssemble({ inputs: frames.outputPaths, output: join(root, 'assembled.png'), columns: 2 });
+      expect(assembled.manifest.fidelity).toMatchObject({ pixelsMatch: true });
+      // The assembled PNG must carry a full-size page, not the first cell's
+      // leftover virtual canvas (which would make later slices emit one frame).
+      const assembledPage = [...fake.pages.entries()].find(([key]) => key.endsWith('assembled.png'))![1];
+      expect(assembledPage).toEqual({ width: 8, height: 4 });
+      // Bridge the rename again and feed the page metadata to the final path
+      // so the re-slice exercises the same behavior as a real committed sheet.
+      fake.grids.set(resolve(join(root, 'assembled.png')), sheetGrid());
+      fake.pages.set(resolve(join(root, 'assembled.png')), assembledPage);
+      const reSliced = await workshop.sheetSlice({ input: join(root, 'assembled.png'), outputDir: join(root, 'reslice'), cellWidth: 4, cellHeight: 4 });
+      expect(reSliced.outputPaths).toHaveLength(2);
+      const assembleCall = fake.calls.find((call) => call.args.includes('-append'))!;
+      expect(assembleCall.args.indexOf('+repage')).toBeGreaterThan(assembleCall.args.indexOf('-append'));
+      const sliceCall = fake.calls.filter((call) => call.args.includes('-crop') && call.args.some((value) => value.includes('%04d'))).at(-1)!;
+      expect(sliceCall.args.indexOf('+repage')).toBeLessThan(sliceCall.args.indexOf('-crop'));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('atlas failures surface the failing stage and the original helper error', async () => {
+    const root = await temp('phase4-atlas-stage');
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const fake = new FakeImageTools();
+      const workshop = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake), maxPixels: 64, atlasPacker: async () => { throw new Error('packer exploded'); } });
+      const output = join(root, 'staged-fail.png');
+      await expect(workshop.atlasPack({ inputs: [CYAN, ORANGE], output, maxSize: 8, fixedGrid: true })).rejects.toThrow(/during atlas helper packing.*packer exploded/i);
+      expect(await Bun.file(output).exists()).toBe(false);
+      expect((await readdir(root)).some((name) => name.includes('staged-fail.dsh-staging'))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('commits atlas PNG, JSON, and manifest with one directory rename and preserves a racing output', async () => {
     const root = await temp('phase4-atlas-transaction');
     try {
@@ -538,6 +791,55 @@ describe('Asset Workshop image correctness and atlas bounds', () => {
       await expect(failingWorkshop.atlasPack({ inputs: [CYAN, ORANGE], output: failedDirectory, maxSize: 8, fixedGrid: true })).rejects.toThrow(/synthetic pack failure/i);
       expect(await Bun.file(failedDirectory).exists()).toBe(false);
       expect((await readdir(root)).some((name) => name.includes('failed-atlas.dsh-staging'))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('cancellation after the final file link/unlink retains outputs without touching the source', async () => {
+    const root = await temp('phase4-file-commit-cancel');
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const fake = new FakeImageTools();
+      const sourceBefore = await readFile(TILE);
+      const output = join(root, 'cancelled.png');
+      const workshop = createImageWorkshop(toolchain(root, image, helper, fake), {
+        platform: 'win32',
+        env: { PATH: '' },
+        commandRunner: fake.run.bind(fake),
+        signal: { get aborted(): boolean { return existsSync(`${output}.manifest.json`); } } as AbortSignal
+      });
+      await expect(workshop.resizePixel({ input: TILE, output, scale: 2 })).rejects.toThrow(/cancelled/);
+      expect(await readFile(TILE)).toEqual(sourceBefore);
+      expect(await Bun.file(output).exists()).toBe(true);
+      expect(await Bun.file(`${output}.manifest.json`).exists()).toBe(true);
+      expect((await readdir(root)).some((name) => name.includes('.dsh-image-operation-'))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('cancellation after a directory rename retains the published directory without touching the source', async () => {
+    const root = await temp('phase4-directory-commit-cancel');
+    try {
+      const helper = await helperState(root);
+      const image = join(root, 'magick');
+      await writeFile(image, 'fixture executable');
+      const sourceBefore = await readFile(SHEET);
+      const outputDir = join(root, 'cancelled-frames');
+      const fake = new FakeImageTools();
+      const workshop = createImageWorkshop(toolchain(root, image, helper, fake), {
+        platform: 'win32',
+        env: { PATH: '' },
+        commandRunner: fake.run.bind(fake),
+        signal: { get aborted(): boolean { return existsSync(outputDir); } } as AbortSignal
+      });
+      await expect(workshop.sheetSlice({ input: SHEET, outputDir, cellWidth: 4, cellHeight: 4 })).rejects.toThrow(/cancelled/);
+      expect(await readFile(SHEET)).toEqual(sourceBefore);
+      expect(existsSync(outputDir)).toBe(true);
+      expect((await readdir(root)).some((name) => name.includes('cancelled-frames.dsh-staging'))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -581,8 +883,12 @@ describe('Asset Workshop image correctness and atlas bounds', () => {
         return [{ name: 'atlas.png', buffer: Buffer.from('png') }, { name: 'atlas.json', buffer: Buffer.from('{"frames":{}}') }];
       } });
       await expect(corrupt.atlasPack({ inputs: [CYAN, ORANGE], output: join(root, 'corrupt.png'), maxSize: 8, fixedGrid: true })).rejects.toThrow(/frame count|frames object/i);
-      const timeout = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake), maxPixels: 64, timeoutMs: 10, atlasPacker: () => new Promise(() => undefined) });
-      await expect(timeout.atlasPack({ inputs: [CYAN], output: join(root, 'timeout.png'), maxSize: 4 })).rejects.toThrow(/deadline/i);
+      const controller = new AbortController();
+      const cancelled = createImageWorkshop(toolchain(root, image, helper, fake), { platform: 'win32', env: { PATH: '' }, commandRunner: fake.run.bind(fake), maxPixels: 64, signal: controller.signal, atlasPacker: () => new Promise(() => undefined) });
+      const pending = cancelled.atlasPack({ inputs: [CYAN], output: join(root, 'cancelled.png'), maxSize: 4 });
+      setTimeout(() => controller.abort(), 10);
+      await expect(pending).rejects.toThrow(/cancelled/);
+      expect(await Bun.file(join(root, 'cancelled.png')).exists()).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -639,7 +945,7 @@ describe('Asset Workshop CLI and real preset preparation seam', () => {
       expect(deployment.agentPreset).toBe('asset-workshop');
       expect(deployment.imageToolchain?.imageMagickVersion).toBe('7.1.2-29');
       expect(deployment.imageToolchain?.oxipngVersion).toBe('10.2.0');
-      expect(await readFile(join(deployment.presetDir, 'skills', 'asset-workshop', 'SKILL.md'), 'utf8')).toContain('resize-pixel');
+      expect(await readFile(join(deployment.presetDir, 'skills', 'asset-workshop', 'SKILL.md'), 'utf8')).toContain('image_resize_pixel');
       const composition = await readFile(deployment.compositionPath, 'utf8');
       expect(composition).toContain('default: asset-workshop');
       expect((composition.match(/id: mcp-rpgmaker-mv/g) ?? [])).toHaveLength(1);

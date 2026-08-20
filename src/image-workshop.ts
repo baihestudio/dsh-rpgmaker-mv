@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -11,6 +11,7 @@ import {
   IMAGE_WORKSHOP_MANIFEST_FORMAT,
   OXIPNG_VERSION,
   ImageWorkshopError,
+  defaultExtractArchive,
   detectOptionalEnhancements,
   ensureImageHelperRuntime,
   prepareImageToolchain,
@@ -34,6 +35,7 @@ import {
 } from './image-toolchain';
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { commandFailure, runCommand, withoutCredentials, type CommandRunner } from './process';
+import { runImageDiagnosticStage, type ImageDiagnosticContext } from './image-diagnostics';
 
 export {
   ASSET_WORKSHOP_PRESET_ID,
@@ -42,6 +44,7 @@ export {
   IMAGE_WORKSHOP_MANIFEST_FORMAT,
   OXIPNG_VERSION,
   ImageWorkshopError,
+  defaultExtractArchive,
   detectOptionalEnhancements,
   ensureImageHelperRuntime,
   prepareImageToolchain,
@@ -67,13 +70,14 @@ export type {
 };
 
 const DEFAULT_MAX_PIXELS = 16_777_216;
-const DEFAULT_TIMEOUT_MS = 120_000;
+// ImageMagick and native runner backstops stay above the 180-second DSH mutation budget.
+const DEFAULT_TIMEOUT_MS = 240_000;
 const FREE_TEX_PACKAGE = 'free-tex-packer-core';
 const RESOURCE_ARGS = [
   '-limit', 'memory', '256MiB',
   '-limit', 'map', '512MiB',
   '-limit', 'area', '128MP',
-  '-limit', 'time', '120'
+  '-limit', 'time', '240'
 ];
 const PNG_DETERMINISM_ARGS = ['-define', 'png:exclude-chunk=date,time'];
 
@@ -88,10 +92,12 @@ export interface ImageWorkshopDependencies {
   commandRunner?: CommandRunner;
   platform?: string;
   env?: Record<string, string | undefined>;
+  signal?: AbortSignal;
   timeoutMs?: number;
   maxPixels?: number;
   /** Test-owned seam; production resolves the pinned helper from helperRoot. */
   atlasPacker?: AtlasPackAsync;
+  diagnostics?: ImageDiagnosticContext;
 }
 
 export interface ImageMetadata {
@@ -289,6 +295,9 @@ interface FileOperation {
   finalParent: string;
   tempDir: string;
   finalPaths: string[];
+  committedPaths: string[];
+  committedDirectory?: string;
+  cleanupFailures: string[];
 }
 
 async function beginFileOperation(outputs: string[], inputs: string[]): Promise<FileOperation> {
@@ -305,7 +314,7 @@ async function beginFileOperation(outputs: string[], inputs: string[]): Promise<
     await rm(tempDir, { recursive: true, force: true });
     throw new ImageWorkshopError('Operation temporary directory resolves through a symlink or junction.');
   }
-  return { finalParent: parents[0], tempDir, finalPaths };
+  return { finalParent: parents[0], tempDir, finalPaths, committedPaths: [], cleanupFailures: [] };
 }
 
 async function beginDirectoryOperation(outputDirInput: string, inputs: string[]): Promise<FileOperation & { outputDir: string }> {
@@ -326,7 +335,7 @@ async function beginDirectoryOperation(outputDirInput: string, inputs: string[])
     await rm(tempDir, { recursive: true, force: true });
     throw new ImageWorkshopError('Operation temporary directory resolves through a symlink or junction.');
   }
-  return { finalParent: parent, tempDir, finalPaths: [], outputDir };
+  return { finalParent: parent, tempDir, finalPaths: [], committedPaths: [], cleanupFailures: [], outputDir };
 }
 
 async function assertOperationParent(operation: FileOperation, label: string): Promise<void> {
@@ -339,33 +348,84 @@ async function assertStageFile(path: string): Promise<void> {
   if (!info?.isFile() || info.isSymbolicLink()) throw new ImageWorkshopError(`Operation did not produce a regular staged file: ${path}`);
 }
 
-async function commitFiles(operation: FileOperation, entries: Array<{ finalPath: string; stagedPath: string }>): Promise<void> {
+function assertNotCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new ImageWorkshopError('Image operation was cancelled.');
+}
+
+function cancellationCleanupError(operation: FileOperation): ImageWorkshopError {
+  const uncertain = operation.cleanupFailures.length > 0
+    ? operation.cleanupFailures
+    : [operation.committedDirectory, ...operation.committedPaths, operation.tempDir].filter((path): path is string => Boolean(path));
+  return new ImageWorkshopError(`Image operation cancellation cleanup-unconfirmed; cleanup could not be confirmed for: ${uncertain.join(', ')}.`);
+}
+
+function noteCleanupFailure(operation: FileOperation, path: string): void {
+  if (!operation.cleanupFailures.includes(path)) operation.cleanupFailures.push(path);
+}
+
+async function removeOperation(operation: FileOperation, preserveCommitted = false): Promise<boolean> {
+  let confirmed = true;
+  if (!preserveCommitted) {
+    for (const path of [...operation.committedPaths].reverse()) {
+      try {
+        await rm(path, { force: true });
+      } catch {
+        confirmed = false;
+        noteCleanupFailure(operation, path);
+      }
+    }
+    if (operation.committedDirectory) {
+      try {
+        await rm(operation.committedDirectory, { recursive: true, force: true });
+      } catch {
+        confirmed = false;
+        noteCleanupFailure(operation, operation.committedDirectory);
+      }
+    }
+  }
+  try {
+    await rm(operation.tempDir, { recursive: true, force: true });
+  } catch {
+    confirmed = false;
+    noteCleanupFailure(operation, operation.tempDir);
+  }
+  return confirmed;
+}
+
+async function commitFiles(operation: FileOperation, entries: Array<{ finalPath: string; stagedPath: string }>, signal?: AbortSignal): Promise<void> {
   try {
     await assertOperationParent(operation, 'Output');
     for (const entry of entries) {
+      assertNotCancelled(signal);
       await assertStageFile(entry.stagedPath);
       await assertOutputDoesNotExist(entry.finalPath, [], 'Output');
     }
     // Hard-linking a verified staged file is an exclusive, no-clobber commit.
     // It avoids a pathExists-then-write race without introducing a lock layer.
     for (const entry of entries) {
+      assertNotCancelled(signal);
       try {
         await link(entry.stagedPath, entry.finalPath);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new ImageWorkshopError(`Output appeared during commit; refusing to overwrite the racing path: ${entry.finalPath}`);
         throw error;
       }
+      operation.committedPaths.push(entry.finalPath);
       await unlink(entry.stagedPath);
+      assertNotCancelled(signal);
     }
     await rm(operation.tempDir, { recursive: true, force: true });
+    assertNotCancelled(signal);
   } catch (error) {
-    await rm(operation.tempDir, { recursive: true, force: true });
+    const cleanupConfirmed = await removeOperation(operation, Boolean(signal?.aborted));
+    if (signal?.aborted && !cleanupConfirmed) throw cancellationCleanupError(operation);
     throw error;
   }
 }
 
-async function commitDirectory(operation: FileOperation & { outputDir: string }): Promise<void> {
+async function commitDirectory(operation: FileOperation & { outputDir: string }, signal?: AbortSignal): Promise<void> {
   try {
+    assertNotCancelled(signal);
     await assertOperationParent(operation, 'Output directory');
     let existing;
     try {
@@ -382,20 +442,26 @@ async function commitDirectory(operation: FileOperation & { outputDir: string })
       }
       throw error;
     }
+    operation.committedDirectory = operation.outputDir;
+    assertNotCancelled(signal);
   } catch (error) {
-    await rm(operation.tempDir, { recursive: true, force: true });
+    const cleanupConfirmed = await removeOperation(operation, Boolean(signal?.aborted));
+    if (signal?.aborted && !cleanupConfirmed) throw cancellationCleanupError(operation);
     throw error;
   }
 }
 
-async function removeOperation(operation: FileOperation): Promise<void> {
-  await rm(operation.tempDir, { recursive: true, force: true }).catch(() => undefined);
+async function failAfterOperationCleanup(operation: FileOperation, error: unknown, signal?: AbortSignal): Promise<never> {
+  const cleanupConfirmed = await removeOperation(operation, Boolean(signal?.aborted));
+  if (signal?.aborted && !cleanupConfirmed) throw cancellationCleanupError(operation);
+  throw error;
 }
 
 interface PixelGrid {
   width: number;
   height: number;
-  pixels: string[];
+  /** Packed RGBA pixels as uint32 values in RRGGBBAA order (alpha in the low byte). */
+  pixels: Uint32Array;
 }
 
 function parseInfo(text: string, path: string): { width: number; height: number; format: string; channels: string; opaque: boolean } {
@@ -412,34 +478,13 @@ function parseInfo(text: string, path: string): { width: number; height: number;
   return { width, height, format, channels, opaque: /^true$/i.test(opaqueValue) };
 }
 
-function parsePixelGrid(text: string, path: string): PixelGrid {
-  const header = text.match(/pixel enumeration:\s*(\d+),(\d+)/i);
-  if (!header) throw new ImageWorkshopError(`ImageMagick returned malformed pixel data for ${path}.`);
-  const width = Number(header[1]);
-  const height = Number(header[2]);
-  const pixels = new Array<string>(width * height);
-  for (const line of text.split(/\r?\n/)) {
-    const match = line.match(/^(\d+),(\d+):.*#([0-9a-f]+)\b/i);
-    if (!match) continue;
-    const x = Number(match[1]);
-    const y = Number(match[2]);
-    if (x < width && y < height) pixels[y * width + x] = match[3].toUpperCase();
-  }
-  if (pixels.some((value) => value === undefined)) throw new ImageWorkshopError(`ImageMagick returned incomplete pixel data for ${path}.`);
-  return { width, height, pixels };
-}
-
-function alphaValue(pixel: string): number {
-  return pixel.length >= 8 ? Number.parseInt(pixel.slice(-2), 16) : 255;
-}
-
 function alphaBounds(grid: PixelGrid): { left: number; top: number; right: number; bottom: number } | undefined {
   let left = grid.width;
   let top = grid.height;
   let right = -1;
   let bottom = -1;
   for (let y = 0; y < grid.height; y += 1) for (let x = 0; x < grid.width; x += 1) {
-    if (alphaValue(grid.pixels[y * grid.width + x]) > 0) {
+    if ((grid.pixels[y * grid.width + x] & 0xff) > 0) {
       left = Math.min(left, x);
       top = Math.min(top, y);
       right = Math.max(right, x);
@@ -450,13 +495,13 @@ function alphaBounds(grid: PixelGrid): { left: number; top: number; right: numbe
 }
 
 function cropGrid(source: PixelGrid, left: number, top: number, width: number, height: number): PixelGrid {
-  const pixels: string[] = [];
-  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) pixels.push(source.pixels[(top + y) * source.width + left + x]);
+  const pixels = new Uint32Array(width * height);
+  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) pixels[y * width + x] = source.pixels[(top + y) * source.width + left + x];
   return { width, height, pixels };
 }
 
 function placeGrid(source: PixelGrid, width: number, height: number, gravity: NonNullable<TrimPadOptions['gravity']>): PixelGrid {
-  const pixels = new Array<string>(width * height).fill('00000000');
+  const pixels = new Uint32Array(width * height);
   const horizontalCenter = Math.floor((width - source.width) / 2);
   const verticalCenter = Math.floor((height - source.height) / 2);
   const left = gravity.endsWith('east') || gravity === 'east' ? width - source.width : gravity.endsWith('west') || gravity === 'west' ? 0 : horizontalCenter;
@@ -471,8 +516,9 @@ function assertSameGrid(actual: PixelGrid, expected: PixelGrid, label: string): 
 }
 
 function resizeGrid(source: PixelGrid, scale: number): PixelGrid {
-  const pixels: string[] = [];
-  for (let y = 0; y < source.height; y += 1) for (let sy = 0; sy < scale; sy += 1) for (let x = 0; x < source.width; x += 1) for (let sx = 0; sx < scale; sx += 1) pixels.push(source.pixels[y * source.width + x]);
+  const pixels = new Uint32Array(source.width * scale * source.height * scale);
+  let index = 0;
+  for (let y = 0; y < source.height; y += 1) for (let sy = 0; sy < scale; sy += 1) for (let x = 0; x < source.width; x += 1) for (let sx = 0; sx < scale; sx += 1) pixels[index++] = source.pixels[y * source.width + x];
   return { width: source.width * scale, height: source.height * scale, pixels };
 }
 
@@ -480,10 +526,11 @@ function assembleGrid(inputs: PixelGrid[], columns: number): PixelGrid {
   const cellWidth = inputs[0].width;
   const cellHeight = inputs[0].height;
   const rows = inputs.length / columns;
-  const pixels: string[] = [];
+  const pixels = new Uint32Array(cellWidth * columns * cellHeight * rows);
+  let index = 0;
   for (let row = 0; row < rows; row += 1) for (let y = 0; y < cellHeight; y += 1) for (let column = 0; column < columns; column += 1) {
     const source = inputs[row * columns + column];
-    pixels.push(...source.pixels.slice(y * cellWidth, (y + 1) * cellWidth));
+    for (let x = 0; x < cellWidth; x += 1) pixels[index++] = source.pixels[y * cellWidth + x];
   }
   return { width: cellWidth * columns, height: cellHeight * rows, pixels };
 }
@@ -501,16 +548,19 @@ async function inspectWith(toolchain: ImageToolchain, input: string, dependencie
   const env = dependencies.env ?? process.env;
   const path = safe.path;
   const args = [...RESOURCE_ARGS, path, '-format', '%w|%h|%m|%[channels]|%[opaque]', 'info:'];
+  assertNotCancelled(dependencies.signal);
   let result;
   try {
     result = await runner(toolchain.imageMagick, args, {
       env: withoutCredentials(env),
       platform: dependencies.platform ?? process.platform,
-      timeoutMs: dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS
+      timeoutMs: dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      signal: dependencies.signal
     });
   } catch (error) {
     throw new ImageWorkshopError(`ImageMagick inspect failed for ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
+  assertNotCancelled(dependencies.signal);
   if (result.exitCode !== 0) throw new ImageWorkshopError(`ImageMagick inspect failed: ${commandFailure(toolchain.imageMagick, args, result, env).message}`);
   const info = parseInfo(result.stdout, path);
   const maxPixels = dependencies.maxPixels ?? DEFAULT_MAX_PIXELS;
@@ -562,6 +612,7 @@ export class ImageWorkshop {
   ) {}
 
   async inspect(input: string): Promise<ImageMetadata> {
+    assertNotCancelled(this.dependencies.signal);
     return inspectWith(this.toolchain, resolvedInput(input), this.dependencies);
   }
 
@@ -569,36 +620,89 @@ export class ImageWorkshop {
     const runner = this.dependencies.commandRunner ?? runCommand;
     const env = this.dependencies.env ?? process.env;
     const fullArgs = [...RESOURCE_ARGS, ...args];
+    assertNotCancelled(this.dependencies.signal);
     let result;
     try {
       result = await runner(this.toolchain.imageMagick, fullArgs, {
         env: withoutCredentials(env),
         platform: this.dependencies.platform ?? process.platform,
-        timeoutMs: this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS
+        timeoutMs: this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        signal: this.dependencies.signal
       });
     } catch (error) {
       throw new ImageWorkshopError(`ImageMagick ${operation} could not start: ${error instanceof Error ? error.message : String(error)}`);
     }
+    assertNotCancelled(this.dependencies.signal);
     if (result.exitCode !== 0) throw new ImageWorkshopError(`ImageMagick ${operation} failed: ${commandFailure(this.toolchain.imageMagick, fullArgs, result, env).message}`);
   }
 
   private async pixels(path: string): Promise<PixelGrid> {
     const runner = this.dependencies.commandRunner ?? runCommand;
     const env = this.dependencies.env ?? process.env;
-    const args = [...RESOURCE_ARGS, resolve(path), '-alpha', 'on', '-depth', '8', '-colorspace', 'sRGB', '-compress', 'none', 'txt:-'];
-    let result;
+    const maxPixels = this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS;
+    const platform = this.dependencies.platform ?? process.platform;
+    const timeoutMs = this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+    // Probe dimensions with the same bounded metadata transport as inspect();
+    // the binary RGBA payload size is derived from them so a mismatch is exact.
+    const infoArgs = [...RESOURCE_ARGS, path, '-format', '%w %h', 'info:'];
+    assertNotCancelled(this.dependencies.signal);
+    let info;
     try {
-      result = await runner(this.toolchain.imageMagick, args, {
-        env: withoutCredentials(env),
-        platform: this.dependencies.platform ?? process.platform,
-        timeoutMs: this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS
-      });
+      info = await runner(this.toolchain.imageMagick, infoArgs, { env: withoutCredentials(env), platform, timeoutMs, signal: this.dependencies.signal });
     } catch (error) {
       throw new ImageWorkshopError(`ImageMagick pixel verification could not start for ${path}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (result.exitCode !== 0) throw new ImageWorkshopError(`ImageMagick pixel verification failed: ${commandFailure(this.toolchain.imageMagick, args, result, env).message}`);
-    if (result.stdout.length > 4 * 1024 * 1024) throw new ImageWorkshopError(`Pixel fidelity output for ${path} exceeded the 4 MiB verification limit.`);
-    return parsePixelGrid(result.stdout, resolve(path));
+    assertNotCancelled(this.dependencies.signal);
+    if (info.exitCode !== 0) throw new ImageWorkshopError(`ImageMagick pixel verification failed: ${commandFailure(this.toolchain.imageMagick, infoArgs, info, env).message}`);
+    const [widthText, heightText] = info.stdout.trim().split(/\s+/);
+    const width = Number(widthText);
+    const height = Number(heightText);
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+      throw new ImageWorkshopError(`ImageMagick returned malformed pixel dimensions for ${path}.`);
+    }
+    if (width * height > maxPixels) throw new ImageWorkshopError(`Pixel verification for ${path} exceeds the ${maxPixels}-pixel resource limit.`);
+
+    const expectedBytes = width * height * 4;
+    const tempDir = await mkdtemp(join(tmpdir(), 'dsh-pixel-grid-'));
+    const rawPath = join(tempDir, 'rgba.bin');
+    try {
+      const rawArgs = [...RESOURCE_ARGS, path, '-alpha', 'on', '-depth', '8', '-colorspace', 'sRGB', `RGBA:${rawPath}`];
+      assertNotCancelled(this.dependencies.signal);
+      let raw;
+      try {
+        raw = await runner(this.toolchain.imageMagick, rawArgs, { env: withoutCredentials(env), platform, timeoutMs, signal: this.dependencies.signal });
+      } catch (error) {
+        throw new ImageWorkshopError(`ImageMagick pixel verification could not start for ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      assertNotCancelled(this.dependencies.signal);
+      if (raw.exitCode !== 0) throw new ImageWorkshopError(`ImageMagick pixel verification failed: ${commandFailure(this.toolchain.imageMagick, rawArgs, raw, env).message}`);
+      let bytes: Uint8Array;
+      try {
+        const file = await open(rawPath, 'r');
+        try {
+          const rawStat = await file.stat();
+          if (rawStat.size !== expectedBytes) throw new ImageWorkshopError(`ImageMagick returned incomplete pixel data for ${path} (${rawStat.size} bytes, expected ${expectedBytes}).`);
+          const buffer = new Uint8Array(expectedBytes);
+          const { bytesRead } = await file.read(buffer, 0, expectedBytes, 0);
+          if (bytesRead !== expectedBytes) throw new ImageWorkshopError(`ImageMagick returned incomplete pixel data for ${path} (read ${bytesRead} bytes, expected ${expectedBytes}).`);
+          bytes = buffer;
+        } finally {
+          await file.close();
+        }
+      } catch (error) {
+        if (error instanceof ImageWorkshopError) throw error;
+        throw new ImageWorkshopError(`ImageMagick pixel data could not be read for ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const pixels = new Uint32Array(width * height);
+      for (let index = 0; index < width * height; index += 1) {
+        const offset = index * 4;
+        pixels[index] = ((bytes[offset] << 24) >>> 0) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3];
+      }
+      return { width, height, pixels };
+    } finally {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   private async finish(
@@ -624,12 +728,16 @@ export class ImageWorkshop {
       verificationLevel,
       lossless
     };
+    assertNotCancelled(this.dependencies.signal);
     await writeManifestInStage(manifestStage, manifest);
-    await commitFiles(operation, [...stagedOutputs.map((entry) => ({ finalPath: entry.finalPath, stagedPath: entry.stagedPath })), { finalPath: manifestPath, stagedPath: manifestStage }]);
+    assertNotCancelled(this.dependencies.signal);
+    await commitFiles(operation, [...stagedOutputs.map((entry) => ({ finalPath: entry.finalPath, stagedPath: entry.stagedPath })), { finalPath: manifestPath, stagedPath: manifestStage }], this.dependencies.signal);
+    assertNotCancelled(this.dependencies.signal);
     return { operation: name, outputPaths: stagedOutputs.map((entry) => entry.finalPath), manifestPath, manifest };
   }
 
   async resizePixel(options: ResizePixelOptions): Promise<ImageOperationResult> {
+    assertNotCancelled(this.dependencies.signal);
     const input = resolvedInput(options.input);
     const output = resolvedInput(options.output, 'Output');
     const inputInfo = await this.inspect(input);
@@ -652,19 +760,23 @@ export class ImageWorkshop {
     const operation = await beginFileOperation([output, manifestPathForOutput(output)], [input]);
     const staged = join(operation.tempDir, basename(output));
     try {
-      await this.magick('pixel resize', [input, ...alphaOption(inputInfo.hasAlpha), '-filter', 'point', '-resize', `${expectedWidth}x${expectedHeight}!`, ...PNG_DETERMINISM_ARGS, staged]);
+      // `-sample` performs exact integer nearest-neighbour scaling and, unlike
+      // `-filter point -resize`, preserves the hidden RGB values under fully
+      // transparent pixels (alpha 0), so the strict full-RGBA fidelity check
+      // below passes for transparent-white faces/icons as well as opaque art.
+      await this.magick('pixel resize', [input, ...alphaOption(inputInfo.hasAlpha), '-sample', `${expectedWidth}x${expectedHeight}!`, ...PNG_DETERMINISM_ARGS, staged]);
       const outputInfo = await this.inspect(staged);
       if (outputInfo.width !== expectedWidth || outputInfo.height !== expectedHeight) throw new ImageWorkshopError('Pixel resize output dimensions did not match the requested integer scale.');
       if (outputInfo.hasAlpha !== inputInfo.hasAlpha) throw new ImageWorkshopError('Pixel resize changed the source alpha channel.');
       assertSameGrid(await this.pixels(staged), resizeGrid(sourceGrid, scale), 'Pixel resize');
-      return await this.finish(operation, 'resize-pixel', [inputInfo], [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { scale, filter: 'point', sourceOverwrite: false }, { dimensions: true, alphaPreserved: true, nearestNeighbor: true, pixelsMatch: true }, 'decoded-pixels', true);
+      return await this.finish(operation, 'resize-pixel', [inputInfo], [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { scale, operator: 'sample', sourceOverwrite: false }, { dimensions: true, alphaPreserved: true, nearestNeighbor: true, pixelsMatch: true }, 'decoded-pixels', true);
     } catch (error) {
-      await removeOperation(operation);
-      throw error;
+      return failAfterOperationCleanup(operation, error, this.dependencies.signal);
     }
   }
 
   async trimPad(options: TrimPadOptions): Promise<ImageOperationResult> {
+    assertNotCancelled(this.dependencies.signal);
     const input = resolvedInput(options.input);
     const output = resolvedInput(options.output, 'Output');
     const inputInfo = await this.inspect(input);
@@ -674,36 +786,49 @@ export class ImageWorkshop {
     const height = numberOption(options.height, 'Canvas height');
     if ((width === undefined) !== (height === undefined)) throw new ImageWorkshopError('Canvas width and height must be supplied together.');
     const bounds = trim && inputInfo.hasAlpha ? alphaBounds(sourceGrid) : undefined;
-    const effectiveTrim = trim && inputInfo.hasAlpha && bounds !== undefined;
     const trimmedWidth = bounds ? bounds.right - bounds.left + 1 : inputInfo.width;
     const trimmedHeight = bounds ? bounds.bottom - bounds.top + 1 : inputInfo.height;
     if (width !== undefined && (width < trimmedWidth || height! < trimmedHeight)) throw new ImageWorkshopError(`Transparent padding canvas ${width}x${height} is smaller than the ${trimmedWidth}x${trimmedHeight} trimmed image.`);
     const maxPixels = this.dependencies.maxPixels ?? DEFAULT_MAX_PIXELS;
     if (width !== undefined && width * height! > maxPixels) throw new ImageWorkshopError(`Trim/pad output would exceed the ${maxPixels}-pixel resource limit.`);
+    const outputHasAlpha = width !== undefined || inputInfo.hasAlpha;
+    // Compose the exact trimmed/padded grid from the decoded source pixels
+    // instead of asking ImageMagick to -trim/-extent. Geometry operators such
+    // as -extent normalize the hidden RGB values under fully transparent
+    // pixels (alpha 0) to black, silently destroying data that the strict
+    // fidelity check and downstream consumers expect to survive. Composing the
+    // grid here keeps those bytes intact and lets ImageMagick only encode them.
+    const expectedTrimmed = bounds ? cropGrid(sourceGrid, bounds.left, bounds.top, trimmedWidth, trimmedHeight) : sourceGrid;
+    const expectedGrid = width !== undefined ? placeGrid(expectedTrimmed, width, height!, options.gravity ?? 'center') : expectedTrimmed;
     const operation = await beginFileOperation([output, manifestPathForOutput(output)], [input]);
     const staged = join(operation.tempDir, basename(output));
-    const outputHasAlpha = width !== undefined || inputInfo.hasAlpha;
+    const rawPath = join(operation.tempDir, 'composed.raw');
     try {
-      const args = [input, ...alphaOption(outputHasAlpha)];
-      if (effectiveTrim) args.push('-trim', '+repage');
-      if (width !== undefined) args.push('-background', 'none', '-gravity', options.gravity ?? 'center', '-extent', `${width}x${height}`);
-      args.push(...PNG_DETERMINISM_ARGS, staged);
-      await this.magick('trim/pad', args);
+      const channels = outputHasAlpha ? 4 : 3;
+      const rawBytes = Buffer.alloc(expectedGrid.pixels.length * channels);
+      for (let index = 0; index < expectedGrid.pixels.length; index += 1) {
+        const pixel = expectedGrid.pixels[index];
+        const offset = index * channels;
+        rawBytes[offset] = (pixel >>> 24) & 0xff;
+        rawBytes[offset + 1] = (pixel >>> 16) & 0xff;
+        rawBytes[offset + 2] = (pixel >>> 8) & 0xff;
+        if (channels === 4) rawBytes[offset + 3] = pixel & 0xff;
+      }
+      await writeFile(rawPath, rawBytes);
+      await this.magick('trim/pad encode', ['-size', `${expectedGrid.width}x${expectedGrid.height}`, '-depth', '8', channels === 4 ? `RGBA:${rawPath}` : `RGB:${rawPath}`, ...PNG_DETERMINISM_ARGS, staged]);
       const outputInfo = await this.inspect(staged);
       if (width !== undefined && (outputInfo.width !== width || outputInfo.height !== height)) throw new ImageWorkshopError('Trim/pad output dimensions did not match the requested transparent canvas.');
       if (outputInfo.hasAlpha !== outputHasAlpha) throw new ImageWorkshopError('Trim/pad output alpha semantics did not match the requested operation.');
-      const expectedTrimmed = bounds ? cropGrid(sourceGrid, bounds.left, bounds.top, trimmedWidth, trimmedHeight) : sourceGrid;
-      const expectedGrid = width !== undefined ? placeGrid(expectedTrimmed, width, height!, options.gravity ?? 'center') : expectedTrimmed;
       assertSameGrid(await this.pixels(staged), expectedGrid, 'Trim/pad');
       const transparentPadding = width !== undefined && (outputHasAlpha && (width > trimmedWidth || height! > trimmedHeight));
-      return await this.finish(operation, 'trim-pad', [inputInfo], [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { trim, canvas: width !== undefined ? { width, height } : undefined, gravity: options.gravity ?? 'center', sourceOverwrite: false, fullyTransparentTrim: trim && inputInfo.hasAlpha && bounds === undefined ? 'preserve-source-canvas' : undefined }, { dimensions: true, alphaPreserved: true, alphaChannelAddedForPadding: !inputInfo.hasAlpha && width !== undefined, sourceAlphaBounds: bounds ?? null, trimmedSize: { width: trimmedWidth, height: trimmedHeight }, transparentPadding }, 'decoded-pixels', true);
+      return await this.finish(operation, 'trim-pad', [inputInfo], [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { trim, canvas: width !== undefined ? { width, height } : undefined, gravity: options.gravity ?? 'center', sourceOverwrite: false, composer: 'decoded-grid', fullyTransparentTrim: trim && inputInfo.hasAlpha && bounds === undefined ? 'preserve-source-canvas' : undefined }, { dimensions: true, alphaPreserved: true, alphaChannelAddedForPadding: !inputInfo.hasAlpha && width !== undefined, sourceAlphaBounds: bounds ?? null, trimmedSize: { width: trimmedWidth, height: trimmedHeight }, transparentPadding }, 'decoded-pixels', true);
     } catch (error) {
-      await removeOperation(operation);
-      throw error;
+      return failAfterOperationCleanup(operation, error, this.dependencies.signal);
     }
   }
 
   async sheetSlice(options: SheetSliceOptions): Promise<ImageOperationResult> {
+    assertNotCancelled(this.dependencies.signal);
     const input = resolvedInput(options.input);
     const outputDir = resolvedInput(options.outputDir, 'Output directory');
     const cellWidth = numberOption(options.cellWidth, 'Cell width');
@@ -720,7 +845,11 @@ export class ImageWorkshop {
     const stagedOutputs = frames.map((frame) => join(operation.tempDir, `frame-${String(frame.index).padStart(4, '0')}.png`));
     const manifestPath = join(outputDir, 'manifest.json');
     try {
-      await this.magick('sheet slicing', [input, ...alphaOption(inputInfo.hasAlpha), '-crop', `${cellWidth}x${cellHeight}`, '+repage', ...PNG_DETERMINISM_ARGS, join(operation.tempDir, 'frame-%04d.png')]);
+      // `+repage` before -crop normalizes any virtual-canvas page geometry the
+      // input may carry (assembled sheets and editor exports can embed a
+      // leftover page smaller than the image), so -crop tiles the whole sheet
+      // instead of yielding a single frame at the stale page offset.
+      await this.magick('sheet slicing', [input, ...alphaOption(inputInfo.hasAlpha), '+repage', '-crop', `${cellWidth}x${cellHeight}`, '+repage', ...PNG_DETERMINISM_ARGS, join(operation.tempDir, 'frame-%04d.png')]);
       const sourceGrid = await this.pixels(input);
       const metadata: ImageMetadata[] = [];
       for (const frame of frames) {
@@ -741,16 +870,18 @@ export class ImageWorkshop {
         verificationLevel: 'decoded-pixels',
         lossless: true
       };
+      assertNotCancelled(this.dependencies.signal);
       await writeManifestInStage(join(operation.tempDir, 'manifest.json'), manifest);
-      await commitDirectory(operation);
+      await commitDirectory(operation, this.dependencies.signal);
+      assertNotCancelled(this.dependencies.signal);
       return { operation: 'sheet-slice', outputPaths: outputs, manifestPath, manifest };
     } catch (error) {
-      await removeOperation(operation);
-      throw error;
+      return failAfterOperationCleanup(operation, error, this.dependencies.signal);
     }
   }
 
   async sheetAssemble(options: SheetAssembleOptions): Promise<ImageOperationResult> {
+    assertNotCancelled(this.dependencies.signal);
     if (options.inputs.length === 0) throw new ImageWorkshopError('Sheet assembly requires at least one input.');
     if (options.inputs.length > 256) throw new ImageWorkshopError('Sheet assembly is bounded to 256 input cells.');
     const inputs = options.inputs.map((path) => resolvedInput(path));
@@ -776,18 +907,22 @@ export class ImageWorkshop {
         rowPaths.push(rowPath);
         await this.magick('sheet row assembly', [...inputs.slice(row * columns, (row + 1) * columns), ...alphaOption(inputInfo[0].hasAlpha), '+append', ...PNG_DETERMINISM_ARGS, rowPath]);
       }
-      await this.magick('sheet assembly', [...rowPaths, ...alphaOption(inputInfo[0].hasAlpha), '-append', ...PNG_DETERMINISM_ARGS, staged]);
+      // `+repage` after -append clears the virtual canvas that the append
+      // operators would otherwise leak into the assembled PNG (the page stays
+      // at the first cell's size). A stale page makes later sheet slicing or
+      // editor imports treat the sheet as a single frame at an offset.
+      await this.magick('sheet assembly', [...rowPaths, ...alphaOption(inputInfo[0].hasAlpha), '-append', '+repage', ...PNG_DETERMINISM_ARGS, staged]);
       const outputInfo = await this.inspect(staged);
       const sourceGrids = await Promise.all(inputs.map((path) => this.pixels(path)));
       assertSameGrid(await this.pixels(staged), assembleGrid(sourceGrids, columns), 'Sheet assembly');
       return await this.finish(operation, 'sheet-assemble', inputInfo, [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { columns, order: 'row-major', sourceOverwrite: false }, { dimensions: true, alphaPreserved: true, pixelsMatch: true }, 'decoded-pixels', true);
     } catch (error) {
-      await removeOperation(operation);
-      throw error;
+      return failAfterOperationCleanup(operation, error, this.dependencies.signal);
     }
   }
 
   async atlasPack(options: AtlasPackOptions): Promise<ImageOperationResult> {
+    assertNotCancelled(this.dependencies.signal);
     if (options.inputs.length === 0) throw new ImageWorkshopError('Atlas packing requires at least one input.');
     if (options.inputs.length > 256) throw new ImageWorkshopError('Atlas packing is bounded to 256 input images.');
     const inputs = options.inputs.map((path) => resolvedInput(path));
@@ -810,6 +945,7 @@ export class ImageWorkshop {
     const stagedPng = join(operation.tempDir, basename(outputPaths.png));
     const stagedJson = join(operation.tempDir, basename(outputPaths.json));
     const stagedManifest = join(operation.tempDir, basename(outputPaths.manifest));
+    let stage = 'atlas helper packing';
     try {
       let packAsync = this.dependencies.atlasPacker;
       if (!packAsync) {
@@ -819,39 +955,49 @@ export class ImageWorkshop {
       }
       if (!packAsync) throw new ImageWorkshopError(`Pinned ${FREE_TEX_PACKAGE}@${FREE_TEX_PACKER_VERSION} does not expose packAsync.`);
       const packFiles = await Promise.all(inputs.map(async (path) => ({ path: basename(path), contents: await readFile(path) })));
-      const packPromise = packAsync(packFiles, {
-        textureName: outputPaths.textureName,
-        width: maxSize,
-        height: maxSize,
-        padding,
-        extrude: extrusion,
-        allowRotation: false,
-        allowTrim: options.fixedGrid ? false : true,
-        detectIdentical: false,
-        removeFileExtension: false,
-        prependFolderName: false,
-        scaleMethod: 'NEAREST_NEIGHBOR',
-        exporter: 'JsonHash',
-        textureFormat: 'png'
-      });
-      const deadline = this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      let abortHandler: (() => void) | undefined;
       let files: Array<{ name: string; buffer: Buffer }>;
       try {
+        assertNotCancelled(this.dependencies.signal);
+        const abortPromise = this.dependencies.signal
+          ? new Promise<never>((_, reject) => {
+            abortHandler = () => reject(new ImageWorkshopError('Atlas packing was cancelled.'));
+            this.dependencies.signal!.addEventListener('abort', abortHandler, { once: true });
+            if (this.dependencies.signal!.aborted) abortHandler();
+          })
+          : undefined;
+        const packPromise = runImageDiagnosticStage(this.dependencies.diagnostics, 'atlas-helper', FREE_TEX_PACKAGE, () => packAsync!(packFiles, {
+          textureName: outputPaths.textureName,
+          width: maxSize,
+          height: maxSize,
+          padding,
+          extrude: extrusion,
+          allowRotation: false,
+          allowTrim: options.fixedGrid ? false : true,
+          detectIdentical: false,
+          removeFileExtension: false,
+          prependFolderName: false,
+          scaleMethod: 'NEAREST_NEIGHBOR',
+          exporter: 'JsonHash',
+          textureFormat: 'png'
+        }), this.dependencies.signal);
         files = await Promise.race([
           packPromise,
-          new Promise<never>((_, reject) => { deadlineTimer = setTimeout(() => reject(new ImageWorkshopError(`Atlas packing exceeded the ${deadline}ms operation deadline.`)), deadline); })
+          ...(abortPromise ? [abortPromise] : [])
         ]);
       } finally {
-        if (deadlineTimer) clearTimeout(deadlineTimer);
+        if (abortHandler) this.dependencies.signal?.removeEventListener('abort', abortHandler);
       }
       const pngFile = files.find((file) => /\.png$/i.test(file.name));
       const jsonFile = files.find((file) => /\.json$/i.test(file.name));
       if (!pngFile || !jsonFile) throw new ImageWorkshopError('Atlas helper did not return both PNG and JSON outputs.');
+      stage = 'atlas artifact writing';
       await writeFile(stagedPng, pngFile.buffer, { flag: 'wx' });
       await writeFile(stagedJson, jsonFile.buffer, { flag: 'wx' });
+      stage = 'atlas output inspection';
       const atlasInfo = await this.inspect(stagedPng);
       if (atlasInfo.width > maxSize || atlasInfo.height > maxSize || atlasInfo.width * atlasInfo.height > maxPixels) throw new ImageWorkshopError(`Atlas output ${atlasInfo.width}x${atlasInfo.height} exceeds the configured resource limit.`);
+      stage = 'atlas frame verification';
       const atlasGrid = await this.pixels(stagedPng);
       const parsed = await readJsonFile(stagedJson);
       const frameObject = asObject(parsed.frames);
@@ -894,6 +1040,7 @@ export class ImageWorkshop {
         }
       }
       const jsonArtifact = await jsonMetadata(stagedJson, outputPaths.json);
+      stage = 'atlas commit';
       const manifest: ImageOperationManifest = {
         schemaVersion: 2,
         operation: 'atlas-pack',
@@ -905,19 +1052,23 @@ export class ImageWorkshop {
         verificationLevel: 'representative-pixels',
         lossless: false
       };
+      assertNotCancelled(this.dependencies.signal);
       await writeManifestInStage(stagedManifest, manifest);
       for (const stagedArtifact of [stagedPng, stagedJson, stagedManifest]) await assertStageFile(stagedArtifact);
       await readJsonFile(stagedManifest);
-      await commitDirectory(operation);
+      await commitDirectory(operation, this.dependencies.signal);
+      assertNotCancelled(this.dependencies.signal);
       return { operation: 'atlas-pack', outputPaths: [outputPaths.png, outputPaths.json], manifestPath: outputPaths.manifest, manifest };
     } catch (error) {
-      await removeOperation(operation);
+      const cleanupConfirmed = await removeOperation(operation, Boolean(this.dependencies.signal?.aborted));
+      if (this.dependencies.signal?.aborted && !cleanupConfirmed) throw cancellationCleanupError(operation);
       if (error instanceof ImageWorkshopError) throw error;
-      throw new ImageWorkshopError(`Atlas packing failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new ImageWorkshopError(`Atlas packing failed during ${stage}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
   async optimizePng(options: OptimizePngOptions): Promise<ImageOperationResult> {
+    assertNotCancelled(this.dependencies.signal);
     const input = resolvedInput(options.input);
     const output = resolvedInput(options.output, 'Output');
     if (!/\.png$/i.test(input) || !/\.png$/i.test(output)) throw new ImageWorkshopError('Explicit PNG optimization requires PNG input and output paths.');
@@ -934,7 +1085,7 @@ export class ImageWorkshop {
       const args = ['-o', String(level), '--strip', 'safe', '--out', staged, input];
       let result;
       try {
-        result = await runner(this.toolchain.oxipng, args, { env: withoutCredentials(env), platform: this.dependencies.platform ?? process.platform, timeoutMs: this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS });
+        result = await runner(this.toolchain.oxipng, args, { env: withoutCredentials(env), platform: this.dependencies.platform ?? process.platform, timeoutMs: this.dependencies.timeoutMs ?? DEFAULT_TIMEOUT_MS, signal: this.dependencies.signal });
       } catch (error) {
         throw new ImageWorkshopError(`oxipng optimization could not start: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -944,8 +1095,7 @@ export class ImageWorkshop {
       assertSameGrid(await this.pixels(staged), sourcePixels, 'oxipng decoded-pixel');
       return await this.finish(operation, 'optimize-png', [inputInfo], [{ finalPath: output, stagedPath: staged, metadata: finalImageMetadata(outputInfo, output) }], { level, optimizer: 'oxipng', explicit: true, sourceOverwrite: false }, { dimensions: true, alphaPreserved: true, decodedPixelsEqual: true }, 'decoded-pixels', true);
     } catch (error) {
-      await removeOperation(operation);
-      throw error;
+      return failAfterOperationCleanup(operation, error, this.dependencies.signal);
     }
   }
 }

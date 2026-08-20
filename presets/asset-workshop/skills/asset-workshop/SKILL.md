@@ -5,45 +5,51 @@ description: Deterministic, Windows-first RPG Maker MV image transformations wit
 
 # Asset Workshop
 
+## Scope
+
+This Agent provides the seven deterministic local image tools below. It does not provide remote visual analysis, OCR, or AI image generation.
+
 Use the harness-owned image workflow for every raster transformation. Do not
 write an ImageMagick command from memory, use `convert`, use a PATH-discovered
-binary, or invoke a user-provided shell wrapper. The launcher exposes the
-resolved command through `DSH_IMAGE_WORKSHOP_CLI`; pass paths as separate
-arguments and keep the selected project/source files untouched.
+binary, or invoke a user-provided shell wrapper. Prefer the typed tools below;
+the launcher-internal `DSH_IMAGE_WORKSHOP_CLI` is a maintainer/debug detail and
+must never be explained to the user or invoked directly.
 
-The supported outcome operations are:
+## Typed image tools
 
-- `resize-pixel`: integer nearest-neighbour scaling only; reject non-integer
-  scales rather than introducing a smoothing filter.
-- `trim-pad`: trim transparent borders and/or pad to an explicit canvas with a
-  transparent background.
-- `sheet-slice`: fixed cell width/height, row-major frame order, PNG frame files
-  and a JSON frame manifest.
-- `sheet-assemble`: row-major PNG assembly from equal-sized cells.
-- `atlas-pack`: pinned `free-tex-packer-core@0.3.9`, nearest-neighbour,
-  no-rotation defaults, optional padding/extrusion, and JSON frame metadata.
-  `--output` is a new output directory; the PNG, JSON, and `manifest.json` are
-  committed together by one atomic directory rename.
-- `optimize-png`: an explicit release-only post-pass through pinned
-  `oxipng@10.2.0`; never call it as an implicit part of editing.
+This Agent mounts the app-owned image tool plugin, which exposes typed tools
+scoped to this Agent only. Use them instead of constructing commands:
 
-Invoke the CLI with the operation name and its flags. For example:
+- `image_inspect` — decode and report an image's metadata (dimensions, format,
+  channels, alpha, bytes, SHA-256). `input` is project-relative to this
+  Agent's workspace.
+- `image_resize_pixel` — pixel-safe integer nearest-neighbour scaling.
+  Provide `scale`, or both `width` and `height` that match one integer scale;
+  non-integer scales are rejected rather than smoothed. `output` must not
+  exist and the source is never overwritten.
+- `image_trim_pad` — trim fully transparent margins and/or pad a transparent
+  canvas. `trim` defaults to true; supplying `width` and `height` together
+  pads to that exact canvas size, with optional `gravity` placement.
+  `output` must not exist and the source is never overwritten.
+- `image_sheet_slice` — slice a sprite sheet into equal `cellWidth` ×
+  `cellHeight` frames into a new `outputDir` (must not exist), writing
+  `frame-0000.png`… (zero-based) and `manifest.json`.
+- `image_sheet_assemble` — assemble equal-sized images (`inputs` array) into
+  one sprite sheet with `columns`; the input count must be divisible by
+  `columns`. `output` must not exist and sources are never overwritten.
+- `image_atlas_pack` — pack differently sized images (`inputs` array, unique
+  file names) into a PNG atlas plus JSON frame map in a new `output` directory
+  (must not exist). `maxSize` is required; `padding`, `extrusion`, and
+  `fixedGrid` are optional. Sources are never overwritten.
+- `image_optimize_png` — lossless oxipng optimization (`level` 0-6, default 4)
+  that preserves decoded pixels, dimensions, and alpha. PNG input/output only;
+  `output` must not exist and the source is never overwritten.
 
-```text
-bun "$DSH_IMAGE_WORKSHOP_CLI" image resize-pixel --input <source.png> --output <new.png> --scale 3
-bun "$DSH_IMAGE_WORKSHOP_CLI" image trim-pad --input <source.png> --output <new.png> --trim --width 64 --height 64
-bun "$DSH_IMAGE_WORKSHOP_CLI" image sheet-slice --input <sheet.png> --output-dir <frames> --cell-width 48 --cell-height 48
-bun "$DSH_IMAGE_WORKSHOP_CLI" image atlas-pack --inputs-json '["a.png","b.png"]' --output <new-atlas-directory> --max-size 2048 --fixed-grid
-bun "$DSH_IMAGE_WORKSHOP_CLI" image optimize-png --input <verified.png> --output <release.png> --level 4
-```
-
-Every mutating operation must report its JSON manifest and inspect the output
-before claiming success. The manifest records resolved tool paths and versions,
-input/output dimensions, format, channels, alpha mode, hashes, options, and
-fidelity evidence. Atlas output is a new directory containing its PNG, JSON,
-and `manifest.json`; a pre-existing output directory is a collision. Other
-operations preserve the manifest beside the output. Never replace a source
-file, even during an explicit optimization; use a distinct release output.
+Every path passed to these tools is project-relative to the current DSH Web workspace; the workspace is selected in DSH Web, not by the launcher.
+absolute paths, `..` traversal, symlink/junction escapes, missing inputs, and
+pre-existing outputs are rejected. External sources must first be copied into
+the workspace. Array inputs (sheet assembly, atlas packing) are real schema
+arrays; never encode them as JSON strings or shell text.
 
 The workflow has bounded ImageMagick resource and time limits. Treat malformed
 inputs, non-zero exits, missing output files, failed dimension/alpha checks,
@@ -51,6 +57,7 @@ failed pixel checks, and incomplete atlas JSON as actionable failures. Paths
 may contain spaces and CJK characters; do not quote or concatenate them into a
 shell command string.
 
+Do not invoke app-owned harness source or runtimes through shell escalation.
 The optional Photoshop, Aseprite, and TexturePacker paths in the manifest are
 capability hints only. They are user-owned enhancements: do not download,
 redistribute, require, or silently invoke them. PNG/MV work falls back to the

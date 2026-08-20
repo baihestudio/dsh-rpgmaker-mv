@@ -37,7 +37,7 @@ No fixture was retained in the repository.
 
 | Workflow | Default implementation | Non-negotiable policy |
 |---|---|---|
-| Pixel-art resize | ImageMagick | Require integer scale for nearest-neighbour jobs and emit `-filter point`; never silently use the default filter. |
+| Pixel-art resize | ImageMagick | Require integer scale for nearest-neighbour jobs and emit `-sample WxH!`; never silently use the default filter. `-sample` preserves hidden RGB under fully transparent pixels where `-filter point -resize` normalizes it, so strict full-RGBA verification stays exact. |
 | Crop / trim / pad | ImageMagick | Use explicit geometry. Pad with `-background none` unless the request explicitly asks for a matte. Record source and destination rectangles. |
 | Transparency / matte cleanup | ImageMagick | Preserve alpha by default. Color-key or matte removal must be explicit and previewed against both light and dark checkerboards. |
 | Palette / color operations | ImageMagick | Prefer an explicit palette/remap or `-colors N -dither None`; verify palette size, alpha mode, and representative pixel values. |
@@ -75,10 +75,11 @@ magick pixel.png sheet.png layers.psd
 
 Observed results:
 
-- `-filter point` kept the red 2x2 block as exactly red pixels and left the transparent area alpha 0; no blended edge colors appeared.
+- `-filter point` kept the red 2x2 block as exactly red pixels and left the transparent area alpha 0; no blended edge colors appeared. It does, however, normalize hidden RGB under alpha-0 pixels: a transparent-white source (`#FFFFFF00`) becomes `#00000000`. `-sample 8x8` performs the same integer nearest-neighbour scaling while preserving the hidden RGB (`#FFFFFF00` stays `#FFFFFF00`), which is why production pixel-safe resize uses `-sample`.
 - Default `-resize` introduced partially covered red edge pixels (for example alpha values 193 and 62) and transparent pixels retaining red RGB. That is visually/semantically unsafe as an unannounced pixel-art default.
 - `-crop 4x4 +repage` produced two 4x4 frames in source order.
-- `-background none -extent` retained transparency. A non-`none` background deliberately produced an opaque matte, proving why the skill must not choose a background implicitly.
+- `-background none -extent` retained transparency. A non-`none` background deliberately produced an opaque matte, proving why the skill must not choose a background implicitly. Like `-filter point -resize`, `-extent` normalizes hidden RGB under alpha-0 pixels to black (`#FFFFFF00` becomes `#00000000`), so production trim/pad composes the exact trimmed/padded grid from the decoded pixels and only asks ImageMagick to encode the raw RGBA to PNG; the full decoded-pixel check still runs against that PNG.
+- `-append`/`+append` leak a virtual-canvas page geometry into the output PNG (the page stays at the first input's size, e.g. `4x4` on an `8x8` assembled sheet). A later `-crop WxH` then treats the stale page as the crop region and emits a single tile instead of tiling the whole sheet. Adding `+repage` after the final append (and before `-crop` when slicing) clears the page so assembled sheets slice back into every frame.
 - Writing two raster inputs to PSD and reopening it produced two PSD image frames (`4x4` and `8x4`). This is useful raster-layer smoke coverage only; it does **not** establish preservation of Photoshop adjustment layers, smart objects, text, effects, masks, or color-profile semantics.
 
 A 100-file `mogrify -path out -resize 16x16` batch completed in 0.07 seconds on this host and emitted 100 files. This is a small-startup smoke measurement, not a cross-machine benchmark; it supports using ImageMagick's batch mode rather than starting one process per asset.

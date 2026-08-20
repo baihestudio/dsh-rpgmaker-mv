@@ -1,12 +1,14 @@
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { EventEmitter } from 'node:events';
 import { strict as assert } from 'node:assert';
 
-import { findDshExecutable, verifyRuntime } from '../src/bootstrap';
-import { DSH_PACKAGE_NAME, DSH_VERSION } from '../src/config';
-import { prepareRpgMakerDeployment } from '../src/rpgmaker';
-import { runCommand } from '../src/process';
+import { bootstrapRuntime, findDshExecutable } from '../src/bootstrap';
+import { DSH_VERSION } from '../src/config';
+import { launchRpgmakerProject, prepareRpgMakerLaunch } from '../src/rpgmaker';
+import { redactSensitive, runCommand } from '../src/process';
+import { JS_RUNNER_ENV, MCPORTER_RUNTIME_ENV, XEROLO_RUNTIME_ENV } from '../src/workspace-mcp';
 
 const DATABASE_TYPES = ['Actors', 'Classes', 'Skills', 'Items', 'Weapons', 'Armors', 'Enemies', 'Troops', 'States', 'Animations', 'Tilesets', 'CommonEvents'];
 
@@ -14,85 +16,153 @@ function json(value: unknown): string {
   return `${JSON.stringify(value)}\n`;
 }
 
+function diagnosticText(value: string): string {
+  return redactSensitive(value, process.env);
+}
+
 async function makeFixture(root: string): Promise<string> {
-  const project = join(root, '选择 %! project with spaces');
+  const project = join(root, '选择 project with spaces');
   await mkdir(join(project, 'data'), { recursive: true });
   await mkdir(join(project, 'js', 'plugins'), { recursive: true });
   await writeFile(join(project, 'Game.rpgproject'), '{}\n');
-  await writeFile(join(project, 'data', 'System.json'), json({ gameTitle: 'Real Phase 2 Probe', startMapId: 1, switches: [null], variables: [null] }));
+  await writeFile(join(project, 'index.html'), '<!doctype html><html><body>Workspace MCP real acceptance</body></html>\n');
+  await writeFile(join(project, 'data', 'System.json'), json({ gameTitle: 'Workspace MCP real acceptance', startMapId: 1, switches: [null], variables: [null] }));
   for (const type of DATABASE_TYPES) await writeFile(join(project, 'data', `${type}.json`), type === 'Actors' ? json([null, { id: 1, name: 'Hero' }]) : '[null]\n');
   await writeFile(join(project, 'data', 'MapInfos.json'), json([null, { id: 1, name: 'Start', parentId: 0, order: 1, expanded: false }]));
-  await writeFile(join(project, 'data', 'Map001.json'), json({ displayName: 'Start', width: 17, height: 13, data: new Array(17 * 13 * 6).fill(0), events: [null, { id: 1, name: 'Guide', x: 1, y: 1, pages: [{ list: [{ code: 0, indent: 0, parameters: [] }] }] }] }));
-  await writeFile(join(project, 'js', 'plugins.js'), 'var $plugins =\n[{"name":"TestPlugin","status":true,"description":"","parameters":{}}\n];\n');
-  await writeFile(join(project, 'js', 'plugins', 'TestPlugin.js'), '// phase2 real probe\n');
+  await writeFile(join(project, 'data', 'Map001.json'), json({ displayName: 'Start', width: 17, height: 13, data: new Array(17 * 13 * 6).fill(0), events: [null] }));
+  await writeFile(join(project, 'js', 'plugins.js'), 'var $plugins = [];\n');
+  await writeFile(join(project, 'js', 'plugins', 'TestPlugin.js'), '// workspace MCP real acceptance\n');
+  await writeFile(join(project, 'js', 'main.js'), 'console.log("workspace MCP real acceptance");\n');
   return project;
 }
 
 const root = await mkdtemp(join(tmpdir(), 'dsh-rpgmaker-phase2-real-'));
-const allowedEnvironment = ['PATH', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP', 'SystemRoot', 'ComSpec', 'COMSPEC', 'PATHEXT', 'LANG', 'LC_ALL', 'TERM', 'BUN_INSTALL', 'NODE_PATH', 'NODE_OPTIONS'];
+const dshHome = join(root, 'state');
+const programRoot = join(root, 'program');
+const runtimeDir = join(programRoot, 'runtime', 'dsh');
+const mcporterRuntimeDir = join(programRoot, 'runtime', 'mcporter');
+const xeroloRuntimeDir = join(programRoot, 'runtime', 'mcp');
+const neutralLandingDir = join(programRoot, 'neutral');
 const safeEnv: Record<string, string> = {};
-for (const key of allowedEnvironment) {
+for (const key of ['PATH', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP', 'SystemRoot', 'ComSpec', 'COMSPEC', 'PATHEXT', 'LANG', 'LC_ALL', 'TERM', 'BUN_INSTALL', 'NODE_PATH', 'NODE_OPTIONS']) {
   const value = process.env[key];
   if (value !== undefined) safeEnv[key] = value;
 }
-safeEnv.DSH_HOME = join(root, 'dsh-home');
+safeEnv.DSH_HOME = dshHome;
+
 try {
   const project = await makeFixture(root);
-  const runtime = join(root, 'runtime');
-  const mcpRuntime = join(root, 'mcp-runtime');
-  await mkdir(runtime, { recursive: true });
-  await mkdir(mcpRuntime, { recursive: true });
-  const install = await runCommand('bun', ['init', '-y'], { cwd: runtime, env: safeEnv, timeoutMs: 60_000 });
-  if (install.exitCode !== 0) throw new Error(install.stderr);
-  const addDsh = await runCommand('bun', ['add', '--exact', `${DSH_PACKAGE_NAME}@${DSH_VERSION}`], { cwd: runtime, env: safeEnv, timeoutMs: 15 * 60_000 });
-  if (addDsh.exitCode !== 0) throw new Error(addDsh.stderr || addDsh.stdout);
-  const trust = await runCommand('bun', ['pm', 'trust', '--all'], { cwd: runtime, env: safeEnv, timeoutMs: 15 * 60_000 });
-  if (trust.exitCode !== 0) throw new Error(trust.stderr || trust.stdout);
-  const runtimeVerification = await verifyRuntime(runtime, { bunExecutable: 'bun', commandRunner: runCommand, env: safeEnv, platform: process.platform });
-  if (!runtimeVerification.valid) throw new Error(`${DSH_VERSION} runtime verification failed: ${runtimeVerification.errors.join('; ')}`);
-  const installMcp = await runCommand('bun', ['init', '-y'], { cwd: mcpRuntime, env: safeEnv, timeoutMs: 60_000 });
-  if (installMcp.exitCode !== 0) throw new Error(installMcp.stderr);
-  const addMcp = await runCommand('bun', ['add', '--exact', '@xerolo44/rpgmaker-mv-mcp@0.1.0'], { cwd: mcpRuntime, env: safeEnv, timeoutMs: 15 * 60_000 });
-  if (addMcp.exitCode !== 0) throw new Error(addMcp.stderr || addMcp.stdout);
-  const platform = process.platform;
-  const dsh = await findDshExecutable(runtime, platform);
-  if (!dsh) throw new Error('real DSH executable not found after Bun install');
-  const deployment = await prepareRpgMakerDeployment({
-    platform,
-    dshHome: join(root, 'dsh-home'),
-    runtimeDir: runtime,
-    mcpRuntimeDir: mcpRuntime,
-    dshExecutable: dsh,
-    env: safeEnv,
-    projectPath: project,
-    sourceRoot: join(process.cwd(), 'presets', 'rpgmaker')
-  });
-  assert.equal(runtimeVerification.dshPackageVersion, DSH_VERSION);
-  assert.equal(deployment.mcpPackageVersion, '0.1.0');
-  assert.equal(deployment.toolNames.length, 41);
+  const boot = await bootstrapRuntime({ platform: process.platform, env: safeEnv, dshHome, programRoot, mutableRoot: root, runtimeDir });
+  assert.equal(boot.verification.dshPackageVersion, DSH_VERSION);
+  const dshExecutable = await findDshExecutable(runtimeDir, process.platform);
+  if (!dshExecutable) throw new Error('Pinned DSH executable was not found after bootstrap.');
 
-  const dshLib = join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib');
+  // This is the project-neutral launch preparation path: it receives no project
+  // argument, prepares the local bundle, and validates the composition from the
+  // app-owned neutral landing directory before a Host is started.
+  const preparation = await prepareRpgMakerLaunch({
+    platform: process.platform,
+    env: safeEnv,
+    dshHome,
+    programRoot,
+    mutableRoot: root,
+    runtimeDir,
+    mcporterRuntimeDir,
+    mcpRuntimeDir: xeroloRuntimeDir,
+    dshExecutable,
+    commandRunner: runCommand
+  });
+  await mkdir(neutralLandingDir, { recursive: true });
+  const composition = await Bun.file(preparation.compositionPath).text();
+  assert.equal(composition.includes('--project'), false, 'project-neutral composition must not carry a project argument');
+  assert.equal(preparation.agentPreset, 'rpgmaker');
+  assert.equal(preparation.mcporterRuntimeDir, mcporterRuntimeDir);
+  assert.equal(preparation.xeroloRuntimeDir, xeroloRuntimeDir);
+
+  // Exercise the real launcher seam after preparation with a tracked child
+  // double. This keeps the acceptance disposable while proving the launcher
+  // sends no project picker or project argument to DSH.
+  const launchedChild = new EventEmitter() as EventEmitter & { exitCode: number | null; signalCode: string | null };
+  launchedChild.exitCode = null;
+  launchedChild.signalCode = null;
+  const launched = await launchRpgmakerProject({
+    platform: process.platform,
+    env: safeEnv,
+    dshHome,
+    programRoot,
+    mutableRoot: root,
+    runtimeDir,
+    mcporterRuntimeDir,
+    mcpRuntimeDir: xeroloRuntimeDir,
+    dshExecutable,
+    portAlreadyChecked: true,
+    portProbe: async () => true,
+    openExistingSession: async () => undefined,
+    spawnInteractive: () => launchedChild
+  });
+  assert.equal(launched.cwd, neutralLandingDir);
+  assert.equal(launched.args.some((argument) => argument === '--project' || argument.startsWith('--project=')), false);
+  launchedChild.exitCode = 0;
+  launchedChild.emit('exit', 0);
+  await launched.releaseSession();
+
+  const dshLib = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib');
   const profileFile = (await readdir(dshLib)).find((file) => file.startsWith('profile-boot-') && file.endsWith('.js'));
-  assert.ok(profileFile, 'compiled DSH profile boot module missing');
-  const environmentModulePath = join(runtime, 'node_modules', '@deepseek-ai', 'dsh-launch-environment', 'lib', 'index.js');
+  if (!profileFile) throw new Error('Compiled DSH profile boot module was not found.');
+  const profileEnvironmentModule = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-launch-environment', 'lib', 'index.js');
   const mountProbe = await runCommand(process.env.NODE_EXECUTABLE ?? 'node', [join(process.cwd(), 'scripts', 'phase2-real-mount.mjs')], {
-    cwd: project,
-    env: { ...safeEnv, DSH_HOME: join(root, 'dsh-home'), PROFILE_FILE: join(dshLib, profileFile), ENVIRONMENT_MODULE: environmentModulePath, COMPOSITION_FILE: deployment.compositionPath },
-    platform,
+    cwd: neutralLandingDir,
+    env: {
+      ...safeEnv,
+      PROJECT_PATH: project,
+      NEUTRAL_LANDING_DIR: neutralLandingDir,
+      PROFILE_FILE: join(dshLib, profileFile),
+      ENVIRONMENT_MODULE: profileEnvironmentModule,
+      COMPOSITION_FILE: preparation.compositionPath,
+      [MCPORTER_RUNTIME_ENV]: preparation.mcporterRuntimeDir,
+      [XEROLO_RUNTIME_ENV]: preparation.xeroloRuntimeDir,
+      [JS_RUNNER_ENV]: preparation.jsRunner,
+      XEROLO_ENTRY: preparation.xeroloScript,
+      WORKSPACE_HOST_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js'),
+      WORKSPACE_AGENT_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'agent.js')
+    },
+    platform: process.platform,
     timeoutMs: 120_000
   });
-  if (mountProbe.exitCode !== 0) throw new Error(`official DSH mount probe failed: ${mountProbe.stderr || mountProbe.stdout}`);
-  const mountLine = mountProbe.stdout.split(String.fromCharCode(10)).map((line) => line.trim()).find((line) => line.startsWith('{"ok"'));
-  assert.ok(mountLine, `official DSH mount probe returned no structured result: ${mountProbe.stdout}`);
-  const mountResult = JSON.parse(mountLine);
-  assert.equal(mountResult.ok, true);
-  assert.deepEqual(mountResult.presets, ['rpgmaker', 'playtest-debug', 'asset-workshop', 'build-release']);
-  assert.equal(mountResult.defaultPreset, 'rpgmaker');
-  assert.equal(mountResult.playtestStatus?.running, false);
-  assert.equal(mountResult.playtestStatus?.pid, null);
-  assert.ok(mountResult.mcpTools >= 41, `official DSH registered only ${mountResult.mcpTools} RPG Maker tools`);
-
-  console.log(JSON.stringify({ ok: true, mountedPresets: mountResult.presets, defaultPreset: mountResult.defaultPreset, playtestStatus: mountResult.playtestStatus, mountedTools: mountResult.mcpTools, mutation: mountResult.mutation, restored: mountResult.restored, composition: deployment.compositionPath }));
+  if (mountProbe.exitCode !== 0) throw new Error(`project-neutral DSH/Xerolo workspace acceptance failed: ${diagnosticText(mountProbe.stderr || mountProbe.stdout)}`);
+  const line = mountProbe.stdout.split(/\r?\n/).map((value) => value.trim()).find((value) => value.startsWith('{"ok"'));
+  if (!line) throw new Error(`workspace acceptance returned no structured result: ${diagnosticText(mountProbe.stdout)}`);
+  const result = JSON.parse(line) as {
+    ok?: boolean;
+    stableTools?: number;
+    workspaceServers?: number;
+    pooledXeroloChildren?: number;
+    directAgentToolCalls?: Array<{ name?: string; isError?: boolean; valueObserved?: boolean }>;
+    xeroloProcessEvidence?: { children?: Array<unknown>; shellProcesses?: Array<unknown> };
+  };
+  assert.equal(result.ok, true);
+  assert.equal(result.workspaceServers, 1);
+  assert.equal(result.pooledXeroloChildren, 1);
+  assert.equal(result.stableTools, 41);
+  assert.equal(result.directAgentToolCalls?.length, 2);
+  assert.equal(result.directAgentToolCalls?.some((call) => call.isError !== false || call.valueObserved !== true), false);
+  assert.equal(result.xeroloProcessEvidence?.children?.length, 1);
+  assert.equal(result.xeroloProcessEvidence?.shellProcesses?.length, 0);
+  console.log(diagnosticText(JSON.stringify({
+    ok: true,
+    gate: 'phase2-real-workspace-mcp',
+    dsh: DSH_VERSION,
+    neutralLandingDir,
+    project,
+    mcporterRuntime: mcporterRuntimeDir,
+    xeroloRuntime: xeroloRuntimeDir,
+    launchEvidence: {
+      neutralLandingDir,
+      observedCwd: launched.cwd,
+      projectArgumentCount: launched.args.filter((argument) => argument === '--project' || argument.startsWith('--project=')).length
+    },
+    ...result
+  })));
 } finally {
   await rm(root, { recursive: true, force: true });
 }

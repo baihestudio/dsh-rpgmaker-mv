@@ -1,15 +1,29 @@
-import { basename, dirname, join } from 'node:path';
-import { stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { lstat, readFile, stat } from 'node:fs/promises';
 
 import { resolveHarnessPaths, type PathOptions } from './config';
+import { ownedCoreutilsCommands } from './prerequisites';
 import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
-import { resolveExecutable } from './executable';
+import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion, parseSevenZipVersionText } from './executable';
 import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
-import { resolveImageToolchain } from './image-workshop';
-import { verifyMcpRuntime } from './rpgmaker';
+import {
+  FREE_TEX_PACKER_VERSION,
+  IMAGE_MAGICK_VERSION,
+  OXIPNG_VERSION,
+  resolveImageToolchain
+} from './image-workshop';
+import {
+  DSH_TOOL_TIMEOUT_POLICY_PACKAGE,
+  RPGMAKER_DSH_PROFILE,
+  validateEffectiveTimeoutPolicyComposition,
+  verifyMcpRuntime,
+  verifyTimeoutPolicyComposition
+} from './rpgmaker';
 import { verifyRpgmPackerRuntime } from './release';
+import { verifyImageWorkshopPlugin, imageWorkshopPluginSummary, type ImageWorkshopPluginVerification } from './image-plugin';
 
 export interface DoctorOptions extends PathOptions {
   commandRunner?: CommandRunner;
@@ -19,7 +33,10 @@ export interface DoctorOptions extends PathOptions {
   gitExecutable?: string;
   nodeExecutable?: string;
   npmExecutable?: string;
+  pythonExecutable?: string;
+  sevenZipExecutable?: string;
   verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; image: DoctorCheck; packager: DoctorCheck }>;
+  verifyImageWorkshopPlugin?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<ImageWorkshopPluginVerification>;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
 }
@@ -103,6 +120,70 @@ function check(id: string, label: string, ok: boolean, detail: string, path?: st
   return { id, label, ok, detail: redactSensitive(detail), ...(path ? { path } : {}) };
 }
 
+function within(root: string, candidate: string): boolean {
+  const rest = relative(resolve(root), resolve(candidate));
+  return rest === '' || (!rest.startsWith(`..${sep}`) && rest !== '..');
+}
+
+async function matchesSha256(path: string | undefined, expected: unknown): Promise<boolean> {
+  if (!path || typeof expected !== 'string' || !/^[a-f0-9]{64}$/i.test(expected)) return false;
+  try {
+    const hash = createHash('sha256');
+    hash.update(await readFile(path) as unknown as string);
+    return hash.digest('hex') === expected.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+async function verifyImageToolchainMetadata(toolchainRoot: string): Promise<{ valid: boolean; detail: string; path: string }> {
+  const manifestPath = join(toolchainRoot, 'toolchain.json');
+  try {
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+      format?: unknown;
+      imageMagick?: { path?: unknown; version?: unknown; sha256?: unknown };
+      helper?: { root?: unknown; lockPath?: unknown; lockSha256?: unknown; packageVersion?: unknown };
+      oxipng?: { path?: unknown; version?: unknown; sha256?: unknown };
+    };
+    const imagePath = typeof manifest.imageMagick?.path === 'string' ? resolve(manifest.imageMagick.path) : undefined;
+    const helperRoot = typeof manifest.helper?.root === 'string' ? resolve(manifest.helper.root) : undefined;
+    const helperLock = typeof manifest.helper?.lockPath === 'string' ? resolve(manifest.helper.lockPath) : undefined;
+    const oxipngPath = typeof manifest.oxipng?.path === 'string' ? resolve(manifest.oxipng.path) : undefined;
+    const paths = [imagePath, helperRoot, helperLock, oxipngPath];
+    const filesReady = await Promise.all(paths.map(async (path, index) => {
+      if (!path || !within(toolchainRoot, path)) return false;
+      const info = await lstat(path).catch(() => undefined);
+      return Boolean(info && !info.isSymbolicLink() && (index === 1 ? info.isDirectory() : info.isFile()));
+    }));
+    const helperPackagePath = helperRoot ? join(helperRoot, 'node_modules', 'free-tex-packer-core', 'package.json') : undefined;
+    const helperPackage = helperPackagePath
+      ? JSON.parse(await readFile(helperPackagePath, 'utf8').catch(() => '{}')) as { version?: unknown }
+      : {};
+    const rootPackage = helperRoot
+      ? JSON.parse(await readFile(join(helperRoot, 'package.json'), 'utf8').catch(() => '{}')) as { dependencies?: Record<string, unknown> }
+      : {};
+    const valid = manifest.format === 2
+      && manifest.imageMagick?.version === IMAGE_MAGICK_VERSION
+      && manifest.helper?.packageVersion === FREE_TEX_PACKER_VERSION
+      && manifest.oxipng?.version === OXIPNG_VERSION
+      && helperPackage.version === FREE_TEX_PACKER_VERSION
+      && rootPackage.dependencies?.['free-tex-packer-core'] === FREE_TEX_PACKER_VERSION
+      && filesReady.every(Boolean)
+      && await matchesSha256(imagePath, manifest.imageMagick?.sha256)
+      && await matchesSha256(helperLock, manifest.helper?.lockSha256)
+      && await matchesSha256(oxipngPath, manifest.oxipng?.sha256);
+    return {
+      valid,
+      detail: valid
+        ? `Pinned ImageMagick ${IMAGE_MAGICK_VERSION}, free-tex-packer-core ${FREE_TEX_PACKER_VERSION}, and oxipng ${OXIPNG_VERSION} metadata and app-owned paths are verified without executing image tools`
+        : 'The app-owned image toolchain manifest, versions, or app-owned paths were not verified; run Install.cmd to repair it',
+      path: manifestPath
+    };
+  } catch {
+    return { valid: false, detail: 'The app-owned image toolchain manifest is missing or invalid; run Install.cmd to repair it', path: manifestPath };
+  }
+}
+
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
@@ -117,14 +198,22 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   const runner = options.commandRunner ?? runCommand;
   const commandEnv = withoutCredentials(env);
 
-  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveExecutable('pwsh', { platform, env });
+  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform, env });
   const coreutils = options.coreutilsExecutable ?? env.COREUTILS_MANAGER ?? await resolveExecutable('coreutils-manager', { platform, env }) ?? await resolveExecutable('coreutils', { platform, env });
-  const coreutilsFind = await resolveExecutable('find', { platform, env });
-  const coreutilsGrep = await resolveExecutable('grep', { platform, env });
+  const ownedCoreutils = await ownedCoreutilsCommands(coreutils, env);
+  const coreutilsFind = ownedCoreutils.find ?? await resolveExecutable('find', { platform, env });
+  const coreutilsGrep = ownedCoreutils.grep ?? await resolveExecutable('grep', { platform, env });
   const git = options.gitExecutable ?? env.GIT_EXECUTABLE ?? await resolveExecutable('git', { platform, env });
   const bun = options.bunExecutable ?? env.BUN_EXECUTABLE ?? await resolveExecutable('bun', { platform, env });
   const node = options.nodeExecutable ?? env.NODE_EXECUTABLE ?? await resolveExecutable('node', { platform, env });
   const npm = options.npmExecutable ?? env.NPM_EXECUTABLE ?? await resolveExecutable('npm', { platform, env });
+  const wingetPython = platform === 'win32' && env.LOCALAPPDATA
+    ? await resolveExecutable(join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe'), { platform, env })
+    : undefined;
+  const python = options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? wingetPython ?? await resolveExecutable('python', { platform, env });
+  const sevenZip = platform === 'win32'
+    ? options.sevenZipExecutable ?? env.SEVEN_ZIP_EXECUTABLE ?? await resolveWindowsSevenZip({ platform, env, commandRunner: runner })
+    : undefined;
 
   const checks: DoctorCheck[] = [];
   const executablePaths: Record<string, string | undefined> = {
@@ -135,7 +224,9 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     git,
     bun,
     node,
-    npm
+    npm,
+    python,
+    ...(sevenZip ? { sevenZip } : {})
   };
 
   const pwshVersion = await commandVersion(runner, pwsh, commandEnv);
@@ -187,6 +278,27 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   ));
 
   if (platform === 'win32') {
+    const sevenZipVersion = await commandVersion(runner, sevenZip, commandEnv, ['i']);
+    const sevenZipParsed = parseSevenZipVersion(sevenZipVersion.output);
+    const sevenZipVersionText = parseSevenZipVersionText(sevenZipVersion.output);
+    checks.push(check(
+      '7zip',
+      '7-Zip',
+      sevenZipVersion.ok && Boolean(sevenZipParsed),
+      sevenZipVersion.ok && sevenZipParsed ? `7-Zip ${sevenZipVersionText ?? sevenZipParsed.join('.')} is available at ${sevenZip}` : '7-Zip was not verified; run Install.cmd to install 7zip.7zip with WinGet',
+      sevenZip
+    ));
+
+    const pythonVersion = await commandVersion(runner, python, commandEnv);
+    const pythonParsed = versionNumbers(pythonVersion.output);
+    checks.push(check(
+      'python',
+      'Python 3.11+',
+      pythonVersion.ok && /(?:^|\r?\n)\s*Python\s+\d+\.\d+/i.test(pythonVersion.output) && atLeast(pythonParsed, [3, 11, 0]),
+      pythonVersion.ok && pythonParsed ? `Python ${pythonParsed.join('.')} is available at ${python}` : 'Python 3.11+ was not verified; run Install.cmd to install Python.Python.3.13 with WinGet',
+      python
+    ));
+
     const nodeVersion = await commandVersion(runner, node, commandEnv);
     const nodeLts = await commandVersion(runner, node, commandEnv, ['-p', 'process.release.lts']);
     const npmVersion = await commandVersion(runner, npm, commandEnv);
@@ -234,25 +346,8 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     const verifyAgentDependencies = options.verifyAgentDependencies ?? (async (context) => {
       const mcpRuntime = join(context.paths.programRoot, 'runtime', 'mcp');
       const mcp = await verifyMcpRuntime(mcpRuntime, context.platform);
-      let image: DoctorCheck;
-      try {
-        const toolchain = await resolveImageToolchain({
-          platform: context.platform,
-          env: context.env,
-          dshHome: context.paths.dshHome,
-          programRoot: context.paths.programRoot,
-          mutableRoot: context.paths.mutableRoot,
-          toolchainRoot: join(context.paths.programRoot, 'tools', 'image-workshop'),
-          commandRunner: context.commandRunner,
-          installOxipng: true
-        });
-        const complete = Boolean(toolchain.oxipng && toolchain.oxipngVersion);
-        image = check('image-toolchain', 'Image asset toolchain', complete, complete
-          ? `ImageMagick ${toolchain.imageMagickVersion}, free-tex-packer-core ${toolchain.helperPackageVersion}, and oxipng ${toolchain.oxipngVersion} are verified`
-          : 'The app-owned image toolchain is missing oxipng; run Install.cmd to repair it', toolchain.manifestPath);
-      } catch (error) {
-        image = check('image-toolchain', 'Image asset toolchain', false, `The app-owned image toolchain is not verified: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      const imageMetadata = await verifyImageToolchainMetadata(join(context.paths.programRoot, 'tools', 'image-workshop'));
+      const image = check('image-toolchain', 'Image asset toolchain', imageMetadata.valid, imageMetadata.detail, imageMetadata.path);
       const packagerRuntime = join(context.paths.programRoot, 'runtime', 'rpgmpacker-runtime');
       const packager = await verifyRpgmPackerRuntime(packagerRuntime);
       return {
@@ -263,6 +358,53 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     });
     const agentDependencies = await verifyAgentDependencies({ platform, env: commandEnv, paths, commandRunner: runner });
     checks.push(agentDependencies.mcp, agentDependencies.image, agentDependencies.packager);
+
+    const imagePlugin = await (options.verifyImageWorkshopPlugin ?? (context => verifyImageWorkshopPlugin({
+      platform: context.platform,
+      env: context.env,
+      dshHome: context.paths.dshHome,
+      programRoot: context.paths.programRoot,
+      runtimeDir: context.paths.runtimeDir,
+      commandRunner: context.commandRunner
+    })))({ platform, env: commandEnv, paths, commandRunner: runner });
+    if (imagePlugin.packageDir) executablePaths['image-workshop-plugin'] = imagePlugin.packageDir;
+    checks.push(check(
+      'image-tool-plugin',
+      'App-owned image tool plugin',
+      imagePlugin.valid,
+      imageWorkshopPluginSummary(imagePlugin),
+      imagePlugin.packageDir
+    ));
+
+    const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome);
+    const effectivePolicyErrors: string[] = [];
+    if (dshExecutable) {
+      try {
+        await validateEffectiveTimeoutPolicyComposition(
+          dshExecutable,
+          timeoutPolicy.hostCompositionPath,
+          paths.mutableRoot,
+          platform,
+          { ...commandEnv, DSH_HOME: paths.dshHome },
+          runner
+        );
+      } catch (error) {
+        effectivePolicyErrors.push(error instanceof Error ? error.message : String(error));
+      }
+    } else {
+      effectivePolicyErrors.push('Pinned DSH executable was not found; the effective timeout policy was not validated.');
+    }
+    const timeoutPolicyErrors = [...timeoutPolicy.errors, ...effectivePolicyErrors];
+    const timeoutPolicyValid = timeoutPolicyErrors.length === 0;
+    checks.push(check(
+      'tool-call-timeout-policy',
+      'Shared DSH tool-call timeout policy',
+      timeoutPolicyValid,
+      timeoutPolicyValid
+        ? `Pinned DSH ${RPGMAKER_DSH_PROFILE} profile supplies exactly one official ${DSH_TOOL_TIMEOUT_POLICY_PACKAGE} Host row across ${timeoutPolicy.coveredPresets.length} custom Agent presets`
+        : timeoutPolicyErrors.join('; '),
+      timeoutPolicy.hostCompositionPath
+    ));
 
     const layoutPaths = [paths.mutableRoot, paths.dshHome, paths.logsDir, paths.cacheDir];
     const layoutValues = await Promise.all(layoutPaths.map(async (path) => (await stat(path).catch(() => undefined))?.isDirectory() ?? false));

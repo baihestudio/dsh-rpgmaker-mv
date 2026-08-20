@@ -30,12 +30,47 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
-export async function isHarnessLockHeld(lockPathInput: string): Promise<boolean> {
+/**
+ * Whether a process id still exists. `signal 0` probes liveness without
+ * sending a signal; ESRCH means the process is gone. Permission errors
+ * (EPERM) still mean the process exists, so they count as alive.
+ */
+export function processPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
-    return (await stat(resolve(lockPathInput))).isDirectory();
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function ownerPid(lockPath: string): Promise<number | undefined> {
+  try {
+    const owner = JSON.parse(await readFile(join(lockPath, 'owner.json'), 'utf8')) as { pid?: unknown };
+    return typeof owner.pid === 'number' ? owner.pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A lock is held only while its recorded owner process is alive. A stale lock
+ * directory whose owner is gone (an abnormal termination that skipped the
+ * release path) is reclaimed in place so the next acquisition does not wait
+ * out the full timeout.
+ */
+export async function isHarnessLockHeld(lockPathInput: string): Promise<boolean> {
+  const lockPath = resolve(lockPathInput);
+  try {
+    if (!(await stat(lockPath)).isDirectory()) return false;
   } catch {
     return false;
   }
+  const pid = await ownerPid(lockPath);
+  if (pid === undefined || processPidAlive(pid)) return true;
+  await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+  return false;
 }
 
 export async function waitForHarnessLockRelease(lockPathInput: string, options: HarnessLockOptions = {}): Promise<void> {

@@ -1,153 +1,192 @@
-import { pathToFileURL } from 'node:url';
-import { dirname, join } from 'node:path';
-import { readFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url'
+import { realpath } from 'node:fs/promises'
+import { observeXeroloChildren } from './process-observation.mjs'
 
-const profileModule = await import(pathToFileURL(process.env.PROFILE_FILE).href);
-const environmentModule = await import(pathToFileURL(process.env.ENVIRONMENT_MODULE).href);
+const hostBundleEntry = process.env.WORKSPACE_HOST_BUNDLE_ENTRY
+const agentBundleEntry = process.env.WORKSPACE_AGENT_BUNDLE_ENTRY
+if (!hostBundleEntry || !agentBundleEntry) throw new Error('WORKSPACE_HOST_BUNDLE_ENTRY and WORKSPACE_AGENT_BUNDLE_ENTRY are required')
+const profileModule = await import(pathToFileURL(process.env.PROFILE_FILE).href)
+const environmentModule = await import(pathToFileURL(process.env.ENVIRONMENT_MODULE).href)
+const hostBundle = await import(pathToFileURL(hostBundleEntry).href)
+const agentBundle = await import(pathToFileURL(agentBundleEntry).href)
+const runtimePaths = agentBundle.resolveRuntimePaths(process.env)
+const { assembleContextFor } = await import(new URL('../../dsh-agent/lib/index.js', pathToFileURL(process.env.PROFILE_FILE)).href)
+const { livePresetMounts } = await import(new URL('../../dsh-agent-presets/lib/index.js', pathToFileURL(process.env.PROFILE_FILE)).href)
 const environment = environmentModule.createLaunchEnvironmentSnapshot([{
   source: 'process',
   values: Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && key !== 'DEEPSEEK_API_KEY' && key !== 'DSH_API_KEY'))
-}]);
-const { assembleContextFor } = await import(pathToFileURL(join(dirname(process.env.PROFILE_FILE), '..', '..', 'dsh-agent', 'lib', 'index.js')).href);
+}])
 
 function unwrap(value) {
-  const text = value?.content?.find?.((block) => block?.type === 'text')?.text;
-  if (typeof text !== 'string') return value;
-  try { return JSON.parse(text); } catch { return text; }
+  // run_code returns { logs, result } where result is the program's returned
+  // canonical JSON value; native tool calls return an MCP-style content list.
+  if (value && typeof value === 'object' && 'result' in value) return value.result
+  const text = value?.content?.find?.((block) => block?.type === 'text')?.text
+  if (typeof text !== 'string') return value
+  try { return JSON.parse(text) } catch { return text }
 }
 
-function assertValidation(label, validation) {
+function assertValidation(label, value) {
+  const validation = unwrap(value)
   if (validation?.ok !== true || !Array.isArray(validation.errors) || validation.errors.length > 0) {
-    throw new Error(`${label} project validation failed: ${JSON.stringify(validation)}`);
+    throw new Error(`${label} project validation failed: ${JSON.stringify(validation)}`)
   }
 }
 
-let mounted;
+function stableNames(schemas) {
+  return schemas.filter((schema) => typeof schema?.name === 'string' && schema.name.startsWith('rpgmaker_')).map((schema) => schema.name).sort()
+}
+
+const project = process.env.PROJECT_PATH
+const neutralLanding = process.env.NEUTRAL_LANDING_DIR
+const xeroloEntry = process.env.XEROLO_ENTRY
+if (!project || !neutralLanding || !xeroloEntry) throw new Error('PROJECT_PATH, NEUTRAL_LANDING_DIR, and XEROLO_ENTRY are required')
+const [actualNeutralLanding, expectedNeutralLanding] = await Promise.all([realpath(process.cwd()), realpath(neutralLanding)])
+if (actualNeutralLanding !== expectedNeutralLanding) throw new Error(`DSH did not start from the neutral landing directory: ${process.cwd()}`)
+if (!/[\u4e00-\u9fff]/.test(project) || !project.includes(' ')) throw new Error(`CJK/space project fixture was lost: ${project}`)
+if (process.argv.some((argument) => argument === '--project' || argument.startsWith('--project='))) {
+  throw new Error('project-neutral acceptance received an unexpected --project argument')
+}
+
+let mounted
+const handles = []
 try {
   mounted = await profileModule.runProfile({
     profile: 'web',
     patchFiles: [process.env.COMPOSITION_FILE],
-    args: [],
-    environment,
-  });
-  const presets = mounted.ctx.get('agentPresets');
-  if (!presets) throw new Error('official DSH agent preset service did not mount');
-  const expectedPresets = [
-    { id: 'rpgmaker', name: 'RPG Maker MV 开发助手', description: '检查和修改 RPG Maker MV 的数据库、事件、对话、地图与插件，并在变更后执行验证和备份检查。', promptFact: '默认入口和轻量协调者', skill: 'rpgmaker-mv', skillFact: 'validate_project' },
-    { id: 'playtest-debug', name: '游戏测试与调试助手', description: '验证项目、启动和观察 Windows Playtest、分析日志并定位故障，不把成功启动误报为游戏行为正确。', promptFact: '静态验证、进程启动、状态与日志证据', skill: 'playtest-debug', skillFact: 'playtest_status' },
-    { id: 'asset-workshop', name: '游戏图片素材助手', description: '处理缩放、裁切、补边、切图、精灵表、图集与 PNG 优化，并验证像素、透明度和输出清单。', promptFact: '确定性图片素材处理', skill: 'asset-workshop', skillFact: 'resize-pixel' },
-    { id: 'build-release', name: '游戏构建与发布助手', description: '生成并检查 Windows 与 Web 构建，执行结构检查和冒烟测试，且不修改源项目。', promptFact: '可复现 Windows 和 Web 构建', skill: 'build-release', skillFact: 'rpgmpacker' }
-  ];
-  for (const expected of expectedPresets) {
-    const resolved = await presets.resolve(expected.id);
-    if (resolved.id !== expected.id || resolved.name !== expected.name || resolved.description !== expected.description) {
-      throw new Error(`unexpected preset metadata for ${expected.id}: ${JSON.stringify(resolved)}`);
-    }
-    const skillText = await readFile(join(dirname(resolved.path), 'skills', expected.skill, 'SKILL.md'), 'utf8');
-    if (!skillText.includes(expected.skillFact)) throw new Error(`mounted ${expected.id} preset did not expose its ${expected.skill} Skill`);
-  }
-  const roster = await presets.list();
-  const rosterIds = roster.filter((entry) => expectedPresets.some((expected) => expected.id === entry.id)).map((entry) => entry.id);
-  if (rosterIds.join(',') !== expectedPresets.map((expected) => expected.id).join(',')) throw new Error(`unexpected custom preset order: ${rosterIds.join(',')}`);
-  const standingKeys = new Map();
-  for (const expected of expectedPresets) standingKeys.set(expected.id, await presets.standingKeyFor(expected.id));
-  const tools = mounted.ctx.get('tools');
-  if (!tools) throw new Error('official DSH tools service did not mount');
-  for (const expected of expectedPresets) {
-    const presetSchemas = tools.schemas?.(standingKeys.get(expected.id)) ?? [];
-    if (new Set(presetSchemas.map((schema) => schema.name)).size !== presetSchemas.length) throw new Error(`mounted ${expected.id} has duplicate tool schemas`);
-    if (presetSchemas.filter((schema) => schema.name === 'run_code').length !== 1) throw new Error(`mounted ${expected.id} did not retain the PTC run_code tool`);
-  }
-  const schemas = tools.schemas?.() ?? [];
-  const debugSchemas = tools?.schemas?.(standingKeys.get('playtest-debug')) ?? [];
-  const mcpTools = schemas.filter((schema) => schema.name?.startsWith('mcp__rpgmaker_mv__'));
-  const debugMcpTools = debugSchemas.filter((schema) => schema.name?.startsWith('mcp__rpgmaker_mv__'));
-  const requiredPlaytestTools = ['playtest_start', 'playtest_status', 'playtest_log', 'playtest_stop'];
-  if (new Set(schemas.map((schema) => schema.name)).size !== schemas.length) throw new Error('rc.7 mounted duplicate tool schemas');
-  if (mcpTools.length < 41 || debugMcpTools.length < 41) throw new Error(`official DSH registered only ${mcpTools.length}/${debugMcpTools.length} RPG Maker tools`);
-  if (requiredPlaytestTools.some((name) => !mcpTools.some((schema) => schema.name === `mcp__rpgmaker_mv__${name}`) || !debugMcpTools.some((schema) => schema.name === `mcp__rpgmaker_mv__${name}`))) {
-    throw new Error(`official DSH did not register every RPG Maker Playtest tool: ${requiredPlaytestTools.join(', ')}`);
-  }
-  if (schemas.some((schema) => schema.name === 'playtest_debug') || debugSchemas.some((schema) => schema.name === 'playtest_debug')) {
-    throw new Error('playtest-debug mounted an unexpected custom workflow tool');
+    // The Agent/Xerolo probe needs rc.8's Web profile services, not its
+    // default listener. rc.8 accepts port 0 as an OS-assigned port, so this
+    // disposable mount stays off 3080.
+    args: ['--port', '0'],
+    environment
+  })
+  const presets = mounted.ctx.get('agentPresets')
+  if (!presets) throw new Error('official DSH agent preset service did not mount')
+  const presetIds = (await presets.list()).map((entry) => entry.id)
+  for (const id of ['rpgmaker', 'playtest-debug', 'asset-workshop', 'build-release']) {
+    if (!presetIds.includes(id)) throw new Error(`shipped preset ${id} was not available in the neutral Host`)
   }
 
-  const agentLoop = mounted.ctx.get('agentLoop');
-  const systemPrompt = mounted.ctx.get('systemPrompt');
-  if (!agentLoop || !systemPrompt) throw new Error('official DSH agent-loop or system-prompt service did not mount');
-  for (const expected of expectedPresets) {
-    let handle;
-    try {
-      handle = await agentLoop.createAgent(mounted.ctx, {
-        sessionId: randomUUID(),
-        meta: { cwd: process.cwd(), agentPreset: expected.id },
-        setup: async (agentCtx) => { await presets.mount(agentCtx, expected.id); }
-      });
-      const assembly = await systemPrompt.assemble(assembleContextFor(handle.agent));
-      const personaSections = assembly.sections.filter((section) => String(section.name ?? '').toLowerCase().includes('persona'));
-      if (personaSections.length !== 1) throw new Error(`mounted ${expected.id} did not expose exactly one effective persona section`);
-      const prompt = assembly.sections.map((section) => section.text).join('\n');
-      if (!prompt.includes(expected.promptFact)) throw new Error(`mounted ${expected.id} persona omitted its domain fact`);
-      if (!prompt.includes('使用用户当前使用的语言回复')) throw new Error(`mounted ${expected.id} persona omitted the language rule`);
-      if (!prompt.includes('rpgmaker') || !prompt.includes('playtest-debug') || !prompt.includes('asset-workshop') || !prompt.includes('build-release')) {
-        throw new Error(`mounted ${expected.id} persona omitted the specialist roster`);
+  const systemPrompt = mounted.ctx.get('systemPrompt')
+  const agentLoop = mounted.ctx.get('agentLoop')
+  const tools = mounted.ctx.get('tools')
+  if (!systemPrompt || !agentLoop || !tools) throw new Error('official DSH agent, system-prompt, or tools service did not mount')
+
+  async function createAgent(sessionId) {
+    const handle = await agentLoop.createAgent(mounted.ctx, {
+      sessionId,
+      meta: { cwd: project, agentPreset: 'rpgmaker' },
+      setup: async (agentCtx) => {
+        if (!agentCtx.agent) throw new Error('rc.8 Agent setup did not supply agentCtx.agent')
+        await presets.mount(agentCtx, 'rpgmaker')
       }
-    } finally {
-      if (handle) await handle.dispose();
-    }
+    })
+    handles.push(handle)
+    return handle
   }
 
-  let callNumber = 0;
-  const call = async (name, args) => {
+  const first = await createAgent('phase2-real-workspace-a')
+  const compositionMount = livePresetMounts().find((mount) => mount.presetId === 'rpgmaker')
+  if (!compositionMount) throw new Error('rc.8 did not expose the mounted rpgmaker composition')
+  if (compositionMount.fiber.ctx.agent !== undefined) {
+    throw new Error('preset composition unexpectedly received ctx.agent; Agent must arrive at assembly/execution seams')
+  }
+  const immediateSchemas = first.agent?.ctx?.tools?.schemas?.(first.agent?.ctx?.agent)
+  if (!Array.isArray(immediateSchemas)) throw new Error('Agent tool provider did not expose synchronous schemas')
+  const expectedNames = agentBundle.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort()
+  if (JSON.stringify(stableNames(immediateSchemas)) !== JSON.stringify(expectedNames)) {
+    throw new Error(`stable manifest tools were not synchronously collected: ${stableNames(immediateSchemas).length}`)
+  }
+
+  const firstAssembly = await systemPrompt.assemble(assembleContextFor(first.agent))
+  // Code mode (DSH rc.8 default for the shipped presets): the model calls
+  // tools through the generated run_code SDK, so the complete stable
+  // rpgmaker_* tool set must appear in the assembly's tools:sdk section, and
+  // no rpgmaker_* name may leak into the native tool list.
+  const sdkSection = (firstAssembly?.sections ?? []).find((section) => section?.name === 'tools:sdk')
+  if (typeof sdkSection?.text !== 'string' || expectedNames.some((name) => !sdkSection.text.includes(name))) {
+    throw new Error('first system-prompt assembly did not carry the complete stable rpgmaker_* tool set in the code-mode SDK section')
+  }
+  if (stableNames(firstAssembly.tools ?? []).some((name) => /(?:mcp__|[0-9a-f]{8,}|-)/.test(name))) {
+    throw new Error('model-facing tool names exposed runtime identity')
+  }
+  if (stableNames(firstAssembly.tools ?? []).length !== 0) {
+    throw new Error('code-mode assembly exposed rpgmaker_* tools in the native tool list')
+  }
+
+  const second = await createAgent('phase2-real-workspace-b')
+  const secondAssembly = await systemPrompt.assemble(assembleContextFor(second.agent))
+  const secondSdk = (secondAssembly?.sections ?? []).find((section) => section?.name === 'tools:sdk')
+  if (typeof secondSdk?.text !== 'string' || expectedNames.some((name) => !secondSdk.text.includes(name))) {
+    throw new Error('second Agent did not receive the same stable tool set in the code-mode SDK section')
+  }
+  if (stableNames(secondAssembly.tools ?? []).length !== 0) {
+    throw new Error('second code-mode assembly exposed rpgmaker_* tools in the native tool list')
+  }
+
+  const stateAfterAgents = hostBundle.hostState(mounted.ctx)
+  const canonicalProject = await realpath(project)
+  if (stateAfterAgents.runtimeDir !== runtimePaths.mcporterRuntime) {
+    throw new Error(`Host used an unexpected MCPorter runtime: ${stateAfterAgents.runtimeDir}`)
+  }
+  if (stateAfterAgents.workspaces.length !== 1 || stateAfterAgents.workspaces[0] !== canonicalProject) {
+    throw new Error(`expected one pooled canonical workspace server, got ${JSON.stringify(stateAfterAgents.workspaces)}`)
+  }
+
+  const directAgentToolCalls = []
+  async function call(handle, rawName, args) {
+    // Code mode (DSH rc.8 shipped preset): the model calls tools through the
+    // generated run_code SDK, so the representative call goes through the
+    // same transport instead of a direct native dispatch.
+    const modelName = `rpgmaker_${rawName}`
+    const code = `const __result = await tools['${modelName}'](${JSON.stringify(args)});\nreturn __result`
     const result = await tools.execute({
-      callId: `phase2-real-${++callNumber}`,
-      name: `mcp__rpgmaker_mv__${name}`,
-      arguments: args,
-      signal: new AbortController().signal,
-    });
-    if (result.isError) throw new Error(`official DSH MCP ${name} returned an error: ${JSON.stringify(result)}`);
-    return result.value ?? result;
-  };
-
-  const playtestStatus = unwrap(await call('playtest_status', {}));
-  if (playtestStatus?.running !== false || (playtestStatus?.pid !== null && playtestStatus?.pid !== undefined)) {
-    throw new Error(`real MCP Playtest was not idle at mount acceptance: ${JSON.stringify(playtestStatus)}`);
+      callId: `phase2-real-workspace-${directAgentToolCalls.length + 1}`,
+      name: 'run_code',
+      arguments: { code, description: `Call ${modelName}` },
+      agent: handle.agent,
+      signal: new AbortController().signal
+    })
+    if (result.isError) throw new Error(`stable RPG Maker tool ${rawName} failed without retry: ${JSON.stringify(result)}`)
+    directAgentToolCalls.push({
+      name: modelName,
+      isError: result.isError === true,
+      valueObserved: result.value !== undefined
+    })
+    return result.value ?? result
   }
-  const validation = unwrap(await call('validate_project', {}));
-  assertValidation('startup', validation);
-  const initial = unwrap(await call('get_record', { type: 'actors', id: 1 }));
-  if (initial?.name !== 'Hero') throw new Error('unexpected initial actor state');
-  await call('update_record', { type: 'actors', id: 1, data: { name: 'Updated Hero' }, merge: true });
-  const reread = unwrap(await call('get_record', { type: 'actors', id: 1 }));
-  if (reread?.name !== 'Updated Hero') throw new Error('database reread did not reflect mutation');
-  const validationAfterDatabase = unwrap(await call('validate_project', {}));
-  assertValidation('database mutation', validationAfterDatabase);
-  await call('add_dialogue', { mapId: 1, eventId: 1, lines: ['Welcome, hero.'], pageIndex: 0 });
-  const eventAfterDialogue = unwrap(await call('get_event', { mapId: 1, eventId: 1 }));
-  const dialogueAdded = eventAfterDialogue?.pages?.[0]?.list?.some((command) => command?.code === 401 && command?.parameters?.[0] === 'Welcome, hero.');
-  if (!dialogueAdded) throw new Error('event reread did not reflect dialogue mutation');
-  const validationAfterDialogue = unwrap(await call('validate_project', {}));
-  assertValidation('dialogue mutation', validationAfterDialogue);
-  await call('update_map', { mapId: 1, data: { displayName: 'Opening' } });
-  const mapAfterUpdate = unwrap(await call('get_map', { mapId: 1 }));
-  if (mapAfterUpdate?.displayName !== 'Opening') throw new Error('map reread did not reflect metadata mutation');
-  const validationAfterMap = unwrap(await call('validate_project', {}));
-  assertValidation('map mutation', validationAfterMap);
-  await call('configure_plugin', { name: 'TestPlugin', status: false });
-  const pluginsAfterUpdate = unwrap(await call('list_plugins', {}));
-  const plugin = Array.isArray(pluginsAfterUpdate) ? pluginsAfterUpdate.find((entry) => entry?.name === 'TestPlugin') : undefined;
-  if (plugin?.status !== false) throw new Error('plugin reread did not reflect configuration mutation');
-  const validationAfterPlugin = unwrap(await call('validate_project', {}));
-  assertValidation('plugin mutation', validationAfterPlugin);
-  const backups = unwrap(await call('list_backups', {}));
-  if (!Array.isArray(backups) || backups.length === 0) throw new Error('official DSH MCP did not create a backup');
-  await call('restore_backup', { session: backups[0].session });
-  const restored = unwrap(await call('get_record', { type: 'actors', id: 1 }));
-  if (restored?.name !== 'Hero') throw new Error('restore reread did not restore the actor record');
-  const finalValidation = unwrap(await call('validate_project', {}));
-  assertValidation('restore', finalValidation);
-  console.log(JSON.stringify({ ok: true, presets: expectedPresets.map((expected) => expected.id), defaultPreset: expectedPresets[0].id, playtestStatus, mcpTools: mcpTools.length, calls: callNumber, mutation: reread.name, restored: restored.name }));
+
+  const infoA = unwrap(await call(first, 'get_project_info', {}))
+  if (typeof infoA?.gameTitle !== 'string' || infoA.gameTitle.length === 0) throw new Error(`unexpected project info: ${JSON.stringify(infoA)}`)
+  assertValidation('real workspace', await call(second, 'validate_project', {}))
+  const stateAfterCalls = hostBundle.hostState(mounted.ctx)
+  if (stateAfterCalls.runtimeDir !== runtimePaths.mcporterRuntime || stateAfterCalls.workspaces.length !== 1) {
+    throw new Error('pooled workspace calls did not remain on the single Host runtime/server')
+  }
+
+  const xeroloProcessEvidence = await observeXeroloChildren({
+    project: canonicalProject,
+    entry: xeroloEntry,
+    platform: process.platform,
+    env: process.env
+  })
+  if (xeroloProcessEvidence.children.length === 0) {
+    throw new Error(`no live Xerolo child matched the canonical workspace and pinned entry (process table size ${xeroloProcessEvidence.processTableSize})`)
+  }
+  console.log(JSON.stringify({
+    ok: true,
+    launchCwd: process.cwd(),
+    workspace: canonicalProject,
+    hostRuntime: stateAfterCalls.runtimeDir,
+    workspaceServers: stateAfterCalls.workspaces.length,
+    pooledXeroloChildren: xeroloProcessEvidence.children.length,
+    stableTools: expectedNames.length,
+    directAgentToolCalls,
+    xeroloProcessEvidence
+  }))
 } finally {
-  if (mounted) await mounted.shutdown.shutdown(0);
+  for (const handle of handles) {
+    if (typeof handle.dispose === 'function') await handle.dispose().catch(() => undefined)
+  }
+  if (mounted) await mounted.shutdown.shutdown(0)
 }

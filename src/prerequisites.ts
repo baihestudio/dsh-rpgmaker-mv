@@ -1,9 +1,10 @@
 import { join } from 'node:path';
 
-import { resolveExecutable } from './executable';
+import { withEnvironmentPath } from './config';
+import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion, parseSevenZipVersionText } from './executable';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 
-export const WINDOWS_PREREQUISITE_IDS = ['node', 'bun', 'powershell', 'git', 'coreutils'] as const;
+export const WINDOWS_PREREQUISITE_IDS = ['node', 'python', 'bun', 'powershell', 'git', 'coreutils', '7zip'] as const;
 export type WindowsPrerequisiteId = (typeof WINDOWS_PREREQUISITE_IDS)[number];
 
 export interface WindowsPrerequisiteCheck {
@@ -31,10 +32,12 @@ export interface WindowsPrerequisiteOptions {
   commandRunner?: CommandRunner;
   nodeExecutable?: string;
   npmExecutable?: string;
+  pythonExecutable?: string;
   bunExecutable?: string;
   pwshExecutable?: string;
   gitExecutable?: string;
   coreutilsExecutable?: string;
+  sevenZipExecutable?: string;
   wingetExecutable?: string;
 }
 
@@ -110,6 +113,48 @@ function coreutilsRoot(manager: string | undefined): string | undefined {
   return base === 'bin' || base === 'cmd' ? parent.slice(0, parent.lastIndexOf('/')) : parent;
 }
 
+/** Directories where a Microsoft Coreutils install keeps its manager and shim executables. */
+function coreutilsCommandDirectories(manager: string | undefined): string[] {
+  const root = coreutilsRoot(manager);
+  if (!root) return [];
+  return [root, join(root, 'bin'), join(root, 'cmd')];
+}
+
+/**
+ * Resolve find/grep owned by the verified Coreutils installation root rather than
+ * whatever shadows them earlier on PATH (Windows System32 ships a native find.exe).
+ * A clean WinGet install appends the Coreutils directory after inherited PATH
+ * entries, so PATH-only resolution can pick the unrelated System32 shim and fail
+ * the ownership check even though the package is correctly installed.
+ */
+export async function ownedCoreutilsCommands(manager: string | undefined, env: Record<string, string | undefined>): Promise<{ find?: string; grep?: string }> {
+  const result: { find?: string; grep?: string } = {};
+  for (const directory of coreutilsCommandDirectories(manager)) {
+    if (!result.find) result.find = await resolveExecutable(join(directory, 'find'), { platform: 'win32', env });
+    if (!result.grep) result.grep = await resolveExecutable(join(directory, 'grep'), { platform: 'win32', env });
+    if (result.find && result.grep) break;
+  }
+  return result;
+}
+
+function coreutilsFailureDetail(
+  manager: string | undefined,
+  contractOk: boolean,
+  find: string | undefined,
+  grep: string | undefined,
+  managerRoot: string | undefined
+): string {
+  const parts: string[] = [];
+  if (!manager) parts.push('coreutils-manager.exe was not resolved on PATH');
+  else if (!contractOk) parts.push(`coreutils-manager --help/status contract failed at ${manager}`);
+  const describe = (name: string, value: string | undefined): string => {
+    if (!value) return `${name} was not resolved`;
+    return isWithin(managerRoot, value) ? `${name} verified at ${value}` : `${name} resolved to ${value} outside the Coreutils root ${managerRoot ?? 'unknown'}`;
+  };
+  parts.push(describe('find', find), describe('grep', grep));
+  return parts.join('; ');
+}
+
 function check(
   id: WindowsPrerequisiteId,
   label: string,
@@ -141,17 +186,26 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const runner = options.commandRunner ?? runCommand;
   const node = await resolved('node', options.nodeExecutable ?? env.NODE_EXECUTABLE, env);
   const npm = await resolved('npm', options.npmExecutable ?? env.NPM_EXECUTABLE, env);
+  const wingetPython = env.LOCALAPPDATA
+    ? await resolveExecutable(join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe'), { platform: 'win32', env })
+    : undefined;
+  const python = await resolved('python', options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? wingetPython, env);
   const bun = await resolved('bun', options.bunExecutable ?? env.BUN_EXECUTABLE, env);
-  const pwsh = await resolved('pwsh', options.pwshExecutable ?? env.PWSH_EXECUTABLE, env);
+  const pwsh = options.pwshExecutable ?? await resolveWindowsPwsh({ platform: 'win32', env });
   const git = await resolved('git', options.gitExecutable ?? env.GIT_EXECUTABLE, env);
   const manager = await resolved('coreutils-manager', options.coreutilsExecutable ?? env.COREUTILS_MANAGER, env)
     ?? await resolved('coreutils', undefined, env);
-  const find = await resolved('find', undefined, env);
-  const grep = await resolved('grep', undefined, env);
+  const sevenZip = options.sevenZipExecutable ?? env.SEVEN_ZIP_EXECUTABLE ?? await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: runner });
+  // Prefer find/grep owned by the verified Coreutils root so a clean install
+  // succeeds even when System32/find.exe or another shim precedes Coreutils on PATH.
+  const ownedCommands = await ownedCoreutilsCommands(manager, env);
+  const find = ownedCommands.find ?? await resolved('find', undefined, env);
+  const grep = ownedCommands.grep ?? await resolved('grep', undefined, env);
 
   const nodeVersion = await commandVersion(runner, node, env);
   const nodeLts = await commandVersion(runner, node, env, ['-p', 'process.release.lts']);
   const npmVersion = await commandVersion(runner, npm, env);
+  const pythonVersion = await commandVersion(runner, python, env);
   const bunVersion = await commandVersion(runner, bun, env);
   const pwshVersion = await commandVersion(runner, pwsh, env);
   const gitVersion = await commandVersion(runner, git, env);
@@ -159,19 +213,24 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const managerStatus = await commandVersion(runner, manager, env, ['status']);
   const findVersion = await commandVersion(runner, find, env);
   const grepVersion = await commandVersion(runner, grep, env);
+  const sevenZipVersion = await commandVersion(runner, sevenZip, env, ['i']);
+  const sevenZipParsed = parseSevenZipVersion(sevenZipVersion.output);
+  const sevenZipVersionText = parseSevenZipVersionText(sevenZipVersion.output);
   const managerRoot = coreutilsRoot(manager);
   const nodeParsed = versionNumbers(nodeVersion.output);
   const nodeLtsName = nodeLts.output.trim().split(/\r?\n/).find(Boolean);
+  const pythonParsed = versionNumbers(pythonVersion.output);
   const pwshParsed = versionNumbers(pwshVersion.output);
   const nodeIdentity = /(?:^|\r?\n)\s*v\d+\.\d+\.\d+/i.test(nodeVersion.output);
   const npmIdentity = /(?:^|\r?\n)\s*v?\d+\.\d+\.\d+/i.test(npmVersion.output);
+  const pythonIdentity = /(?:^|\r?\n)\s*Python\s+\d+\.\d+/i.test(pythonVersion.output);
   const bunIdentity = /(?:^|\r?\n)\s*\d+\.\d+\.\d+/i.test(bunVersion.output);
   const powershellIdentity = /PowerShell\s+\d+\.\d+/i.test(pwshVersion.output);
   const gitIdentity = /(?:^|\r?\n)\s*git version\s+\d+\.\d+\.\d+/i.test(gitVersion.output);
   const nodeOk = nodeVersion.ok && nodeIdentity && atLeast(nodeParsed, [18, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && npmIdentity && Boolean(versionNumbers(npmVersion.output));
   const powershellOk = pwshVersion.ok && powershellIdentity && atLeast(pwshParsed, [7, 4, 0]);
-  const coreutilsOk = managerHelp.ok && managerStatus.ok
-    && managerContract(managerHelp.output, managerStatus.output)
+  const coreutilsContractOk = managerHelp.ok && managerStatus.ok && managerContract(managerHelp.output, managerStatus.output);
+  const coreutilsOk = coreutilsContractOk
     && findVersion.ok && grepVersion.ok
     && isWithin(managerRoot, find) && isWithin(managerRoot, grep);
 
@@ -187,6 +246,17 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
       node,
       nodeParsed?.join('.'),
       nodeParsed && versionNumbers(npmVersion.output) && nodeLtsName ? { node: nodeParsed.join('.'), npm: versionNumbers(npmVersion.output)!.join('.'), lts: nodeLtsName } : undefined
+    ),
+    check(
+      'python',
+      'Python 3.11+',
+      'Python.Python.3.13',
+      pythonVersion.ok && pythonIdentity && atLeast(pythonParsed, [3, 11, 0]),
+      pythonVersion.ok && pythonIdentity && pythonParsed
+        ? `Python ${pythonParsed.join('.')} is available at ${python}`
+        : 'Python 3.11+ was not verified; install Python.Python.3.13 with WinGet',
+      python,
+      pythonParsed?.join('.')
     ),
     check(
       'bun',
@@ -222,8 +292,21 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
       coreutilsOk,
       coreutilsOk
         ? `Microsoft Coreutils manager and enabled find/grep are available under ${managerRoot}`
-        : 'Microsoft Coreutils manager, enabled find, and enabled grep were not verified; install Microsoft.Coreutils with WinGet',
+        : `Microsoft Coreutils manager, enabled find, and enabled grep were not verified; install Microsoft.Coreutils with WinGet (${coreutilsFailureDetail(manager, coreutilsContractOk, find, grep, managerRoot)})`,
       manager
+    ),
+    check(
+      '7zip',
+      '7-Zip',
+      '7zip.7zip',
+      sevenZipVersion.ok && Boolean(sevenZipParsed),
+      sevenZipVersion.ok && sevenZipParsed
+        ? `7-Zip ${sevenZipVersionText ?? sevenZipParsed.join('.')} is available at ${sevenZip}`
+        : sevenZip
+          ? `7-Zip was not verified at ${sevenZip}; install 7zip.7zip with WinGet`
+          : '7-Zip was not found; install 7zip.7zip with WinGet',
+      sevenZip,
+      sevenZipVersionText
     )
   ];
   const missing = checks.filter((item) => !item.ok).map((item) => item.id);
@@ -248,7 +331,7 @@ async function refreshWindowsEnvironment(runner: CommandRunner, env: Record<stri
       // Verification still uses the original environment if registry refresh is unavailable.
     }
   }
-  return { ...env, PATH: [...new Set(paths.filter(Boolean).flatMap((value) => value.split(';')))].join(';') };
+  return withEnvironmentPath(env, [...new Set(paths.filter(Boolean).flatMap((value) => value.split(';')))].join(';'), 'win32');
 }
 
 async function installOne(

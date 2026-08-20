@@ -1,13 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { bootstrapRuntime, findDshExecutable, verifyRuntime } from '../src/bootstrap';
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION } from '../src/config';
 import { runDoctor } from '../src/doctor';
-import { launchProject, pickProjectDirectory } from '../src/launcher';
+import { launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
 import { executeCommand, prepareProcessInvocation, ProcessTerminationError } from '../src/process';
 import { validateMvProject } from '../src/project';
@@ -157,7 +157,7 @@ describe('staged DSH runtime bootstrap', () => {
   });
 
 
-  test('requires the rc.7 lock entry and npm integrity', async () => {
+  test('requires the rc.8 lock entry and npm integrity', async () => {
     const root = await disposableDirectory('runtime-integrity');
     try {
       const runtime = join(root, 'runtime');
@@ -365,19 +365,47 @@ describe('staged DSH runtime bootstrap', () => {
 
 describe('runtime access lock', () => {
 
+  test('reclaims a stale session lock whose owner process is gone', async () => {
+    const root = await disposableDirectory('runtime-stale-lock');
+    try {
+      const runtime = join(root, 'runtime');
+      const dshHome = join(root, 'dsh-home');
+      await makeRuntime(runtime, '0.1.0-rc.5');
+      const sessionLeaseDir = `${runtime}.session`;
+      await mkdir(sessionLeaseDir, { recursive: true });
+      // A dead owner (pid 999999) records the lock but cannot release it.
+      await writeFile(join(sessionLeaseDir, 'owner.json'), `${JSON.stringify({ pid: 999999, token: 'stale', startedAt: new Date().toISOString() })}\n`);
+
+      const result = await bootstrapRuntime({
+        platform: 'darwin',
+        runtimeDir: runtime,
+        dshHome,
+        bunExecutable: 'bun',
+        lockTimeoutMs: 500,
+        lockRetryMs: 5,
+        commandRunner: async (_command, args, options) => {
+          if (args[0] === 'add') await makeRuntime(options.cwd!);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+      });
+      expect(result.status).toBe('repaired');
+      await expect(stat(sessionLeaseDir)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('launch failure releases the session lease so bootstrap can recover', async () => {
     const root = await disposableDirectory('runtime-session-failure');
     try {
       const runtime = join(root, 'runtime');
       const dshHome = join(root, 'dsh-home');
-      const project = await makeMvProject(root);
       await makeRuntime(runtime, '0.1.0-rc.5');
       await expect(
         launchProject({
           platform: 'darwin',
           runtimeDir: runtime,
           dshHome,
-          projectPath: project,
           env: { DSH_HOME: dshHome },
           spawnInteractive: () => { throw new Error('spawn failed'); }
         })
@@ -406,7 +434,6 @@ describe('runtime access lock', () => {
     try {
       const runtime = join(root, 'runtime');
       const dshHome = join(root, 'dsh-home');
-      const project = await makeMvProject(root);
       const bin = join(root, 'bin');
       await mkdir(bin, { recursive: true });
       for (const name of ['pwsh', 'coreutils-manager', 'find', 'grep', 'git', 'bun']) await writeFile(join(bin, name), '');
@@ -463,7 +490,6 @@ describe('runtime access lock', () => {
         platform: 'darwin',
         runtimeDir: runtime,
         dshHome,
-        projectPath: project,
         env: { PATH: bin, DSH_HOME: dshHome },
         commandRunner,
         spawnInteractive: () => { launched = true; return launchChild; },
@@ -494,14 +520,12 @@ describe('runtime access lock', () => {
     try {
       const runtime = join(root, 'runtime');
       const dshHome = join(root, 'dsh-home');
-      const project = await makeMvProject(root);
       await makeRuntime(runtime, '0.1.0-rc.5');
       const child = makeTrackedChild(701);
       const launch = await launchProject({
         platform: 'darwin',
         runtimeDir: runtime,
         dshHome,
-        projectPath: project,
         env: { DSH_HOME: dshHome },
         spawnInteractive: () => child
       });
@@ -620,17 +644,15 @@ describe('doctor and launcher seams', () => {
     }
   });
 
-  test('launcher validates the selected project and passes it as cwd without a shell', async () => {
+  test('project-neutral launcher uses the app-owned landing cwd without project validation', async () => {
     const root = await disposableDirectory('launcher');
     try {
-      const project = await makeMvProject(root);
       const dsh = join(root, 'dsh.exe');
       await writeFile(dsh, '');
       let launched: { command: string; args: string[]; cwd?: string; env?: Record<string, string | undefined> } | undefined;
       const child = makeTrackedChild();
       const result = await launchProject({
         platform: 'win32',
-        projectPath: project,
         dshHome: join(root, 'dsh-home'),
         dshExecutable: dsh,
         env: {},
@@ -640,8 +662,9 @@ describe('doctor and launcher seams', () => {
           return child;
         }
       });
-      expect(result.projectPath).toBe(project);
-      expect(launched).toMatchObject({ command: dsh, args: ['--test'], cwd: project });
+      const neutral = join(root, 'program', 'neutral');
+      expect(result.cwd).toBe(neutral);
+      expect(launched).toMatchObject({ command: dsh, args: ['--test'], cwd: neutral });
       expect(launched!.env?.DSH_HOME).toBe(join(root, 'dsh-home'));
       expect(result.onboardingMessage).toBeDefined();
       child.exitCode = 0;
@@ -652,35 +675,23 @@ describe('doctor and launcher seams', () => {
     }
   });
 
-
-  test('native Windows picker returns the selected path without shell interpolation', async () => {
-    const root = await disposableDirectory('picker');
-    try {
-      const selected = join(root, '选择 project with spaces');
-      const result = await pickProjectDirectory({
-        platform: 'win32',
-        env: {},
-        pwshExecutable: 'pwsh.exe',
-        commandRunner: async (_command, args) => {
-          expect(args).toContain('-Command');
-          expect(args.join(' ')).not.toContain(selected);
-          return { exitCode: 0, stdout: `${selected}\r\n`, stderr: '' };
-        }
-      });
-      expect(result).toBe(selected);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('CLI always prints the single-writer contract before launching', async () => {
+  test('CLI rejects launch --project and prints the single-writer contract for a neutral launch', async () => {
     const root = await disposableDirectory('cli-launch');
     try {
       const project = await makeMvProject(root);
       const dsh = join(root, 'dsh.exe');
       await writeFile(dsh, '');
       let output = '';
-      const code = await runCli(['launch', '--project', project, '--dsh-executable', dsh, '--dsh-home', join(root, 'dsh-home')], {
+      let errorOutput = '';
+      const rejected = await runCli(['launch', '--project', project, '--dsh-executable', dsh, '--dsh-home', join(root, 'dsh-home')], {
+        platform: 'win32',
+        env: {},
+        rpgmaker: false,
+        io: { stdout: { write: (text) => { output += text; } }, stderr: { write: (text) => { errorOutput += text; } } }
+      });
+      expect(rejected).toBe(1);
+      expect(errorOutput).toMatch(/project-neutral.*does not accept --project/i);
+      const code = await runCli(['launch', '--dsh-executable', dsh, '--dsh-home', join(root, 'dsh-home')], {
         platform: 'win32',
         env: {},
         rpgmaker: false,
@@ -692,8 +703,9 @@ describe('doctor and launcher seams', () => {
         }
       });
       expect(code).toBe(0);
-      expect(output).toContain('The agent and RPG Maker MCP are the sole writers');
+      expect(output).toContain('its RPG Maker tools are the sole writers');
       expect(output).toContain('read-only');
+      expect(output).toContain('neutral landing directory');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -715,20 +727,5 @@ describe('doctor and launcher seams', () => {
     expect(invocation.args.slice(0, 4)).toEqual(['/d', '/v:off', '/s', '/c']);
     expect(invocation.args[4]).toContain('100^%\\!important!\\选择 project');
     expect(invocation.args[4]).not.toContain('call ');
-  });
-  test('launcher rejects an invalid selected project before starting DSH', async () => {
-    const root = await disposableDirectory('launcher-invalid');
-    try {
-      await expect(
-        launchProject({
-          platform: 'win32',
-          projectPath: root,
-          dshExecutable: join(root, 'dsh.exe'),
-          spawnInteractive: () => ({ pid: 1234 })
-        })
-      ).rejects.toThrow(/not a valid RPG Maker MV project/i);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
   });
 });

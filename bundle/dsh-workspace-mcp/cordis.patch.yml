@@ -1,0 +1,7 @@
+# The dsh-workspace-mcp bundle contributes only its Host service layer to the
+# profile root. Preset compositions mount the Agent access entry point in their
+# own scopes.
+
+- insert:
+    - id: workspace-mcp
+      name: '@baihestudio/dsh-workspace-mcp'

@@ -4,16 +4,21 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { bootstrapRuntime, type BootstrapResult } from './bootstrap';
-import { PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
-import { resolveExecutable } from './executable';
+import { environmentPath, pathDelimiter, withEnvironmentPath, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { prepareImageToolchain } from './image-workshop';
 import { withoutCredentials, runCommand, type CommandRunner } from './process';
 import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
 import { prepareRpgMakerMcpRuntime } from './rpgmaker';
+import { prepareMcporterRuntime } from './mcport';
 import { prepareRpgmPackerRuntime } from './release';
+import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE, IMAGE_WORKSHOP_BUNDLE_RELATIVE } from './image-plugin';
+import { preparePnpmRuntime } from './profile';
+import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
+export const WINDOWS_GATE_CLEANUP_HELPER_RELATIVE = 'scripts/remove-phase7-gate-root.ps1';
 export const RELEASE_ENTRIES = [
   'Install.cmd',
   'install.ps1',
@@ -24,13 +29,16 @@ export const RELEASE_ENTRIES = [
   'bootstrap.ps1',
   'doctor.ps1',
   'LICENSE',
+  'THIRD-PARTY-NOTICES.md',
   'README.md',
   'docs',
   'package.json',
   'bun.lock',
   'src',
   'presets',
-  'scripts'
+  'scripts',
+  IMAGE_WORKSHOP_BUNDLE_RELATIVE,
+  WORKSPACE_MCP_BUNDLE_RELATIVE
 ] as const;
 
 export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteOptions {
@@ -41,7 +49,7 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   commandRunner?: CommandRunner;
   createShortcut?: (options: ShortcutCreationOptions) => Promise<string>;
   writeInstallMetadata?: (path: string, content: string) => Promise<void>;
-  prepareAgentDependencies?: (context: { paths: HarnessPaths; env: Record<string, string | undefined>; bunExecutable: string; commandRunner?: CommandRunner }) => Promise<void>;
+  prepareAgentDependencies?: (context: { paths: HarnessPaths; env: Record<string, string | undefined>; bunExecutable: string; npmExecutable?: string; commandRunner?: CommandRunner }) => Promise<void>;
   now?: () => Date;
 }
 
@@ -103,9 +111,12 @@ async function copyReleaseTree(sourceRootInput: string, destination: string): Pr
   }
 }
 
-function generatedEnvironment(env: Record<string, string | undefined>, paths: HarnessPaths): Record<string, string | undefined> {
+function generatedEnvironment(env: Record<string, string | undefined>, paths: HarnessPaths, prerequisites: WindowsPrerequisiteReport): Record<string, string | undefined> {
+  const executableDirs = prerequisites.checks.flatMap((item) => item.executable ? [dirname(item.executable)] : []);
+  const path = [...new Set([...executableDirs, ...environmentPath(env, 'win32').split(pathDelimiter('win32')).filter(Boolean)])].join(pathDelimiter('win32'));
+  const next = withEnvironmentPath(env, path, 'win32');
   return {
-    ...env,
+    ...next,
     DSH_HOME: paths.dshHome,
     DSH_RPGMAKER_PROGRAM_ROOT: paths.programRoot,
     DSH_RPGMAKER_DATA_ROOT: paths.mutableRoot,
@@ -132,7 +143,7 @@ function installMetadata(paths: HarnessPaths, prerequisites: WindowsPrerequisite
 }
 
 async function carryForwardVerifiedDependencies(previousProgramRoot: string, nextProgramRoot: string): Promise<void> {
-  for (const relativePath of [join('tools', 'image-workshop', 'native-tools'), join('runtime', 'mcp'), join('runtime', 'rpgmpacker-runtime')]) {
+  for (const relativePath of [join('tools', 'image-workshop', 'native-tools'), join('runtime', 'mcp'), join('runtime', 'rpgmpacker-runtime'), join('runtime', 'pnpm')]) {
     const source = join(previousProgramRoot, relativePath);
     const destination = join(nextProgramRoot, relativePath);
     if (await exists(source) && !(await exists(destination))) {
@@ -214,7 +225,7 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
     await rename(staging, paths.programRoot);
     stagingActive = false;
 
-    const installedEnv = generatedEnvironment(env, paths);
+    const installedEnv = generatedEnvironment(env, paths, prerequisites);
     let bootstrap: BootstrapResult;
     let shortcutPath: string;
     try {
@@ -232,6 +243,28 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
       });
       const bunExecutable = options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE ?? 'bun';
       const prepareAgentDependencies = options.prepareAgentDependencies ?? (async (context) => {
+        await preparePnpmRuntime({
+          platform,
+          env: context.env,
+          dshHome: context.paths.dshHome,
+          programRoot: context.paths.programRoot,
+          mutableRoot: context.paths.mutableRoot,
+          runtimeDir: context.paths.runtimeDir,
+          npmExecutable: context.npmExecutable,
+          useAppOwnedPnpm: true,
+          commandRunner: context.commandRunner
+        }, context.paths);
+        const mcporter = await prepareMcporterRuntime({
+          platform,
+          env: context.env,
+          dshHome: context.paths.dshHome,
+          programRoot: context.paths.programRoot,
+          mutableRoot: context.paths.mutableRoot,
+          runtimeDir: context.paths.runtimeDir,
+          bunExecutable: context.bunExecutable,
+          commandRunner: context.commandRunner
+        }, join(context.paths.programRoot, 'runtime', 'mcporter'));
+        if (!mcporter.valid) throw new Error(`MCPorter runtime is not usable: ${mcporter.errors.join('; ')}`);
         const mcp = await prepareRpgMakerMcpRuntime({ platform, env: context.env, bunExecutable: context.bunExecutable, commandRunner: context.commandRunner }, join(context.paths.programRoot, 'runtime', 'mcp'));
         if (!mcp.valid) throw new Error(`RPG Maker MCP is not usable: ${mcp.errors.join('; ')}`);
         await prepareImageToolchain({
@@ -243,7 +276,8 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           toolchainRoot: join(context.paths.programRoot, 'tools', 'image-workshop'),
           bunExecutable: context.bunExecutable,
           commandRunner: context.commandRunner,
-          installOxipng: true
+          installOxipng: true,
+          sevenZipExecutable: prerequisites.checks.find((check) => check.id === '7zip')?.executable
         });
         await prepareRpgmPackerRuntime({
           platform,
@@ -255,8 +289,24 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           bunExecutable: context.bunExecutable,
           commandRunner: context.commandRunner
         }, platform, context.env);
+        await prepareImageWorkshopPlugin({
+          platform,
+          env: context.env,
+          dshHome: context.paths.dshHome,
+          programRoot: context.paths.programRoot,
+          runtimeDir: context.paths.runtimeDir,
+          dshExecutable: context.env.DSH_EXECUTABLE,
+          npmExecutable: context.npmExecutable,
+          commandRunner: context.commandRunner
+        });
       });
-      await prepareAgentDependencies({ paths, env: installedEnv, bunExecutable, commandRunner: options.commandRunner });
+      await prepareAgentDependencies({
+        paths,
+        env: installedEnv,
+        bunExecutable,
+        npmExecutable: options.npmExecutable ?? await resolveExecutable('npm', { platform, env: installedEnv }),
+        commandRunner: options.commandRunner
+      });
       const metadataPath = join(paths.programRoot, 'install.json');
       const metadataWriter = options.writeInstallMetadata ?? ((path: string, content: string) => writeFile(path, content, 'utf8'));
       await metadataWriter(metadataPath, installMetadata(paths, prerequisites, options.now ?? (() => new Date())));
@@ -318,7 +368,7 @@ async function archiveWithZip(options: ReleaseZipOptions, staging: string, outpu
 async function archiveWithPowerShell(options: ReleaseZipOptions, staging: string, outputZip: string): Promise<void> {
   const env = options.env ?? process.env;
   const runner = options.commandRunner ?? runCommand;
-  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveExecutable('pwsh', { platform: 'win32', env });
+  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform: 'win32', env });
   if (!pwsh) throw new ReleaseGateError('PowerShell 7 was not found to create the Release ZIP.');
   const helper = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'scripts', 'compress-release.ps1');
   const result = await runner(pwsh, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', helper, '-SourceRoot', staging, '-Destination', outputZip], { env: withoutCredentials(env), platform: 'win32', timeoutMs: 15 * 60_000 });
@@ -364,7 +414,35 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
   const result = await runner(command, args, { env: withoutCredentials(env), platform, timeoutMs: 30_000 });
   if (result.exitCode !== 0) throw new ReleaseGateError(`Release ZIP inspection failed: ${result.stderr || result.stdout}`.trim());
   const entries = result.stdout.split(/\r?\n/).map((entry) => entry.trim().replaceAll('\\', '/').replace(/^\.\//, '')).filter(Boolean);
-  const requiredEntries = ['Install.cmd', 'install.ps1', 'Launch.cmd', 'launch.ps1', 'Uninstall.cmd', 'uninstall.ps1', 'docs/windows-release.md', 'src/cli.ts', 'presets/rpgmaker/preset.yml'];
+  const requiredEntries = [
+    'Install.cmd',
+    'install.ps1',
+    'Launch.cmd',
+    'launch.ps1',
+    'Uninstall.cmd',
+    'uninstall.ps1',
+    'THIRD-PARTY-NOTICES.md',
+    'docs/windows-release.md',
+    WINDOWS_GATE_CLEANUP_HELPER_RELATIVE,
+    'src/cli.ts',
+    'src/mcport.ts',
+    'src/workspace-mcp.ts',
+    'src/profile.ts',
+    'presets/rpgmaker/preset.yml',
+    `${IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/cordis.patch.yml`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/LICENSE`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/README.md`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/contract.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/env.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/${WORKSPACE_MCP_AGENT_ENTRYPOINT}`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/index.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/mcport-host.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/tools.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/workspace.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/xerolo-manifest.js`
+  ];
   const missing = requiredEntries.filter((entry) => !entries.includes(entry) && !entries.some((candidate) => candidate.startsWith(`${entry}/`)));
   return { path: zipPath, entries, requiredEntries, valid: missing.length === 0, missing };
 }

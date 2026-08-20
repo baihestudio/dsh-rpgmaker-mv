@@ -5,22 +5,14 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type HarnessPaths, type PathOptions } from './config';
+import { resolveWindowsPwsh } from './executable';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
-import { assertValidMvProject, type ProjectValidation } from './project';
-
-export interface RecentProject {
-  path: string;
-  lastUsedAt: string;
-}
-
-export type RecentProjectChoice = 'continue-last' | 'choose-other';
 
 export interface HarnessLayout {
   paths: HarnessPaths;
   stateDir: string;
   logsDir: string;
   cacheDir: string;
-  recentProjectsPath: string;
 }
 
 export async function ensureHarnessLayout(options: PathOptions = {}): Promise<HarnessLayout> {
@@ -29,7 +21,7 @@ export async function ensureHarnessLayout(options: PathOptions = {}): Promise<Ha
   await mkdir(paths.dshHome, { recursive: true });
   await mkdir(paths.logsDir, { recursive: true });
   await mkdir(paths.cacheDir, { recursive: true });
-  return { paths, stateDir: paths.dshHome, logsDir: paths.logsDir, cacheDir: paths.cacheDir, recentProjectsPath: paths.recentProjectsPath };
+  return { paths, stateDir: paths.dshHome, logsDir: paths.logsDir, cacheDir: paths.cacheDir };
 }
 
 async function fileIsDirectory(path: string): Promise<boolean> {
@@ -38,62 +30,6 @@ async function fileIsDirectory(path: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-export async function readRecentProjects(options: PathOptions = {}): Promise<RecentProject[]> {
-  const paths = resolveHarnessPaths(options);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readFile(paths.recentProjectsPath, 'utf8'));
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-  const candidates = parsed.filter((item): item is { path?: unknown; lastUsedAt?: unknown } => item !== null && typeof item === 'object');
-  const result: RecentProject[] = [];
-  for (const candidate of candidates) {
-    if (typeof candidate.path !== 'string' || typeof candidate.lastUsedAt !== 'string') continue;
-    const projectPath = resolve(candidate.path);
-    if (!(await fileIsDirectory(projectPath))) continue;
-    try {
-      await assertValidMvProject(projectPath);
-      result.push({ path: projectPath, lastUsedAt: candidate.lastUsedAt });
-    } catch {
-      // A removed or no-longer-valid project is not offered as a recent choice.
-    }
-  }
-  return result.sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt));
-}
-
-export async function recordRecentProject(projectPath: string, options: PathOptions & { maxRecentProjects?: number } = {}): Promise<RecentProject[]> {
-  const validation = await assertValidMvProject(projectPath);
-  const layout = await ensureHarnessLayout(options);
-  const existing = await readRecentProjects(options);
-  const now = new Date().toISOString();
-  const result = [{ path: validation.projectPath, lastUsedAt: now }, ...existing.filter((item) => item.path !== validation.projectPath)]
-    .slice(0, options.maxRecentProjects ?? 10);
-  await writeFile(layout.recentProjectsPath, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
-  return result;
-}
-
-export interface ProjectSelectionOptions extends PathOptions {
-  projectPath?: string;
-  pickProject: () => Promise<string>;
-  chooseRecentProject?: (last: RecentProject, recent: RecentProject[]) => Promise<RecentProjectChoice> | RecentProjectChoice;
-  notify?: (message: string) => void;
-}
-
-export async function selectProject(options: ProjectSelectionOptions): Promise<string> {
-  if (options.projectPath) return resolve(options.projectPath);
-  const recent = await readRecentProjects(options);
-  const last = recent[0];
-  if (!last) return resolve(await options.pickProject());
-  options.notify?.(`Last project: ${last.path}`);
-  const choice = options.chooseRecentProject
-    ? await options.chooseRecentProject(last, recent)
-    : 'choose-other';
-  if (choice === 'continue-last') return last.path;
-  return resolve(await options.pickProject());
 }
 
 export type PortProbe = (host: string, port: number) => Promise<boolean>;
@@ -194,7 +130,7 @@ export async function createStartMenuShortcut(options: ShortcutCreationOptions):
   const paths = resolveHarnessPaths(options);
   const env = options.env ?? process.env;
   const helperScript = options.helperScript ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'create-shortcut.ps1');
-  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? 'pwsh.exe';
+  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform, env }) ?? 'pwsh.exe';
   const runner = options.commandRunner ?? runCommand;
   const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', helperScript, '-TargetPath', options.targetPath, '-ShortcutPath', paths.startMenuShortcutPath, '-WorkingDirectory', options.workingDirectory];
   if (options.iconPath) args.push('-IconPath', options.iconPath);
@@ -341,22 +277,19 @@ export async function uninstallHarness(options: UninstallOptions = {}): Promise<
     mutableRoot: paths.mutableRoot,
     shortcutPath: paths.startMenuShortcutPath,
     removed,
-    preserved: [...preserved, paths.dshHome, paths.logsDir, paths.recentProjectsPath],
+    preserved: [...preserved, paths.dshHome, paths.logsDir],
     purged: false
   };
 }
 
-export async function writeLaunchLog(options: PathOptions & { event: string; projectPath?: string; preset?: string; host?: string; port?: number }): Promise<void> {
+export async function writeLaunchLog(options: PathOptions & { event: string; preset?: string; host?: string; port?: number }): Promise<void> {
   const layout = await ensureHarnessLayout(options);
   const entry = {
     at: new Date().toISOString(),
     event: options.event,
-    ...(options.projectPath ? { projectPath: options.projectPath } : {}),
     ...(options.preset ? { preset: options.preset } : {}),
     ...(options.host ? { host: options.host } : {}),
     ...(options.port ? { port: options.port } : {})
   };
   await writeFile(resolve(layout.logsDir, 'launcher.log'), `${redactSensitive(JSON.stringify(entry), options.env ?? process.env)}\n`, { encoding: 'utf8', flag: 'a' });
 }
-
-export type { ProjectValidation };

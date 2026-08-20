@@ -11,11 +11,12 @@ import {
   type ImageToolchainOptions
 } from './image-workshop';
 import type { ImageReleasePin } from './image-releases';
-import { childExitCode, redactSensitive, type CommandRunner, type InteractiveSpawner } from './process';
+import { childExitCode, redactSensitive, runCommand, type CommandRunner, type InteractiveSpawner } from './process';
+import { imageDiagnosticContextFromEnvironment, withImageDiagnostics } from './image-diagnostics';
 import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT } from './config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, uninstallWindowsRelease } from './release-gate';
 import type { PrerequisiteConsent } from './prerequisites';
-import type { PortConflictAction, ExistingSessionOpener, PortProbe, RecentProject, RecentProjectChoice } from './windows';
+import type { PortConflictAction, ExistingSessionOpener, PortProbe } from './windows';
 
 export interface CliIO {
   stdout: { write: (text: string) => unknown };
@@ -36,9 +37,8 @@ export interface CliDependencies {
   portProbe?: PortProbe;
   onPortConflict?: (url: string) => Promise<PortConflictAction> | PortConflictAction;
   openExistingSession?: ExistingSessionOpener;
-  chooseRecentProject?: (last: RecentProject, recent: RecentProject[]) => Promise<RecentProjectChoice> | RecentProjectChoice;
-  pickProject?: () => Promise<string>;
   rpgmaker?: boolean;
+  signal?: AbortSignal;
 }
 
 interface ParsedArgs {
@@ -46,6 +46,24 @@ interface ParsedArgs {
   positionals: string[];
   values: Record<string, string>;
   flags: Set<string>;
+}
+
+const IMAGE_OPERATION_TOOL_NAMES: Readonly<Record<string, string>> = {
+  inspect: 'image_inspect',
+  'resize-pixel': 'image_resize_pixel',
+  'trim-pad': 'image_trim_pad',
+  'sheet-slice': 'image_sheet_slice',
+  'sheet-assemble': 'image_sheet_assemble',
+  'atlas-pack': 'image_atlas_pack',
+  'optimize-png': 'image_optimize_png'
+};
+
+function imageToolName(operation: string): string {
+  const toolName = Object.prototype.hasOwnProperty.call(IMAGE_OPERATION_TOOL_NAMES, operation)
+    ? IMAGE_OPERATION_TOOL_NAMES[operation]
+    : undefined;
+  if (!toolName) throw new Error(`Unknown image operation ${operation}.`);
+  return toolName;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -89,12 +107,12 @@ function helpText(): string {
     '  install     Install a Release ZIP into the per-user Windows roots',
     '  uninstall   Remove program files/cache (use --purge for state/credentials)',
     '  release-zip Build and inspect a distributable Release ZIP',
-    '  launch      Pick or launch an RPG Maker MV project in DSH',
+    '  launch      Start project-neutral DSH Web; choose workspaces in its UI',
     '  build-release  Package and smoke-test Windows and Browser artifacts',
     '  image       Run a deterministic Asset Workshop image operation',
     '',
     'Options:',
-    '  --project <path>          Project to launch or package',
+    '  --project <path>          Explicit project for build-release only; launch is project-neutral',
     '  --output <path>           Fresh release output directory (build-release)',
     '  --release-root <path>     Extracted Release ZIP root (install)',
     '  --zip <path>              Release ZIP path (release-zip)',
@@ -168,6 +186,8 @@ function baseOptions(parsed: ParsedArgs, dependencies: CliDependencies): Record<
     oxipngUrl: option(parsed.values, 'oxipng-url'),
     oxipngRelease: dependencies.oxipngRelease,
     installOxipng: parsed.flags.has('install-oxipng') || (parsed.flags.has('oxipng') && !option(parsed.values, 'oxipng')),
+    bunExecutable: option(parsed.values, 'bun-executable'),
+    jsExecutable: option(parsed.values, 'js-executable'),
     downloadArchive: dependencies.downloadArchive,
     extractArchive: dependencies.extractArchive,
     commandRunner: dependencies.commandRunner
@@ -230,9 +250,17 @@ function inputList(parsed: ParsedArgs): string[] {
   return value;
 }
 
-async function runImageCommand(parsed: ParsedArgs, dependencies: CliDependencies, io: CliIO): Promise<void> {
+async function runImageCommand(parsed: ParsedArgs, dependencies: CliDependencies, io: CliIO, signal?: AbortSignal): Promise<void> {
   const operation = parsed.positionals[0] ?? option(parsed.values, 'operation');
   if (!operation) throw new Error('Image operation is required.');
+  imageToolName(operation);
+  const imageEnv = dependencies.env ?? process.env;
+  const diagnostics = imageDiagnosticContextFromEnvironment(imageEnv, { operation });
+  const baseCommandRunner = dependencies.commandRunner ?? runCommand;
+  const commandRunner = withImageDiagnostics((command, args, options) => baseCommandRunner(command, args, {
+    ...options,
+    signal: signal ?? options.signal
+  }), diagnostics, { nativeCommandRunner: dependencies.commandRunner === undefined });
   const toolchainOptions: ImageToolchainOptions = {
     platform: dependencies.platform,
     env: dependencies.env,
@@ -251,13 +279,15 @@ async function runImageCommand(parsed: ParsedArgs, dependencies: CliDependencies
     installOxipng: parsed.flags.has('install-oxipng') || (parsed.flags.has('oxipng') && !option(parsed.values, 'oxipng')),
     downloadArchive: dependencies.downloadArchive,
     extractArchive: dependencies.extractArchive,
-    commandRunner: dependencies.commandRunner
+    commandRunner
   };
   const toolchain = (await prepareImageToolchain(toolchainOptions)).toolchain;
   const workshop = createImageWorkshop(toolchain, {
-    commandRunner: dependencies.commandRunner,
+    commandRunner,
     platform: dependencies.platform,
-    env: dependencies.env
+    env: dependencies.env,
+    signal,
+    diagnostics
   });
   if (operation === 'inspect') {
     io.stdout.write(`${JSON.stringify(await workshop.inspect(requiredOption(parsed, 'input')), null, 2)}\n`);
@@ -333,8 +363,22 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
 
   try {
     if (parsed.command === 'image' || parsed.command === 'asset') {
-      await runImageCommand(parsed, dependencies, io);
-      return 0;
+      const controller = dependencies.signal ? undefined : new AbortController();
+      const signal = dependencies.signal ?? controller?.signal;
+      const onSignal = (): void => controller?.abort();
+      if (controller) {
+        process.once('SIGTERM', onSignal);
+        process.once('SIGINT', onSignal);
+      }
+      try {
+        await runImageCommand(parsed, dependencies, io, signal);
+        return 0;
+      } finally {
+        if (controller) {
+          process.removeListener('SIGTERM', onSignal);
+          process.removeListener('SIGINT', onSignal);
+        }
+      }
     }
 
     if (parsed.command === 'bootstrap') {
@@ -437,12 +481,14 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
     }
 
     if (parsed.command === 'launch') {
+      if (parsed.flags.has('project') || option(parsed.values, 'project') !== undefined) {
+        throw new Error('The launch command is project-neutral and does not accept --project; choose a workspace in DSH Web.');
+      }
       validateCliFixedBinding(argv);
       // This notice is intentionally unconditional: do not detect editor processes or infer write ownership.
       io.stdout.write(`${SINGLE_WRITER_NOTICE}\n\n`);
       const launchOptions = {
         ...baseOptions(parsed, dependencies),
-        projectPath: option(parsed.values, 'project'),
         dshExecutable: option(parsed.values, 'dsh-executable'),
         dshArgs: [],
         agentPreset: option(parsed.values, 'preset'),
@@ -450,14 +496,12 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         portProbe: dependencies.portProbe,
         onPortConflict: dependencies.onPortConflict,
         openExistingSession: dependencies.openExistingSession,
-        chooseRecentProject: dependencies.chooseRecentProject,
-        pickProject: dependencies.pickProject,
         notify: (message: string) => io.stdout.write(`${message}\n`)
       };
       const result = dependencies.rpgmaker === false
         ? await launchProject(launchOptions)
         : await launchRpgmakerProject(launchOptions);
-      io.stdout.write(`Launching official DSH in ${result.projectPath}\n`);
+      io.stdout.write(`Launching official DSH in neutral landing directory ${result.cwd}\n`);
       if (result.webUrl) io.stdout.write(`DSH web session: ${result.webUrl}\n`);
       return await childExitCode(result.child);
     }
