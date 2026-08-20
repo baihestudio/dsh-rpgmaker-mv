@@ -23,7 +23,7 @@ import { runCli } from '../src/cli';
 import { runDoctor } from '../src/doctor';
 import { runCommand } from '../src/process';
 import { run as runProcessObservation } from '../scripts/process-observation.mjs';
-import { resolveInstalledNode, runInstalledMount } from '../scripts/phase7-windows-installed-gate';
+import { cleanupInstalledGateWorkspace, resolveInstalledNode, runInstalledMount } from '../scripts/phase7-windows-installed-gate';
 import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, uninstallHarness, UninstallSafetyError } from '../src/windows';
 import { visionToolkitActivationFixture, visionToolkitFixture } from './fixtures/vision-toolkit';
@@ -292,6 +292,59 @@ describe('Windows release gate foundations', () => {
     observer.emit('exit', 1, null);
     observer.emit('close', 1);
     await expect(observation).rejects.toThrow(/process observation command timed out/);
+  });
+
+  test('retries transient Windows installed-gate root cleanup before confirming removal', async () => {
+    const root = await temp('phase7-gate-cleanup-transient');
+    try {
+      await writeFile(join(root, 'fixture.txt'), 'fixture');
+      const removedPaths: string[] = [];
+      const delays: number[] = [];
+      let attempts = 0;
+      await cleanupInstalledGateWorkspace(root, {
+        platform: 'win32',
+        removePath: async (path, options) => {
+          removedPaths.push(path);
+          attempts += 1;
+          if (attempts === 1) throw Object.assign(new Error('sharing violation'), { code: 'EACCES' });
+          await rm(path, options);
+        },
+        delay: async (milliseconds) => { delays.push(milliseconds); }
+      });
+      expect(removedPaths).toEqual([root, root]);
+      expect(delays).toEqual([100]);
+      await expect(stat(root)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reports the disposable root and final error when Windows gate cleanup stays locked', async () => {
+    const root = await temp('phase7-gate-cleanup-persistent');
+    try {
+      const delays: number[] = [];
+      let attempts = 0;
+      let failure: Error | undefined;
+      try {
+        await cleanupInstalledGateWorkspace(root, {
+          platform: 'win32',
+          removePath: async () => {
+            attempts += 1;
+            throw Object.assign(new Error('still locked'), { code: 'EBUSY' });
+          },
+          delay: async (milliseconds) => { delays.push(milliseconds); }
+        });
+      } catch (error) {
+        failure = error instanceof Error ? error : new Error(String(error));
+      }
+      expect(failure).toBeDefined();
+      expect(failure?.message).toContain(root);
+      expect(failure?.message).toContain('still locked');
+      expect(attempts).toBe(5);
+      expect(delays).toEqual([100, 200, 400, 800]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test('runs the installed mount probe with native Node while keeping Bun as the Xerolo runner', async () => {

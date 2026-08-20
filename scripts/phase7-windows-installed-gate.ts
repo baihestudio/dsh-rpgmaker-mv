@@ -52,6 +52,45 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const WINDOWS_GATE_CLEANUP_RETRY_DELAYS_MS = [100, 200, 400, 800] as const;
+const WINDOWS_TRANSIENT_CLEANUP_CODES = new Set(['EACCES', 'EPERM', 'EBUSY', 'ENOTEMPTY']);
+
+type GateWorkspaceRemove = (path: string, options: { recursive: true; force: true }) => Promise<void>;
+
+export interface GateWorkspaceCleanupOptions {
+  platform?: string;
+  removePath?: GateWorkspaceRemove;
+  delay?: (milliseconds: number) => Promise<void>;
+}
+
+function isTransientWindowsCleanupError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === 'string' && WINDOWS_TRANSIENT_CLEANUP_CODES.has(code);
+}
+
+export async function cleanupInstalledGateWorkspace(root: string, options: GateWorkspaceCleanupOptions = {}): Promise<void> {
+  const platform = options.platform ?? process.platform;
+  const removePath = options.removePath ?? rm;
+  const wait = options.delay ?? delay;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= WINDOWS_GATE_CLEANUP_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await removePath(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      const retryDelay = platform === 'win32' && isTransientWindowsCleanupError(error)
+        ? WINDOWS_GATE_CLEANUP_RETRY_DELAYS_MS[attempt]
+        : undefined;
+      if (retryDelay === undefined) break;
+      await wait(retryDelay);
+    }
+  }
+
+  throw new Error(`temporary gate workspace cleanup failed for ${root}: ${errorMessage(lastError)}`, { cause: lastError });
+}
+
 function optionalOption(argv: string[], name: string): string | undefined {
   const prefix = `--${name}=`;
   const inline = argv.find((value) => value.startsWith(prefix));
@@ -395,9 +434,9 @@ async function main(): Promise<void> {
       }
     }
     try {
-      await rm(root, { recursive: true, force: true });
+      await cleanupInstalledGateWorkspace(root);
     } catch (error) {
-      cleanupErrors.push(`temporary gate workspace cleanup failed: ${errorMessage(error)}`);
+      cleanupErrors.push(errorMessage(error));
     }
     if (cleanupErrors.length > 0) {
       const message = diagnostic(`installed gate cleanup failed: ${cleanupErrors.join('; ')}`);
