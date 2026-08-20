@@ -46,6 +46,7 @@ const ERROR_OUTPUT_LIMIT = 16 * 1024
 let workshopRunner
 let childSpawner
 let treeTerminator
+let terminationCommandSpawner
 
 export function setWorkshopRunner(runner) {
   workshopRunner = runner
@@ -69,6 +70,14 @@ export function setTreeTerminator(terminator) {
 
 export function clearTreeTerminator() {
   treeTerminator = undefined
+}
+
+export function setTerminationCommandSpawner(spawner) {
+  terminationCommandSpawner = spawner
+}
+
+export function clearTerminationCommandSpawner() {
+  terminationCommandSpawner = undefined
 }
 
 /** Environment passed to the Image Workshop subprocess; credential values are never forwarded. */
@@ -135,7 +144,7 @@ function defaultSpawn(bun, args, options) {
 }
 
 function waitForTerminationCommand(child, timeoutMs) {
-  if (!child || typeof child.once !== 'function') return Promise.resolve()
+  if (!child || typeof child.once !== 'function') return Promise.reject(new Error('process-tree termination command unavailable'))
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false
     let timer
@@ -148,7 +157,9 @@ function waitForTerminationCommand(child, timeoutMs) {
       error ? rejectPromise(error) : resolvePromise()
     }
     const onError = (error) => finish(error)
-    const onClose = (code) => code === null || code === 0 ? finish() : finish(new Error(`process-tree termination command exited with code ${code}`))
+    const onClose = (code) => code === 0
+      ? finish()
+      : finish(new Error(`process-tree termination command exited ${code === null ? 'by signal' : `with code ${code}`}`))
     timer = setTimeout(() => {
       try { child.kill?.() } catch { /* the bounded wait is already the truth */ }
       finish(new Error('process-tree termination command timed out'))
@@ -171,7 +182,8 @@ async function defaultTerminateTree(child, options = {}) {
     const taskkill = options.env?.SystemRoot
       ? join(options.env.SystemRoot, 'System32', 'taskkill.exe')
       : 'taskkill.exe'
-    const killer = spawn(taskkill, ['/PID', String(child.pid), '/T', '/F'], {
+    const spawnTerminationCommand = terminationCommandSpawner ?? spawn
+    const killer = spawnTerminationCommand(taskkill, ['/PID', String(child.pid), '/T', '/F'], {
       env: workshopEnvironment(options.env ?? process.env),
       stdio: 'ignore',
       windowsHide: true
@@ -190,20 +202,23 @@ async function defaultTerminateTree(child, options = {}) {
   }
   try {
     if (!child.kill('SIGTERM')) throw new Error('the child process rejected termination')
-    return true
+    // A direct-child fallback is cleanup effort, never proof that descendants
+    // in the intended process tree stopped.
+    return false
   } catch (error) {
     throw operationError(`the image CLI process could not be terminated: ${error instanceof Error ? error.message : String(error)}`, 'CLEANUP_UNCONFIRMED')
   }
 }
 
 function forceTerminateTree(child, platform) {
-  if (!isRunning(child)) return
+  // The leader may already have exited while descendants retain its process
+  // group. Do not use the leader's state to skip the group escalation.
   if (platform !== 'win32' && child.pid !== undefined) {
     try {
       process.kill(-child.pid, 'SIGKILL')
-      return
+      return true
     } catch {
-      // The direct handle is the remaining escalation path.
+      // A direct handle is only cleanup effort, not tree proof.
     }
   }
   try {
@@ -211,6 +226,7 @@ function forceTerminateTree(child, platform) {
   } catch {
     // The cleanup deadline records the unconfirmed state if the child remains.
   }
+  return false
 }
 
 function cleanupListeners(child, signal, onAbort, onClose, onError, onExit, onStdout, onStderr) {
@@ -260,6 +276,7 @@ async function runReal(operation, args, env, signal, expectedTargets) {
     let cleanupTimer
     let terminationStarted = false
     let terminationStatus = 'not-started'
+    let forceKillStatus = 'not-attempted'
 
     const finish = (kind, value) => {
       if (settled) return
@@ -271,19 +288,30 @@ async function runReal(operation, args, env, signal, expectedTargets) {
       else rejectPromise(value)
     }
 
+    const treeTerminationConfirmed = () => forceKillAttempted
+      ? forceKillStatus === 'succeeded'
+      : terminationStatus === 'succeeded'
+
+    const canSettleCancellation = () => isQuiescent(child, closeObserved)
+      && (forceKillAttempted || terminationStatus === 'succeeded')
+
     const finishCancellation = async () => {
       if (settled || cancellationSettling) return
       cancellationSettling = true
-      const confirmed = terminationStatus === 'succeeded' && isQuiescent(child, closeObserved)
+      const confirmed = treeTerminationConfirmed() && isQuiescent(child, closeObserved)
       const error = await cancellationErrorFor(operation, confirmed, child.pid, expectedTargets)
       if (settled) return
       finish('reject', error)
     }
 
     const escalate = () => {
-      if (settled || !aborted || forceKillAttempted || !isRunning(child)) return
+      if (settled || !aborted || forceKillAttempted) return
+      // A failed or still-pending tree request still needs process-group
+      // escalation after the leader has exited; descendants can retain it.
+      if (terminationStatus === 'succeeded' && !isRunning(child)) return
       forceKillAttempted = true
-      forceTerminateTree(child, platform)
+      forceKillStatus = forceTerminateTree(child, platform) ? 'succeeded' : 'failed'
+      if (aborted && canSettleCancellation()) void finishCancellation()
     }
 
     const startCancellation = () => {
@@ -302,18 +330,17 @@ async function runReal(operation, args, env, signal, expectedTargets) {
       try {
         const result = terminateTree(child, { env, platform, timeoutMs: TERMINATION_COMMAND_TIMEOUT_MS })
         Promise.resolve(result).then((completed) => {
-          terminationStatus = completed === false ? 'failed' : 'succeeded'
-          if (aborted && isQuiescent(child, closeObserved)) void finishCancellation()
+          terminationStatus = completed === true ? 'succeeded' : 'failed'
+          if (aborted && canSettleCancellation()) void finishCancellation()
         }, () => {
           terminationStatus = 'failed'
           // A direct close after an unsuccessful tree request is not proof of
-          // descendant cleanup; settle it as unconfirmed without waiting for
-          // the final grace timer when the child is already quiescent.
-          if (aborted && isQuiescent(child, closeObserved)) void finishCancellation()
+          // descendant cleanup; wait for the bounded escalation before settling.
+          if (aborted && canSettleCancellation()) void finishCancellation()
         })
       } catch {
         terminationStatus = 'failed'
-        if (aborted && isQuiescent(child, closeObserved)) void finishCancellation()
+        if (aborted && canSettleCancellation()) void finishCancellation()
       }
     }
 
@@ -336,7 +363,7 @@ async function runReal(operation, args, env, signal, expectedTargets) {
     }
     const onError = (error) => {
       if (aborted) {
-        if (terminationStatus !== 'pending' && isQuiescent(child, closeObserved)) void finishCancellation()
+        if (canSettleCancellation()) void finishCancellation()
         return
       }
       finish('reject', error)
@@ -348,7 +375,7 @@ async function runReal(operation, args, env, signal, expectedTargets) {
     const onClose = (code) => {
       closeObserved = true
       if (aborted) {
-        if (terminationStatus !== 'pending' && isQuiescent(child, closeObserved)) void finishCancellation()
+        if (canSettleCancellation()) void finishCancellation()
         return
       }
       if (isRunning(child)) {

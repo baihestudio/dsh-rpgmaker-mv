@@ -22,7 +22,7 @@ import { buildReleaseZip, inspectReleaseZip } from '../src/release-gate';
 import { validateRelativePath, resolveWorkspacePath } from '../bundle/dsh-image-workshop/lib/workspace.js';
 import { createImageInspectTool, createImageResizePixelTool, createImageTrimPadTool, createImageSheetSliceTool, createImageSheetAssembleTool, createImageAtlasPackTool, createImageOptimizePngTool, IMAGE_INSPECT_TIMEOUT_MS, IMAGE_MUTATION_TIMEOUT_MS } from '../bundle/dsh-image-workshop/lib/tools.js';
 import * as imageWorkshopPlugin from '../bundle/dsh-image-workshop/lib/index.js';
-import { clearChildSpawner, clearTreeTerminator, clearWorkshopRunner, invokeImageOperation, setChildSpawner, setTreeTerminator, setWorkshopRunner } from '../bundle/dsh-image-workshop/lib/workshop-client.js';
+import { clearChildSpawner, clearTerminationCommandSpawner, clearTreeTerminator, clearWorkshopRunner, invokeImageOperation, setChildSpawner, setTerminationCommandSpawner, setTreeTerminator, setWorkshopRunner } from '../bundle/dsh-image-workshop/lib/workshop-client.js';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -468,7 +468,7 @@ describe('image tool adapter seam', () => {
       let spawnOptions: Record<string, unknown> | undefined;
       setChildSpawner((_bun, _args, options) => { spawnOptions = options; return child; });
       const terminated: unknown[] = [];
-      setTreeTerminator((candidate) => { terminated.push(candidate); });
+      setTreeTerminator((candidate) => { terminated.push(candidate); return true; });
       const controller = new AbortController();
       const env = { ...process.env, DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' };
       const expectedTarget = join(root, 'b.png');
@@ -513,7 +513,7 @@ describe('image tool adapter seam', () => {
       child.stdout = new PassThrough();
       child.stderr = new PassThrough();
       setChildSpawner(() => child);
-      setTreeTerminator(() => undefined);
+      setTreeTerminator(() => true);
       const controller = new AbortController();
       const target = join(root, 'retained.png');
       const promise = invokeImageOperation('resize-pixel', ['--input', 'a', '--output', target], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal, [{ path: target, projectPath: 'retained.png' }]);
@@ -582,6 +582,153 @@ describe('image tool adapter seam', () => {
       expect(killSignals).toEqual(['SIGTERM', 'SIGKILL']);
     } finally {
       clearChildSpawner();
+      clearTreeTerminator();
+    }
+  }, 7000);
+
+  test('does not confirm cleanup after POSIX group TERM falls back to leader kill', async () => {
+    clearWorkshopRunner();
+    clearChildSpawner();
+    clearTreeTerminator();
+    const child = new EventEmitter() as EventEmitter & {
+      pid?: number;
+      platform?: string;
+      exitCode: number | null;
+      signalCode: string | null;
+      kill: (signal?: string) => boolean;
+      stdout: PassThrough;
+      stderr: PassThrough;
+    };
+    child.pid = 999_999_999;
+    child.platform = 'linux';
+    child.exitCode = null;
+    child.signalCode = null;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    const killSignals: Array<string | undefined> = [];
+    child.kill = (signal) => {
+      killSignals.push(signal);
+      return true;
+    };
+    const spawner = ((
+      _bun: string,
+      _args: string[],
+      _options: Record<string, unknown>
+    ) => child) as ((bun: string, args: string[], options: Record<string, unknown>) => typeof child) & { platform?: string };
+    spawner.platform = 'linux';
+    setChildSpawner(spawner);
+    const controller = new AbortController();
+    try {
+      const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+      controller.abort();
+      child.exitCode = 0;
+      child.emit('close', null);
+      await expect(promise).rejects.toMatchObject({
+        code: 'IMAGE_CANCELLATION_INCOMPLETE',
+        info: { processCleanupConfirmed: false }
+      });
+      expect(killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+    } finally {
+      clearChildSpawner();
+      clearTreeTerminator();
+    }
+  }, 7000);
+
+  test('attempts POSIX group KILL after the leader exits during pending termination', async () => {
+    clearWorkshopRunner();
+    clearChildSpawner();
+    clearTreeTerminator();
+    const child = new EventEmitter() as EventEmitter & {
+      pid?: number;
+      platform?: string;
+      exitCode: number | null;
+      signalCode: string | null;
+      kill: (signal?: string) => boolean;
+      stdout: PassThrough;
+      stderr: PassThrough;
+    };
+    child.pid = 4250;
+    child.platform = 'linux';
+    child.exitCode = null;
+    child.signalCode = null;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    const killSignals: Array<string | undefined> = [];
+    child.kill = (signal) => {
+      killSignals.push(signal);
+      return true;
+    };
+    const spawner = (() => child) as ((bun: string, args: string[], options: Record<string, unknown>) => typeof child) & { platform?: string };
+    spawner.platform = 'linux';
+    setChildSpawner(spawner);
+    setTreeTerminator(() => new Promise<boolean>(() => undefined));
+    const controller = new AbortController();
+    try {
+      const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+      controller.abort();
+      child.exitCode = 0;
+      child.emit('close', null);
+      await expect(promise).rejects.toMatchObject({
+        code: 'IMAGE_CANCELLATION_INCOMPLETE',
+        info: { processCleanupConfirmed: false }
+      });
+      expect(killSignals).toEqual(['SIGKILL']);
+    } finally {
+      clearChildSpawner();
+      clearTreeTerminator();
+    }
+  }, 7000);
+
+  test('treats a signal-killed Windows termination command as unconfirmed', async () => {
+    clearWorkshopRunner();
+    clearChildSpawner();
+    clearTreeTerminator();
+    clearTerminationCommandSpawner();
+    const child = new EventEmitter() as EventEmitter & {
+      pid?: number;
+      platform?: string;
+      exitCode: number | null;
+      signalCode: string | null;
+      kill: (signal?: string) => boolean;
+      stdout: PassThrough;
+      stderr: PassThrough;
+    };
+    child.pid = 4251;
+    child.platform = 'win32';
+    child.exitCode = null;
+    child.signalCode = null;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    const spawner = (() => child) as ((bun: string, args: string[], options: Record<string, unknown>) => typeof child) & { platform?: string };
+    spawner.platform = 'win32';
+    const terminationCommand = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      signalCode: string | null;
+      kill: () => boolean;
+    };
+    terminationCommand.exitCode = null;
+    terminationCommand.signalCode = null;
+    terminationCommand.kill = () => true;
+    setChildSpawner(spawner);
+    setTerminationCommandSpawner(() => terminationCommand);
+    const controller = new AbortController();
+    try {
+      const promise = invokeImageOperation('inspect', ['--input', 'hero.png'], { DSH_IMAGE_WORKSHOP_CLI: '/unused', BUN_EXECUTABLE: 'bun' }, controller.signal);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+      controller.abort();
+      terminationCommand.emit('close', null);
+      child.exitCode = 0;
+      child.emit('close', null);
+      await expect(promise).rejects.toMatchObject({
+        code: 'IMAGE_CANCELLATION_INCOMPLETE',
+        info: { processCleanupConfirmed: false }
+      });
+    } finally {
+      clearChildSpawner();
+      clearTerminationCommandSpawner();
       clearTreeTerminator();
     }
   }, 7000);
