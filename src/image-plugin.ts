@@ -19,7 +19,7 @@ export const IMAGE_WORKSHOP_PLUGIN_LICENSE = 'MIT';
 export const IMAGE_WORKSHOP_PLUGIN_PROFILE = 'web';
 export const IMAGE_WORKSHOP_PLUGIN_ENTRYPOINT = 'lib/index.js';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const IMAGE_WORKSHOP_PLUGIN_SHA256 = 'fcb5af8b0640f5572c93f6822d1b1f3b086ccbcac6a71f8c9b9e3ff3633a2715';
+export const IMAGE_WORKSHOP_PLUGIN_SHA256 = 'd1fe15d569ae6758a65d8d056cf7ae80641615bac82a2e1038d7bba49dc9664a';
 export const IMAGE_WORKSHOP_BUNDLE_RELATIVE = join('bundle', 'dsh-image-workshop');
 /** Archive entries always use POSIX separators, including on Windows. */
 export const IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE = 'bundle/dsh-image-workshop';
@@ -342,6 +342,6 @@ export async function prepareImageWorkshopPlugin(options: ImageWorkshopPluginOpt
 
 export function imageWorkshopPluginSummary(verification: ImageWorkshopPluginVerification): string {
   return verification.valid
-    ? `App-owned image tool plugin ${IMAGE_WORKSHOP_PLUGIN_PACKAGE}@${verification.packageVersion} is linked into the ${IMAGE_WORKSHOP_PLUGIN_PROFILE} profile and scoped to asset-workshop`
+    ? `App-owned signal-aware image tool plugin ${IMAGE_WORKSHOP_PLUGIN_PACKAGE}@${verification.packageVersion} is linked into the ${IMAGE_WORKSHOP_PLUGIN_PROFILE} profile and scoped to asset-workshop`
     : `App-owned image tool plugin is not usable: ${verification.errors.join('; ') || 'unknown reason'}`;
 }

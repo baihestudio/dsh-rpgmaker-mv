@@ -29,6 +29,13 @@ export interface WorkshopExpectedTarget {
   path: string;
   projectPath: string;
 }
+export interface WorkshopDiagnostics {
+  operationId?: string;
+  toolName?: string;
+  inputLabels?: string[];
+  outputLabels?: string[];
+  options?: Record<string, string | number | boolean | undefined>;
+}
 export declare const IMAGE_OPERATION_CLEANUP_GRACE_MS: 5000;
 export declare function workshopEnvironment(env?: Record<string, string | undefined>): Record<string, string | undefined>;
 export declare function setWorkshopRunner(runner: WorkshopRunner): void;
@@ -39,4 +46,4 @@ export declare function setTreeTerminator(terminator?: WorkshopTreeTerminator): 
 export declare function clearTreeTerminator(): void;
 export declare function setTerminationCommandSpawner(spawner?: WorkshopTerminationCommandSpawner): void;
 export declare function clearTerminationCommandSpawner(): void;
-export declare function invokeImageOperation(operation: string, cliArgs: string[], env?: Record<string, string | undefined>, signal?: AbortSignal, expectedTargets?: WorkshopExpectedTarget[]): Promise<Record<string, unknown>>;
+export declare function invokeImageOperation(operation: string, cliArgs: string[], env?: Record<string, string | undefined>, signal?: AbortSignal, expectedTargets?: WorkshopExpectedTarget[], diagnostics?: WorkshopDiagnostics): Promise<Record<string, unknown>>;

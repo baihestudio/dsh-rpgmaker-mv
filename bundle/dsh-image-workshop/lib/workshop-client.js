@@ -11,6 +11,7 @@
 import { stat } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
+import { appendImageDiagnostic, createImageDiagnosticContext, diagnosticAbortOutcome, diagnosticEntry } from './diagnostics.js'
 
 const SECRET_KEYS = [
   'DEEPSEEK_API_KEY',
@@ -238,7 +239,7 @@ function cleanupListeners(child, signal, onAbort, onClose, onError, onExit, onSt
   child.stderr?.removeListener?.('data', onStderr)
 }
 
-async function runReal(operation, args, env, signal, expectedTargets) {
+async function runReal(operation, args, env, signal, expectedTargets, context) {
   const cli = env.DSH_IMAGE_WORKSHOP_CLI
   if (!cli) {
     throw new Error('image workspace: DSH_IMAGE_WORKSHOP_CLI is not configured; the harness launcher must set it.')
@@ -264,6 +265,7 @@ async function runReal(operation, args, env, signal, expectedTargets) {
     // Test-owned child seams may expose a platform. Production ChildProcess
     // instances do not, so this remains the host platform in normal use.
     const platform = child.platform ?? requestedPlatform
+    context.pid = child.pid
     let stdout = ''
     let stderr = ''
     let stdoutOverflow = false
@@ -299,6 +301,7 @@ async function runReal(operation, args, env, signal, expectedTargets) {
       if (settled || cancellationSettling) return
       cancellationSettling = true
       const confirmed = treeTerminationConfirmed() && isQuiescent(child, closeObserved)
+      context.cleanupConfirmed = confirmed
       const error = await cancellationErrorFor(operation, confirmed, child.pid, expectedTargets)
       if (settled) return
       finish('reject', error)
@@ -310,13 +313,26 @@ async function runReal(operation, args, env, signal, expectedTargets) {
       // escalation after the leader has exited; descendants can retain it.
       if (terminationStatus === 'succeeded' && !isRunning(child)) return
       forceKillAttempted = true
+      const startedAt = new Date().toISOString()
+      const startedTime = Date.now()
       forceKillStatus = forceTerminateTree(child, platform) ? 'succeeded' : 'failed'
+      void appendImageDiagnostic(context, diagnosticEntry(context, 'terminal', 'termination', bun, {
+        pid: child.pid,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        elapsedMs: Date.now() - startedTime,
+        outcome: forceKillStatus === 'succeeded' ? 'completed' : 'failed',
+        processCleanupConfirmed: forceKillStatus === 'succeeded' && isQuiescent(child, closeObserved)
+      }))
       if (aborted && canSettleCancellation()) void finishCancellation()
     }
 
     const startCancellation = () => {
       if (terminationStarted || settled) return
       terminationStarted = true
+      const startedAt = new Date().toISOString()
+      const startedTime = Date.now()
+      void appendImageDiagnostic(context, diagnosticEntry(context, 'start', 'termination', bun, { pid: child.pid, startedAt }))
       forceKillTimer = setTimeout(escalate, FORCE_KILL_DELAY_MS)
       cleanupTimer = setTimeout(() => {
         if (aborted) void finishCancellation()
@@ -331,15 +347,41 @@ async function runReal(operation, args, env, signal, expectedTargets) {
         const result = terminateTree(child, { env, platform, timeoutMs: TERMINATION_COMMAND_TIMEOUT_MS })
         Promise.resolve(result).then((completed) => {
           terminationStatus = completed === true ? 'succeeded' : 'failed'
+          context.terminationLog = appendImageDiagnostic(context, diagnosticEntry(context, 'terminal', 'termination', bun, {
+            pid: child.pid,
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            elapsedMs: Date.now() - startedTime,
+            outcome: terminationStatus === 'succeeded' ? 'completed' : 'failed',
+            processCleanupConfirmed: terminationStatus === 'succeeded' && isQuiescent(child, closeObserved)
+          }))
           if (aborted && canSettleCancellation()) void finishCancellation()
-        }, () => {
+        }, (error) => {
           terminationStatus = 'failed'
+          context.terminationLog = appendImageDiagnostic(context, diagnosticEntry(context, 'terminal', 'termination', bun, {
+            pid: child.pid,
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            elapsedMs: Date.now() - startedTime,
+            outcome: 'failed',
+            processCleanupConfirmed: false,
+            error: error instanceof Error ? error.message : String(error)
+          }))
           // A direct close after an unsuccessful tree request is not proof of
           // descendant cleanup; wait for the bounded escalation before settling.
           if (aborted && canSettleCancellation()) void finishCancellation()
         })
-      } catch {
+      } catch (error) {
         terminationStatus = 'failed'
+        context.terminationLog = appendImageDiagnostic(context, diagnosticEntry(context, 'terminal', 'termination', bun, {
+          pid: child.pid,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          elapsedMs: Date.now() - startedTime,
+          outcome: 'failed',
+          processCleanupConfirmed: false,
+          error: error instanceof Error ? error.message : String(error)
+        }))
         if (aborted && canSettleCancellation()) void finishCancellation()
       }
     }
@@ -441,20 +483,61 @@ async function runInjected(runner, bun, args, env, signal, operation, expectedTa
  * (without the CLI entry) and the optional abort signal; the real path prepends
  * the harness CLI and owns bounded process-tree cleanup.
  */
-export async function invokeImageOperation(operation, cliArgs, env = process.env, signal, expectedTargets = []) {
+export async function invokeImageOperation(operation, cliArgs, env = process.env, signal, expectedTargets = [], diagnostics = {}) {
   const args = [operation, ...cliArgs]
-  const safeEnv = workshopEnvironment(env ?? process.env)
-  const stdout = workshopRunner
-    ? await runInjected(workshopRunner, safeEnv.BUN_EXECUTABLE ?? 'bun', args, safeEnv, signal, operation, expectedTargets)
-    : await runReal(operation, args, safeEnv, signal, expectedTargets)
-  if (signal?.aborted) throw await cancellationErrorFor(operation, true, undefined, expectedTargets)
-  const trimmed = String(stdout ?? '').trim()
-  let parsed
-  try {
-    parsed = JSON.parse(trimmed)
-  } catch {
-    throw new Error(`image workspace CLI returned no parseable JSON for ${operation}.`)
+  const rawEnv = env ?? process.env
+  const safeEnv = workshopEnvironment(rawEnv)
+  const context = createImageDiagnosticContext(operation, rawEnv, diagnostics)
+  const operationEnv = {
+    ...safeEnv,
+    DSH_IMAGE_WORKSHOP_OPERATION_ID: context.operationId,
+    DSH_IMAGE_WORKSHOP_TOOL_NAME: context.toolName ?? operation,
+    DSH_IMAGE_WORKSHOP_OPERATION: operation,
+    ...(context.inputLabels ? { DSH_IMAGE_WORKSHOP_INPUT_LABELS: JSON.stringify(context.inputLabels) } : {}),
+    ...(context.outputLabels ? { DSH_IMAGE_WORKSHOP_OUTPUT_LABELS: JSON.stringify(context.outputLabels) } : {}),
+    ...(context.options ? { DSH_IMAGE_WORKSHOP_OPTIONS: JSON.stringify(context.options) } : {})
   }
-  if (signal?.aborted) throw await cancellationErrorFor(operation, true, undefined, expectedTargets)
-  return parsed
+  const startedAt = new Date().toISOString()
+  const startedTime = Date.now()
+  await appendImageDiagnostic(context, diagnosticEntry(context, 'start', 'harness-cli-spawn', safeEnv.BUN_EXECUTABLE ?? 'bun', { startedAt }))
+  try {
+    const stdout = workshopRunner
+      ? await runInjected(workshopRunner, safeEnv.BUN_EXECUTABLE ?? 'bun', args, operationEnv, signal, operation, expectedTargets)
+      : await runReal(operation, args, operationEnv, signal, expectedTargets, context)
+    if (signal?.aborted) throw await cancellationErrorFor(operation, true, context.pid, expectedTargets)
+    const trimmed = String(stdout ?? '').trim()
+    let parsed
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      throw new Error(`image workspace CLI returned no parseable JSON for ${operation}.`)
+    }
+    await appendImageDiagnostic(context, diagnosticEntry(context, 'terminal', 'harness-cli-spawn', safeEnv.BUN_EXECUTABLE ?? 'bun', {
+      pid: context.pid,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      elapsedMs: Date.now() - startedTime,
+      outcome: 'completed'
+    }))
+    return parsed
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error))
+    if (context.terminationLog) await context.terminationLog
+    const incomplete = failure.code === 'IMAGE_CANCELLATION_INCOMPLETE'
+    const cancelled = failure.code === 'cancelled' || incomplete || signal?.aborted
+    await appendImageDiagnostic(context, diagnosticEntry(context, 'terminal', 'harness-cli-spawn', safeEnv.BUN_EXECUTABLE ?? 'bun', {
+      pid: context.pid,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      elapsedMs: Date.now() - startedTime,
+      outcome: incomplete && context.cleanupConfirmed === false
+        ? 'cleanup-unconfirmed'
+        : cancelled
+          ? diagnosticAbortOutcome(signal)
+          : 'failed',
+      ...(context.cleanupConfirmed !== undefined ? { processCleanupConfirmed: context.cleanupConfirmed } : {}),
+      error: failure.message
+    }))
+    throw failure
+  }
 }

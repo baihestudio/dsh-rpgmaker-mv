@@ -1,5 +1,6 @@
-import { basename, dirname, join } from 'node:path';
-import { stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { lstat, readFile, stat } from 'node:fs/promises';
 
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { ownedCoreutilsCommands } from './prerequisites';
@@ -8,7 +9,12 @@ import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } f
 import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion, parseSevenZipVersionText } from './executable';
 import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
-import { resolveImageToolchain } from './image-workshop';
+import {
+  FREE_TEX_PACKER_VERSION,
+  IMAGE_MAGICK_VERSION,
+  OXIPNG_VERSION,
+  resolveImageToolchain
+} from './image-workshop';
 import {
   DSH_TOOL_TIMEOUT_POLICY_PACKAGE,
   RPGMAKER_DSH_PROFILE,
@@ -128,6 +134,70 @@ function isWithinInstallDir(candidate: string | undefined, installDir: string | 
 
 function check(id: string, label: string, ok: boolean, detail: string, path?: string): DoctorCheck {
   return { id, label, ok, detail: redactSensitive(detail), ...(path ? { path } : {}) };
+}
+
+function within(root: string, candidate: string): boolean {
+  const rest = relative(resolve(root), resolve(candidate));
+  return rest === '' || (!rest.startsWith(`..${sep}`) && rest !== '..');
+}
+
+async function matchesSha256(path: string | undefined, expected: unknown): Promise<boolean> {
+  if (!path || typeof expected !== 'string' || !/^[a-f0-9]{64}$/i.test(expected)) return false;
+  try {
+    const hash = createHash('sha256');
+    hash.update(await readFile(path) as unknown as string);
+    return hash.digest('hex') === expected.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+async function verifyImageToolchainMetadata(toolchainRoot: string): Promise<{ valid: boolean; detail: string; path: string }> {
+  const manifestPath = join(toolchainRoot, 'toolchain.json');
+  try {
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+      format?: unknown;
+      imageMagick?: { path?: unknown; version?: unknown; sha256?: unknown };
+      helper?: { root?: unknown; lockPath?: unknown; lockSha256?: unknown; packageVersion?: unknown };
+      oxipng?: { path?: unknown; version?: unknown; sha256?: unknown };
+    };
+    const imagePath = typeof manifest.imageMagick?.path === 'string' ? resolve(manifest.imageMagick.path) : undefined;
+    const helperRoot = typeof manifest.helper?.root === 'string' ? resolve(manifest.helper.root) : undefined;
+    const helperLock = typeof manifest.helper?.lockPath === 'string' ? resolve(manifest.helper.lockPath) : undefined;
+    const oxipngPath = typeof manifest.oxipng?.path === 'string' ? resolve(manifest.oxipng.path) : undefined;
+    const paths = [imagePath, helperRoot, helperLock, oxipngPath];
+    const filesReady = await Promise.all(paths.map(async (path, index) => {
+      if (!path || !within(toolchainRoot, path)) return false;
+      const info = await lstat(path).catch(() => undefined);
+      return Boolean(info && !info.isSymbolicLink() && (index === 1 ? info.isDirectory() : info.isFile()));
+    }));
+    const helperPackagePath = helperRoot ? join(helperRoot, 'node_modules', 'free-tex-packer-core', 'package.json') : undefined;
+    const helperPackage = helperPackagePath
+      ? JSON.parse(await readFile(helperPackagePath, 'utf8').catch(() => '{}')) as { version?: unknown }
+      : {};
+    const rootPackage = helperRoot
+      ? JSON.parse(await readFile(join(helperRoot, 'package.json'), 'utf8').catch(() => '{}')) as { dependencies?: Record<string, unknown> }
+      : {};
+    const valid = manifest.format === 2
+      && manifest.imageMagick?.version === IMAGE_MAGICK_VERSION
+      && manifest.helper?.packageVersion === FREE_TEX_PACKER_VERSION
+      && manifest.oxipng?.version === OXIPNG_VERSION
+      && helperPackage.version === FREE_TEX_PACKER_VERSION
+      && rootPackage.dependencies?.['free-tex-packer-core'] === FREE_TEX_PACKER_VERSION
+      && filesReady.every(Boolean)
+      && await matchesSha256(imagePath, manifest.imageMagick?.sha256)
+      && await matchesSha256(helperLock, manifest.helper?.lockSha256)
+      && await matchesSha256(oxipngPath, manifest.oxipng?.sha256);
+    return {
+      valid,
+      detail: valid
+        ? `Pinned ImageMagick ${IMAGE_MAGICK_VERSION}, free-tex-packer-core ${FREE_TEX_PACKER_VERSION}, and oxipng ${OXIPNG_VERSION} metadata and app-owned paths are verified without executing image tools`
+        : 'The app-owned image toolchain manifest, versions, or app-owned paths were not verified; run Install.cmd to repair it',
+      path: manifestPath
+    };
+  } catch {
+    return { valid: false, detail: 'The app-owned image toolchain manifest is missing or invalid; run Install.cmd to repair it', path: manifestPath };
+  }
 }
 
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
@@ -292,25 +362,8 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     const verifyAgentDependencies = options.verifyAgentDependencies ?? (async (context) => {
       const mcpRuntime = join(context.paths.programRoot, 'runtime', 'mcp');
       const mcp = await verifyMcpRuntime(mcpRuntime, context.platform);
-      let image: DoctorCheck;
-      try {
-        const toolchain = await resolveImageToolchain({
-          platform: context.platform,
-          env: context.env,
-          dshHome: context.paths.dshHome,
-          programRoot: context.paths.programRoot,
-          mutableRoot: context.paths.mutableRoot,
-          toolchainRoot: join(context.paths.programRoot, 'tools', 'image-workshop'),
-          commandRunner: context.commandRunner,
-          installOxipng: true
-        });
-        const complete = Boolean(toolchain.oxipng && toolchain.oxipngVersion);
-        image = check('image-toolchain', 'Image asset toolchain', complete, complete
-          ? `ImageMagick ${toolchain.imageMagickVersion}, free-tex-packer-core ${toolchain.helperPackageVersion}, and oxipng ${toolchain.oxipngVersion} are verified`
-          : 'The app-owned image toolchain is missing oxipng; run Install.cmd to repair it', toolchain.manifestPath);
-      } catch (error) {
-        image = check('image-toolchain', 'Image asset toolchain', false, `The app-owned image toolchain is not verified: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      const imageMetadata = await verifyImageToolchainMetadata(join(context.paths.programRoot, 'tools', 'image-workshop'));
+      const image = check('image-toolchain', 'Image asset toolchain', imageMetadata.valid, imageMetadata.detail, imageMetadata.path);
       const packagerRuntime = join(context.paths.programRoot, 'runtime', 'rpgmpacker-runtime');
       const packager = await verifyRpgmPackerRuntime(packagerRuntime);
       return {

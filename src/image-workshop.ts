@@ -35,6 +35,7 @@ import {
 } from './image-toolchain';
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { commandFailure, runCommand, withoutCredentials, type CommandRunner } from './process';
+import { runImageDiagnosticStage, type ImageDiagnosticContext } from './image-diagnostics';
 
 export {
   ASSET_WORKSHOP_PRESET_ID,
@@ -96,6 +97,7 @@ export interface ImageWorkshopDependencies {
   maxPixels?: number;
   /** Test-owned seam; production resolves the pinned helper from helperRoot. */
   atlasPacker?: AtlasPackAsync;
+  diagnostics?: ImageDiagnosticContext;
 }
 
 export interface ImageMetadata {
@@ -964,7 +966,7 @@ export class ImageWorkshop {
             if (this.dependencies.signal!.aborted) abortHandler();
           })
           : undefined;
-        const packPromise = packAsync(packFiles, {
+        const packPromise = runImageDiagnosticStage(this.dependencies.diagnostics, 'atlas-helper', FREE_TEX_PACKAGE, () => packAsync!(packFiles, {
           textureName: outputPaths.textureName,
           width: maxSize,
           height: maxSize,
@@ -978,7 +980,7 @@ export class ImageWorkshop {
           scaleMethod: 'NEAREST_NEIGHBOR',
           exporter: 'JsonHash',
           textureFormat: 'png'
-        });
+        }));
         files = await Promise.race([
           packPromise,
           ...(abortPromise ? [abortPromise] : [])
