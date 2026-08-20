@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
-import { buildReleaseZip, inspectReleaseZip, installWindowsRelease } from '../src/release-gate';
+import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
 import { PNPM_VERSION, VISION_TOOLKIT_NPM_INTEGRITY, VISION_TOOLKIT_PACKAGE, VISION_TOOLKIT_VERSION, VISION_TOOL_NAMES } from '../src/vision-toolkit';
@@ -295,24 +295,66 @@ describe('Windows release gate foundations', () => {
     await expect(observation).rejects.toThrow(/process observation command timed out/);
   });
 
-  test('retries transient Windows installed-gate root cleanup before confirming removal', async () => {
+  test('invokes native cleanup with the exact root as one literal argv and proves absence', async () => {
+    const root = await temp('phase7-gate-cleanup-100%! & ;()[]$');
+    try {
+      await writeFile(join(root, 'fixture.txt'), 'fixture');
+      const calls: Array<{ command: string; args: string[]; cwd?: string; env?: Record<string, string | undefined> }> = [];
+      const sourceEnv = {
+        USERPROFILE: root,
+        TEMP: root,
+        TMP: root,
+        DEEPSEEK_API_KEY: 'secret-value'
+      };
+      const pwsh = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+      await cleanupInstalledGateWorkspace(root, {
+        platform: 'win32',
+        env: sourceEnv,
+        pwshExecutable: pwsh,
+        commandRunner: async (command, args, options) => {
+          calls.push({ command, args: [...args], cwd: options.cwd, env: options.env });
+          await rm(args.at(-1)!, { recursive: true, force: true });
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+      });
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.command).toBe(pwsh);
+      expect(calls[0]?.args).toEqual([
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+        join(REPOSITORY_ROOT, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE),
+        '-LiteralPath', root
+      ]);
+      expect(calls[0]?.args.filter((value) => value === root)).toEqual([root]);
+      expect(calls[0]?.cwd).toBe(dirname(root));
+      expect(calls[0]?.env?.USERPROFILE).toBe(dirname(root));
+      expect(calls[0]?.env?.TEMP).toBe(dirname(root));
+      expect(calls[0]?.env?.TMP).toBe(dirname(root));
+      expect(calls[0]?.env?.DEEPSEEK_API_KEY).toBeUndefined();
+      await expect(stat(root)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('retries a classified native sharing failure before confirming absence', async () => {
     const root = await temp('phase7-gate-cleanup-transient');
     try {
       await writeFile(join(root, 'fixture.txt'), 'fixture');
-      const removedPaths: string[] = [];
       const delays: number[] = [];
       let attempts = 0;
       await cleanupInstalledGateWorkspace(root, {
         platform: 'win32',
-        removePath: async (path, options) => {
-          removedPaths.push(path);
+        pwshExecutable: 'pwsh.exe',
+        commandRunner: async () => {
           attempts += 1;
-          if (attempts === 1) throw Object.assign(new Error('sharing violation'), { code: 'EACCES' });
-          await rm(path, options);
+          if (attempts === 1) return { exitCode: 1, stdout: '', stderr: `ERROR_SHARING_VIOLATION: ${root}` };
+          await rm(root, { recursive: true, force: true });
+          return { exitCode: 0, stdout: '', stderr: '' };
         },
         delay: async (milliseconds) => { delays.push(milliseconds); }
       });
-      expect(removedPaths).toEqual([root, root]);
+      expect(attempts).toBe(2);
       expect(delays).toEqual([100]);
       await expect(stat(root)).rejects.toThrow();
     } finally {
@@ -320,81 +362,23 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('fails when the remover resolves but leaves the exact Windows gate root', async () => {
-    const root = await temp('phase7-gate-cleanup-unremoved');
-    try {
-      const checkedPaths: string[] = [];
-      let attempts = 0;
-      let failure: Error | undefined;
-      try {
-        await cleanupInstalledGateWorkspace(root, {
-          platform: 'win32',
-          removePath: async () => { attempts += 1; },
-          existsPath: async (path) => { checkedPaths.push(path); return true; },
-          delay: async () => undefined
-        });
-      } catch (error) {
-        failure = error instanceof Error ? error : new Error(String(error));
-      }
-      expect(failure).toBeDefined();
-      expect(failure?.message).toContain(root);
-      expect(failure?.message).toMatch(/remover resolved|still exists/i);
-      expect(checkedPaths).toEqual([root]);
-      expect(attempts).toBe(1);
-      await expect(stat(root)).resolves.toBeDefined();
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('does not retry transient errors off Windows or unlisted Windows errors', async () => {
-    const root = await temp('phase7-gate-cleanup-no-retry');
-    try {
-      for (const scenario of [
-        { platform: 'darwin', code: 'EBUSY' },
-        { platform: 'win32', code: 'EINVAL' }
-      ]) {
-        let attempts = 0;
-        const delays: number[] = [];
-        await expect(cleanupInstalledGateWorkspace(root, {
-          platform: scenario.platform,
-          removePath: async () => {
-            attempts += 1;
-            throw Object.assign(new Error(`cleanup ${scenario.code}`), { code: scenario.code });
-          },
-          delay: async (milliseconds) => { delays.push(milliseconds); }
-        })).rejects.toThrow(`cleanup ${scenario.code}`);
-        expect(attempts).toBe(1);
-        expect(delays).toEqual([]);
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('reports the disposable root and final error when Windows gate cleanup stays locked', async () => {
+  test('fails immediately on a persistent native removal error with the exact root', async () => {
     const root = await temp('phase7-gate-cleanup-persistent');
     try {
       const delays: number[] = [];
       let attempts = 0;
-      let failure: Error | undefined;
-      try {
-        await cleanupInstalledGateWorkspace(root, {
-          platform: 'win32',
-          removePath: async () => {
-            attempts += 1;
-            throw Object.assign(new Error('still locked'), { code: 'EBUSY' });
-          },
-          delay: async (milliseconds) => { delays.push(milliseconds); }
-        });
-      } catch (error) {
-        failure = error instanceof Error ? error : new Error(String(error));
-      }
-      expect(failure).toBeDefined();
-      expect(failure?.message).toContain(root);
-      expect(failure?.message).toContain('still locked');
-      expect(attempts).toBe(5);
-      expect(delays).toEqual([100, 200, 400, 800]);
+      await expect(cleanupInstalledGateWorkspace(root, {
+        platform: 'win32',
+        pwshExecutable: 'pwsh.exe',
+        commandRunner: async () => {
+          attempts += 1;
+          return { exitCode: 1, stdout: '', stderr: `UnauthorizedAccessException: access denied for ${root}` };
+        },
+        delay: async (milliseconds) => { delays.push(milliseconds); }
+      })).rejects.toThrow(new RegExp(`temporary gate workspace cleanup failed.*${root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      expect(attempts).toBe(1);
+      expect(delays).toEqual([]);
+      await expect(stat(root)).resolves.toBeDefined();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1130,6 +1114,7 @@ describe('Windows release gate foundations', () => {
       expect(inspection.valid).toBe(true);
       expect(inspection.entries).toContain('Install.cmd');
       expect(inspection.entries).toContain('src/cli.ts');
+      expect(inspection.entries).toContain(WINDOWS_GATE_CLEANUP_HELPER_RELATIVE);
       expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/package.json`);
       expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/cordis.patch.yml`);
       expect(inspection.entries).toContain(`${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/${WORKSPACE_MCP_AGENT_ENTRYPOINT}`);

@@ -18,6 +18,7 @@ import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, 
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
+export const WINDOWS_GATE_CLEANUP_HELPER_RELATIVE = 'scripts/remove-phase7-gate-root.ps1';
 export const RELEASE_ENTRIES = [
   'Install.cmd',
   'install.ps1',
@@ -432,6 +433,7 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'uninstall.ps1',
     'THIRD-PARTY-NOTICES.md',
     'docs/windows-release.md',
+    WINDOWS_GATE_CLEANUP_HELPER_RELATIVE,
     'src/cli.ts',
     'src/mcport.ts',
     'src/workspace-mcp.ts',

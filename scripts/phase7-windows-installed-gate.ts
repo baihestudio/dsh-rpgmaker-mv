@@ -3,14 +3,16 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { strict as assert } from 'node:assert';
+import { fileURLToPath } from 'node:url';
 
 import { DSH_VERSION, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, withEnvironmentPath } from '../src/config';
 import { verifyRuntime } from '../src/bootstrap';
-import { prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, type CommandRunner } from '../src/process';
+import { prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, type CommandRunner, withoutCredentials } from '../src/process';
 import { verifyMcpRuntime } from '../src/rpgmaker';
 import { verifyMcporterRuntime } from '../src/mcport';
 import { PNPM_VERSION } from '../src/vision-toolkit';
-import { resolveExecutable } from '../src/executable';
+import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
+import { WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
@@ -44,8 +46,8 @@ function requiredOption(argv: string[], name: string): string {
   return value;
 }
 
-function diagnostic(value: string): string {
-  return redactSensitive(value, process.env);
+function diagnostic(value: string, env: Record<string, string | undefined> = process.env): string {
+  return redactSensitive(value, env);
 }
 
 function errorMessage(error: unknown): string {
@@ -53,38 +55,73 @@ function errorMessage(error: unknown): string {
 }
 
 const WINDOWS_GATE_CLEANUP_RETRY_DELAYS_MS = [100, 200, 400, 800] as const;
-const WINDOWS_TRANSIENT_CLEANUP_CODES = new Set(['EACCES', 'EPERM', 'EBUSY', 'ENOTEMPTY']);
+const WINDOWS_TRANSIENT_NATIVE_CLEANUP_PATTERNS = [
+  /ERROR_(?:SHARING|LOCK)_VIOLATION/i,
+  /sharing violation/i,
+  /(?:being|in use by|used by) another process/i,
+  /0x800700(?:20|21)/i
+];
+const WINDOWS_GATE_CLEANUP_HELPER = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  basename(WINDOWS_GATE_CLEANUP_HELPER_RELATIVE)
+);
 
-type GateWorkspaceRemove = (path: string, options: { recursive: true; force: true }) => Promise<void>;
 type GateWorkspaceExists = (path: string) => Promise<boolean>;
 
 export interface GateWorkspaceCleanupOptions {
   platform?: string;
-  removePath?: GateWorkspaceRemove;
+  env?: Record<string, string | undefined>;
+  pwshExecutable?: string;
+  commandRunner?: CommandRunner;
   existsPath?: GateWorkspaceExists;
   delay?: (milliseconds: number) => Promise<void>;
 }
 
-function isTransientWindowsCleanupError(error: unknown): boolean {
+function isTransientNativeCleanupError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  return typeof code === 'string' && WINDOWS_TRANSIENT_CLEANUP_CODES.has(code);
+  const text = `${errorMessage(error)} ${typeof code === 'string' ? code : ''}`;
+  return WINDOWS_TRANSIENT_NATIVE_CLEANUP_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function cleanupEnvironment(root: string, source: Record<string, string | undefined>): Record<string, string | undefined> {
+  const parent = dirname(resolve(root));
+  const safe = withoutCredentials(source);
+  for (const key of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP']) safe[key] = parent;
+  return safe;
+}
+
+function nativeCleanupFailure(root: string, result: { exitCode: number; stdout: string; stderr: string }, env: Record<string, string | undefined>): Error {
+  const detail = diagnostic(`${result.stderr}\n${result.stdout}`.trim(), env).trim();
+  return new Error(`native PowerShell gate workspace cleanup failed for ${root} (exit code ${result.exitCode})${detail ? `: ${detail}` : ''}`);
 }
 
 export async function cleanupInstalledGateWorkspace(root: string, options: GateWorkspaceCleanupOptions = {}): Promise<void> {
   const platform = options.platform ?? process.platform;
-  const removePath = options.removePath ?? rm;
+  if (platform !== 'win32') throw new Error('installed gate workspace cleanup is Windows-only');
+
+  const sourceEnv = options.env ?? process.env;
+  const cleanupEnv = cleanupEnvironment(root, sourceEnv);
+  const parent = dirname(resolve(root));
+  if (parent === resolve(root)) throw new Error(`installed gate workspace root must have a safe parent: ${root}`);
+  const pwsh = options.pwshExecutable ?? await resolveWindowsPwsh({ platform: 'win32', env: sourceEnv });
+  if (!pwsh) throw new Error('native PowerShell 7 executable was not found for installed gate workspace cleanup');
+  if (!(await exists(WINDOWS_GATE_CLEANUP_HELPER))) throw new Error(`installed gate cleanup helper is missing: ${WINDOWS_GATE_CLEANUP_HELPER}`);
+
+  const runner = options.commandRunner ?? runCommand;
   const existsPath = options.existsPath ?? gateRootExists;
   const wait = options.delay ?? delay;
+  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', WINDOWS_GATE_CLEANUP_HELPER, '-LiteralPath', root];
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= WINDOWS_GATE_CLEANUP_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
-      await removePath(root, { recursive: true, force: true });
-      if (await existsPath(root)) throw new Error(`gate root ${root} still exists after remover resolved`);
+      const result = await runner(pwsh, args, { cwd: parent, env: cleanupEnv, platform: 'win32', timeoutMs: 30_000 });
+      if (result.exitCode !== 0) throw nativeCleanupFailure(root, result, sourceEnv);
+      if (await existsPath(root)) throw new Error(`native PowerShell cleanup resolved but gate root ${root} still exists`);
       return;
     } catch (error) {
       lastError = error;
-      const retryDelay = platform === 'win32' && isTransientWindowsCleanupError(error)
+      const retryDelay = isTransientNativeCleanupError(error)
         ? WINDOWS_GATE_CLEANUP_RETRY_DELAYS_MS[attempt]
         : undefined;
       if (retryDelay === undefined) break;
@@ -92,7 +129,8 @@ export async function cleanupInstalledGateWorkspace(root: string, options: GateW
     }
   }
 
-  throw new Error(`temporary gate workspace cleanup failed for ${root}: ${errorMessage(lastError)}`, { cause: lastError });
+  const detail = diagnostic(errorMessage(lastError), sourceEnv);
+  throw new Error(`temporary gate workspace cleanup failed for ${root}: ${detail}`, { cause: lastError });
 }
 
 function optionalOption(argv: string[], name: string): string | undefined {
@@ -355,6 +393,10 @@ async function main(): Promise<void> {
     : await resolveExecutable('bun.exe', { platform: 'win32', env: process.env });
   if (!bunExecutable || basename(bunExecutable).toLowerCase() !== 'bun.exe') throw new Error(`The installed-release gate requires a direct bun.exe runner, got ${bunExecutable ?? 'not found'}.`);
   const nodeExecutable = await resolveInstalledNode(process.env);
+  const pwshExecutable = await resolveWindowsPwsh({ platform: 'win32', env: process.env });
+  if (!pwshExecutable || basename(pwshExecutable).toLowerCase() !== 'pwsh.exe' || /[\\/]WindowsApps[\\/]pwsh\.exe$/i.test(pwshExecutable)) {
+    throw new Error(`The installed-release gate requires the repository-resolved native PowerShell 7 executable; got ${pwshExecutable ?? 'not found'}.`);
+  }
   await verifyInstalledRuntimes(installedRoot, bunExecutable);
   const root = await mkdtemp(join(tmpdir(), 'dsh-rpgmaker-phase7-installed-'));
   const env = cleanEnvironment(root, bunExecutable);
@@ -449,7 +491,7 @@ async function main(): Promise<void> {
       }
     }
     try {
-      await cleanupInstalledGateWorkspace(root);
+      await cleanupInstalledGateWorkspace(root, { pwshExecutable });
     } catch (error) {
       cleanupErrors.push(errorMessage(error));
     }
