@@ -44,6 +44,17 @@ const SAFE_STAGE_NAMES = new Set([
   'oxipng',
   'termination'
 ])
+const SAFE_EXECUTABLE_NAMES = Object.freeze({
+  bun: 'bun',
+  'bun.exe': 'bun.exe',
+  node: 'node',
+  'node.exe': 'node.exe',
+  magick: 'magick',
+  'magick.exe': 'magick.exe',
+  oxipng: 'oxipng',
+  'oxipng.exe': 'oxipng.exe',
+  'free-tex-packer-core': 'free-tex-packer-core'
+})
 
 function redactText(value, context) {
   let text = String(value ?? '')
@@ -98,8 +109,8 @@ function safeErrorCode(value) {
 
 function executableName(value) {
   if (!value) return undefined
-  const name = basename(String(value).replaceAll('\\', '/'))
-  return name.length <= DIAGNOSTIC_LABEL_LIMIT ? name : name.slice(-DIAGNOSTIC_LABEL_LIMIT)
+  const name = basename(String(value).replaceAll('\\', '/')).toLowerCase()
+  return SAFE_EXECUTABLE_NAMES[name] ?? 'unknown'
 }
 
 function diagnosticLogPath(env) {

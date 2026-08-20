@@ -153,9 +153,10 @@ describe('image diagnostics', () => {
       expect(result).toMatchObject({ path: 'sprites/hero.png' });
       const records = await readJsonLines(logPath);
       const pluginRecords = records.filter((record) => record.stage === 'harness-cli-spawn');
-      const cliRecords = records.filter((record) => record.stage === 'toolchain-version-check' && record.executable === 'test-owned-cli');
+      const cliRecords = records.filter((record) => record.stage === 'toolchain-version-check');
       expect(pluginRecords.length).toBeGreaterThanOrEqual(2);
       expect(cliRecords).toHaveLength(2);
+      expect(cliRecords.every((record) => record.executable === 'unknown')).toBe(true);
       const operationIds = new Set([...pluginRecords, ...cliRecords].map((record) => record.operationId));
       expect(operationIds.size).toBe(1);
       expect(pluginRecords[0].operationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
@@ -211,6 +212,35 @@ describe('image diagnostics', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test('allowlists executable names in JSONL and model errors', async () => {
+    const root = await temp('image-executable-allowlist')
+    try {
+      const logPath = join(root, 'logs', 'image-workshop.jsonl')
+      const token = 'ghp_injected-executable-token'
+      const injectedExecutable = join(root, `${token}.bin`)
+      setWorkshopRunner(async () => {
+        throw new Error('caller-controlled child output must not surface')
+      })
+      const error = await invokeImageOperation('inspect', ['--input', 'sprites/hero.png'], {
+        DSH_IMAGE_WORKSHOP_CLI: 'test-owned-image-cli',
+        BUN_EXECUTABLE: injectedExecutable,
+        DSH_IMAGE_WORKSHOP_LOG: logPath
+      }).then(() => undefined, (failure) => failure as Error & { code?: string; info?: Record<string, unknown> })
+      expect(error).toMatchObject({ code: 'COMMAND_FAILED', info: { executable: 'unknown' } })
+      expect(error?.message).toContain('(unknown, unknown status)')
+      const records = await readJsonLines(logPath)
+      expect(records.length).toBeGreaterThanOrEqual(2)
+      expect(records.every((record) => record.executable === 'unknown')).toBe(true)
+      expect(JSON.stringify(records)).not.toContain(token)
+      expect(JSON.stringify(records)).not.toContain(injectedExecutable)
+      expect(JSON.stringify(error)).not.toContain(token)
+      expect(JSON.stringify(error)).not.toContain(injectedExecutable)
+    } finally {
+      clearWorkshopRunner()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 
   test('records truthful cancellation cleanup for native external stages and atlas helper', async () => {
     const root = await temp('image-stage-cancellation');
@@ -374,4 +404,91 @@ describe('image diagnostics', () => {
       await rm(root, { recursive: true, force: true });
     }
   }, IMAGE_OPERATION_CLEANUP_GRACE_MS);
+
+  test('does not confirm a POSIX tree when the leader exits and a descendant ignores TERM', async () => {
+    if (process.platform === 'win32') return
+    const root = await temp('image-posix-descendant')
+    let descendantPid: number | undefined
+    try {
+      const logPath = join(root, 'logs', 'image-workshop.jsonl')
+      const leaderMarker = join(root, 'leader-exited')
+      const readyMarker = join(root, 'descendant-ready')
+      const termMarker = join(root, 'descendant-term-seen')
+      const descendantScript = join(root, 'ignore-term-descendant.mjs')
+      const cliPath = join(root, 'leader-exits-image-cli.mjs')
+      await writeFile(descendantScript, [
+        "import { writeFileSync } from 'node:fs';",
+        "process.on('SIGTERM', () => { try { writeFileSync(process.env.TERM_MARKER, 'term'); } catch {} });",
+        "writeFileSync(process.env.READY_MARKER, 'ready');",
+        'setInterval(() => {}, 1000);',
+        ''
+      ].join('\n'))
+      await writeFile(cliPath, [
+        "import { readFile, writeFile } from 'node:fs/promises';",
+        "import { spawn } from 'node:child_process';",
+        "process.on('SIGTERM', () => process.exit(0));",
+        "const descendant = spawn(process.execPath, [process.env.DESCENDANT_SCRIPT], { env: process.env, stdio: ['ignore', 'inherit', 'inherit'] });",
+        'let ready = false;',
+        'for (let attempt = 0; attempt < 200; attempt += 1) {',
+        "  try { await readFile(process.env.READY_MARKER); ready = true; break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }",
+        '}',
+        "if (!ready) process.exit(23);",
+        "await writeFile(process.env.LEADER_MARKER, String(descendant.pid));",
+        'await new Promise(() => {});',
+        ''
+      ].join('\n'))
+
+      clearWorkshopRunner()
+      clearChildSpawner()
+      clearTreeTerminator()
+      const controller = new AbortController()
+      let settled = false
+      const env = {
+        ...process.env,
+        DSH_IMAGE_WORKSHOP_CLI: cliPath,
+        BUN_EXECUTABLE: process.execPath,
+        DSH_IMAGE_WORKSHOP_LOG: logPath,
+        DESCENDANT_SCRIPT: descendantScript,
+        LEADER_MARKER: leaderMarker,
+        READY_MARKER: readyMarker,
+        TERM_MARKER: termMarker
+      }
+      const pending = invokeImageOperation('inspect', ['--input', 'sprites/hero.png'], env, controller.signal)
+      void pending.then(() => { settled = true }, () => { settled = true })
+      await waitForFile(leaderMarker)
+      descendantPid = Number(await readFile(leaderMarker, 'utf8'))
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 25))
+      controller.abort('manual cancellation')
+      await waitForFile(termMarker)
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100))
+      expect(settled).toBe(false)
+      const failure = await pending.then(() => undefined, (error) => error as Error & { code?: string; info?: Record<string, unknown> })
+      expect(failure).toMatchObject({ code: 'cancelled', info: { processCleanupConfirmed: true } })
+
+      let gone = false
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          process.kill(descendantPid, 0)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+            gone = true
+            break
+          }
+        }
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 10))
+      }
+      expect(gone).toBe(true)
+      const records = await readJsonLines(logPath)
+      expect(records.some((record) => record.stage === 'harness-cli-spawn' && record.event === 'terminal' && record.processCleanupConfirmed === true)).toBe(true)
+    } finally {
+      if (descendantPid !== undefined) {
+        try { process.kill(descendantPid, 'SIGKILL') } catch { /* already gone */ }
+      }
+      clearWorkshopRunner()
+      clearChildSpawner()
+      clearTreeTerminator()
+      clearCleanupTimerScheduler()
+      await rm(root, { recursive: true, force: true })
+    }
+  }, IMAGE_OPERATION_CLEANUP_GRACE_MS + 5000)
 });

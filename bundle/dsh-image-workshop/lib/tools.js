@@ -10,11 +10,16 @@
  * argv element, never as shell-encoded text.
  */
 import { stat } from 'node:fs/promises'
-import { basename, join, relative } from 'node:path'
-import { resolveWorkspacePath } from './workspace.js'
+import { basename, join, relative, resolve } from 'node:path'
+import { resolveWorkspacePath, validateRelativePath } from './workspace.js'
 import { invokeImageOperation } from './workshop-client.js'
 
 const GRAVITIES = ['center', 'north', 'south', 'east', 'west', 'northeast', 'northwest', 'southeast', 'southwest']
+const IMAGE_OPERATION_NAMES = new Set(['inspect', 'resize-pixel', 'trim-pad', 'sheet-slice', 'sheet-assemble', 'atlas-pack', 'optimize-png'])
+const VERIFICATION_LEVELS = new Set(['decoded-pixels', 'representative-pixels', 'metadata-only'])
+const IMAGE_WORKSPACE_ESCAPE_CODE = 'IMAGE_WORKSPACE_ESCAPE'
+const IMAGE_WORKSPACE_METADATA_CODE = 'IMAGE_WORKSPACE_METADATA_INVALID'
+const WINDOWS_ABSOLUTE_PATH = /^[A-Za-z]:[\\/]/
 export const IMAGE_INSPECT_TIMEOUT_MS = 30_000
 export const IMAGE_MUTATION_TIMEOUT_MS = 180_000
 
@@ -55,12 +60,120 @@ function renderSummary(args, value) {
   return renderJson(result)
 }
 
+function resultError(message, code) {
+  const error = new Error(message)
+  error.code = code
+  error.info = { name: 'ImageWorkspaceError', code }
+  return error
+}
+
+function workspaceEscapeError() {
+  return resultError('image workspace: result metadata is outside the Agent workspace.', IMAGE_WORKSPACE_ESCAPE_CODE)
+}
+
+function metadataInvalidError() {
+  return resultError('image workspace: CLI result metadata is invalid.', IMAGE_WORKSPACE_METADATA_CODE)
+}
+
 function toWorkspaceRelative(workspace, abs) {
-  const rel = relative(workspace, abs)
-  if (rel === '' || rel.startsWith('..') || rel.startsWith('\\')) {
-    throw new Error(`image workspace: result path escaped the workspace: ${abs}`)
+  if (typeof abs !== 'string' || abs.trim() === '' || (process.platform !== 'win32' && WINDOWS_ABSOLUTE_PATH.test(abs))) throw workspaceEscapeError()
+  try {
+    const rel = relative(resolve(workspace), resolve(abs))
+    if (rel === '' || rel === '.' || rel.startsWith('..') || rel.startsWith('\\') || rel.startsWith('/')) {
+      throw workspaceEscapeError()
+    }
+    return rel.split('\\').join('/')
+  } catch (error) {
+    if (error?.code === IMAGE_WORKSPACE_ESCAPE_CODE) throw error
+    throw workspaceEscapeError()
   }
-  return rel.split('\\').join('/')
+}
+
+function safeCallPath(raw) {
+  try {
+    return validateRelativePath(raw)
+  } catch {
+    return 'workspace path'
+  }
+}
+
+function isAbsoluteMetadataPath(value) {
+  return typeof value === 'string' && (value.startsWith('/') || value.startsWith('\\') || WINDOWS_ABSOLUTE_PATH.test(value))
+}
+
+function projectMetadata(value) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value
+  if (typeof value === 'string') return isAbsoluteMetadataPath(value) ? undefined : value
+  if (Array.isArray(value)) return value.map(projectMetadata).filter((entry) => entry !== undefined)
+  if (typeof value === 'object') {
+    const result = {}
+    for (const [key, entry] of Object.entries(value)) {
+      const projected = projectMetadata(entry)
+      if (projected !== undefined) result[key] = projected
+    }
+    return result
+  }
+  return undefined
+}
+
+const IMAGE_METADATA_KEYS = ['kind', 'path', 'width', 'height', 'format', 'channels', 'hasAlpha', 'opaque', 'bytes', 'sha256']
+
+function projectArtifact(workspace, value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  if (typeof value.path !== 'string') throw metadataInvalidError()
+  const result = {}
+  for (const key of IMAGE_METADATA_KEYS) {
+    if (value[key] === undefined) continue
+    const projected = key === 'path' ? toWorkspaceRelative(workspace, value.path) : projectMetadata(value[key])
+    if (projected !== undefined) result[key] = projected
+  }
+  return result
+}
+
+function projectToolchain(value) {
+  const projected = projectMetadata(value)
+  if (projected === null || typeof projected !== 'object' || Array.isArray(projected)) return {}
+  for (const key of ['imageMagick', 'freeTexPacker', 'oxipng']) {
+    const entry = projected[key]
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+      delete entry.path
+      delete entry.root
+    }
+  }
+  return projected
+}
+
+function projectManifest(workspace, value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw metadataInvalidError()
+  const inputs = Array.isArray(value.inputs)
+    ? value.inputs.map((entry) => projectArtifact(workspace, entry)).filter(Boolean)
+    : []
+  const outputs = Array.isArray(value.outputs)
+    ? value.outputs.map((entry) => projectArtifact(workspace, entry)).filter(Boolean)
+    : []
+  const operation = typeof value.operation === 'string' && IMAGE_OPERATION_NAMES.has(value.operation) ? value.operation : undefined
+  return {
+    ...(value.schemaVersion !== undefined ? { schemaVersion: projectMetadata(value.schemaVersion) } : {}),
+    ...(operation ? { operation } : {}),
+    toolchain: projectToolchain(value.toolchain),
+    inputs,
+    outputs,
+    options: projectMetadata(value.options) ?? {},
+    fidelity: projectMetadata(value.fidelity) ?? {},
+    ...(typeof value.verificationLevel === 'string' && VERIFICATION_LEVELS.has(value.verificationLevel) ? { verificationLevel: value.verificationLevel } : {}),
+    ...(typeof value.lossless === 'boolean' ? { lossless: value.lossless } : {})
+  }
+}
+
+function projectImageInspection(workspace, value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || typeof value.path !== 'string') throw metadataInvalidError()
+  const result = {}
+  for (const key of IMAGE_METADATA_KEYS) {
+    if (value[key] === undefined) continue
+    const projected = key === 'path' ? toWorkspaceRelative(workspace, value.path) : projectMetadata(value[key])
+    if (projected !== undefined) result[key] = projected
+  }
+  return result
 }
 
 function agentWorkspace(exec) {
@@ -75,18 +188,19 @@ function expectedOutputTargets(workspace, paths) {
 
 /**
  * Project the canonical operation manifest into the model-facing tool result:
- * operation name, project-relative non-JSON output paths, the project-relative
- * manifest path, and the full canonical manifest (absolute paths inside).
+ * operation name, project-relative output paths, the project-relative manifest
+ * path, and a path-safe manifest projection.
  */
 function operationResult(workspace, manifest, manifestPath) {
-  const outputPaths = (Array.isArray(manifest.outputs) ? manifest.outputs : [])
-    .filter((artifact) => artifact && typeof artifact === 'object' && artifact.kind !== 'json' && typeof artifact.path === 'string')
-    .map((artifact) => toWorkspaceRelative(workspace, artifact.path))
+  const projectedManifest = projectManifest(workspace, manifest)
+  const outputPaths = projectedManifest.outputs
+    .filter((artifact) => artifact.kind !== 'json' && typeof artifact.path === 'string')
+    .map((artifact) => artifact.path)
   return {
-    operation: typeof manifest.operation === 'string' ? manifest.operation : undefined,
+    operation: projectedManifest.operation,
     outputPaths,
     manifestPath: toWorkspaceRelative(workspace, manifestPath),
-    manifest
+    manifest: projectedManifest
   }
 }
 
@@ -110,14 +224,12 @@ export function createImageInspectTool() {
     async execute(args, exec) {
       const workspace = agentWorkspace(exec)
       const input = await resolveWorkspacePath(workspace, args.input, { label: 'Input', forOutput: false })
-      if (!(await pathExists(input))) throw new Error(`image_inspect input does not exist in the workspace: ${args.input}`)
-      const value = await invokeImageOperation('inspect', ['--input', input], undefined, exec?.signal, [], { toolName: 'image_inspect', inputLabels: [args.input] })
-      if (value !== null && typeof value === 'object' && typeof value.path === 'string') {
-        return { ...value, path: toWorkspaceRelative(workspace, value.path) }
-      }
-      return value
+      const inputLabel = toWorkspaceRelative(workspace, input)
+      if (!(await pathExists(input))) throw new Error(`image_inspect input does not exist in the workspace: ${inputLabel}`)
+      const value = await invokeImageOperation('inspect', ['--input', input], undefined, exec?.signal, [], { toolName: 'image_inspect', inputLabels: [inputLabel] })
+      return projectImageInspection(workspace, value)
     },
-    presentCall: (args) => ({ card: 'generic', title: `Inspect ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
+    presentCall: (args) => ({ card: 'generic', title: `Inspect ${safeCallPath(args.input)}`, kind: 'execute', locations: [{ path: safeCallPath(args.input) }] })
   }
 }
 
@@ -146,21 +258,23 @@ export function createImageResizePixelTool() {
       const workspace = agentWorkspace(exec)
       const input = await resolveWorkspacePath(workspace, args.input, { label: 'Input', forOutput: false })
       const output = await resolveWorkspacePath(workspace, args.output, { label: 'Output', forOutput: true })
-      if (!(await pathExists(input))) throw new Error(`image_resize_pixel input does not exist in the workspace: ${args.input}`)
+      const inputLabel = toWorkspaceRelative(workspace, input)
+      const outputLabel = toWorkspaceRelative(workspace, output)
+      if (!(await pathExists(input))) throw new Error(`image_resize_pixel input does not exist in the workspace: ${inputLabel}`)
       const hasScale = Number.isInteger(args.scale)
       const hasDimensions = Number.isInteger(args.width) && Number.isInteger(args.height)
       if (!hasScale && !hasDimensions) throw new Error('image_resize_pixel requires scale or both width and height.')
       if (hasScale && hasDimensions) throw new Error('image_resize_pixel accepts scale or width/height, not both.')
       if (await pathExists(output)) {
-        throw new Error(`image_resize_pixel output already exists: ${args.output}. Choose a new path; the source is never overwritten.`)
+        throw new Error(`image_resize_pixel output already exists: ${outputLabel}. Choose a new path; the source is never overwritten.`)
       }
       const cliArgs = ['--input', input, '--output', output]
       if (hasScale) cliArgs.push('--scale', String(args.scale))
       else cliArgs.push('--width', String(args.width), '--height', String(args.height))
-      const manifest = await invokeImageOperation('resize-pixel', cliArgs, undefined, exec?.signal, expectedOutputTargets(workspace, [output, `${output}.manifest.json`]), { toolName: 'image_resize_pixel', inputLabels: [args.input], outputLabels: [args.output, `${args.output}.manifest.json`], options: { scale: args.scale, width: args.width, height: args.height } })
+      const manifest = await invokeImageOperation('resize-pixel', cliArgs, undefined, exec?.signal, expectedOutputTargets(workspace, [output, `${output}.manifest.json`]), { toolName: 'image_resize_pixel', inputLabels: [inputLabel], outputLabels: [outputLabel, `${outputLabel}.manifest.json`], options: { scale: args.scale, width: args.width, height: args.height } })
       return operationResult(workspace, manifest, `${output}.manifest.json`)
     },
-    presentCall: (args) => ({ card: 'generic', title: `Pixel-resize ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
+    presentCall: (args) => ({ card: 'generic', title: `Pixel-resize ${safeCallPath(args.input)}`, kind: 'execute', locations: [{ path: safeCallPath(args.input) }] })
   }
 }
 
@@ -190,23 +304,25 @@ export function createImageTrimPadTool() {
       const workspace = agentWorkspace(exec)
       const input = await resolveWorkspacePath(workspace, args.input, { label: 'Input', forOutput: false })
       const output = await resolveWorkspacePath(workspace, args.output, { label: 'Output', forOutput: true })
-      if (!(await pathExists(input))) throw new Error(`image_trim_pad input does not exist in the workspace: ${args.input}`)
+      const inputLabel = toWorkspaceRelative(workspace, input)
+      const outputLabel = toWorkspaceRelative(workspace, output)
+      if (!(await pathExists(input))) throw new Error(`image_trim_pad input does not exist in the workspace: ${inputLabel}`)
       if ((args.width === undefined) !== (args.height === undefined)) throw new Error('image_trim_pad requires width and height together when padding a canvas.')
       if (args.gravity !== undefined && (args.width === undefined || args.height === undefined)) {
         throw new Error('image_trim_pad gravity requires width and height to place the trimmed image on a padded canvas.')
       }
       if (args.gravity !== undefined && !GRAVITIES.includes(args.gravity)) throw new Error(`image_trim_pad gravity must be one of: ${GRAVITIES.join(', ')}.`)
       if (await pathExists(output)) {
-        throw new Error(`image_trim_pad output already exists: ${args.output}. Choose a new path; the source is never overwritten.`)
+        throw new Error(`image_trim_pad output already exists: ${outputLabel}. Choose a new path; the source is never overwritten.`)
       }
       const cliArgs = ['--input', input, '--output', output]
       if (args.trim === false) cliArgs.push('--no-trim')
       if (args.width !== undefined) cliArgs.push('--width', String(args.width), '--height', String(args.height))
       if (args.gravity !== undefined) cliArgs.push('--gravity', args.gravity)
-      const manifest = await invokeImageOperation('trim-pad', cliArgs, undefined, exec?.signal, expectedOutputTargets(workspace, [output, `${output}.manifest.json`]), { toolName: 'image_trim_pad', inputLabels: [args.input], outputLabels: [args.output, `${args.output}.manifest.json`], options: { trim: args.trim !== false, width: args.width, height: args.height, gravity: args.gravity } })
+      const manifest = await invokeImageOperation('trim-pad', cliArgs, undefined, exec?.signal, expectedOutputTargets(workspace, [output, `${output}.manifest.json`]), { toolName: 'image_trim_pad', inputLabels: [inputLabel], outputLabels: [outputLabel, `${outputLabel}.manifest.json`], options: { trim: args.trim !== false, width: args.width, height: args.height, gravity: args.gravity } })
       return operationResult(workspace, manifest, `${output}.manifest.json`)
     },
-    presentCall: (args) => ({ card: 'generic', title: `Trim/pad ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
+    presentCall: (args) => ({ card: 'generic', title: `Trim/pad ${safeCallPath(args.input)}`, kind: 'execute', locations: [{ path: safeCallPath(args.input) }] })
   }
 }
 
@@ -234,17 +350,19 @@ export function createImageSheetSliceTool() {
       const workspace = agentWorkspace(exec)
       const input = await resolveWorkspacePath(workspace, args.input, { label: 'Input', forOutput: false })
       const outputDir = await resolveWorkspacePath(workspace, args.outputDir, { label: 'Output directory', forOutput: true })
-      if (!(await pathExists(input))) throw new Error(`image_sheet_slice input does not exist in the workspace: ${args.input}`)
+      const inputLabel = toWorkspaceRelative(workspace, input)
+      const outputLabel = toWorkspaceRelative(workspace, outputDir)
+      if (!(await pathExists(input))) throw new Error(`image_sheet_slice input does not exist in the workspace: ${inputLabel}`)
       if (!Number.isInteger(args.cellWidth) || args.cellWidth < 1 || !Number.isInteger(args.cellHeight) || args.cellHeight < 1) {
         throw new Error('image_sheet_slice requires positive integer cellWidth and cellHeight.')
       }
       if (await pathExists(outputDir)) {
-        throw new Error(`image_sheet_slice output directory already exists: ${args.outputDir}. Choose a new directory; the source is never overwritten.`)
+        throw new Error(`image_sheet_slice output directory already exists: ${outputLabel}. Choose a new directory; the source is never overwritten.`)
       }
-      const manifest = await invokeImageOperation('sheet-slice', ['--input', input, '--output-dir', outputDir, '--cell-width', String(args.cellWidth), '--cell-height', String(args.cellHeight)], undefined, exec?.signal, expectedOutputTargets(workspace, [outputDir, join(outputDir, 'manifest.json')]), { toolName: 'image_sheet_slice', inputLabels: [args.input], outputLabels: [args.outputDir, `${args.outputDir}/manifest.json`], options: { cellWidth: args.cellWidth, cellHeight: args.cellHeight } })
+      const manifest = await invokeImageOperation('sheet-slice', ['--input', input, '--output-dir', outputDir, '--cell-width', String(args.cellWidth), '--cell-height', String(args.cellHeight)], undefined, exec?.signal, expectedOutputTargets(workspace, [outputDir, join(outputDir, 'manifest.json')]), { toolName: 'image_sheet_slice', inputLabels: [inputLabel], outputLabels: [outputLabel, `${outputLabel}/manifest.json`], options: { cellWidth: args.cellWidth, cellHeight: args.cellHeight } })
       return operationResult(workspace, manifest, join(outputDir, 'manifest.json'))
     },
-    presentCall: (args) => ({ card: 'generic', title: `Slice sheet ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
+    presentCall: (args) => ({ card: 'generic', title: `Slice sheet ${safeCallPath(args.input)}`, kind: 'execute', locations: [{ path: safeCallPath(args.input) }] })
   }
 }
 
@@ -274,19 +392,23 @@ export function createImageSheetAssembleTool() {
       }
       if (!Number.isInteger(args.columns) || args.columns < 1) throw new Error('image_sheet_assemble requires a positive integer columns.')
       const inputPaths = []
+      const inputLabels = []
       for (const raw of args.inputs) {
         const path = await resolveWorkspacePath(workspace, raw, { label: 'Input', forOutput: false })
-        if (!(await pathExists(path))) throw new Error(`image_sheet_assemble input does not exist in the workspace: ${raw}`)
+        const label = toWorkspaceRelative(workspace, path)
+        if (!(await pathExists(path))) throw new Error(`image_sheet_assemble input does not exist in the workspace: ${label}`)
         inputPaths.push(path)
+        inputLabels.push(label)
       }
       const output = await resolveWorkspacePath(workspace, args.output, { label: 'Output', forOutput: true })
+      const outputLabel = toWorkspaceRelative(workspace, output)
       if (await pathExists(output)) {
-        throw new Error(`image_sheet_assemble output already exists: ${args.output}. Choose a new path; the sources are never overwritten.`)
+        throw new Error(`image_sheet_assemble output already exists: ${outputLabel}. Choose a new path; the sources are never overwritten.`)
       }
-      const manifest = await invokeImageOperation('sheet-assemble', ['--inputs-json', JSON.stringify(inputPaths), '--output', output, '--columns', String(args.columns)], undefined, exec?.signal, expectedOutputTargets(workspace, [output, `${output}.manifest.json`]), { toolName: 'image_sheet_assemble', inputLabels: args.inputs, outputLabels: [args.output, `${args.output}.manifest.json`], options: { columns: args.columns, inputCount: args.inputs.length } })
+      const manifest = await invokeImageOperation('sheet-assemble', ['--inputs-json', JSON.stringify(inputPaths), '--output', output, '--columns', String(args.columns)], undefined, exec?.signal, expectedOutputTargets(workspace, [output, `${output}.manifest.json`]), { toolName: 'image_sheet_assemble', inputLabels, outputLabels: [outputLabel, `${outputLabel}.manifest.json`], options: { columns: args.columns, inputCount: args.inputs.length } })
       return operationResult(workspace, manifest, `${output}.manifest.json`)
     },
-    presentCall: (args) => ({ card: 'generic', title: `Assemble sheet (${Array.isArray(args.inputs) ? args.inputs.length : 0} cells)`, kind: 'execute', locations: (Array.isArray(args.inputs) ? args.inputs : []).map((path) => ({ path })) })
+    presentCall: (args) => ({ card: 'generic', title: `Assemble sheet (${Array.isArray(args.inputs) ? args.inputs.length : 0} cells)`, kind: 'execute', locations: (Array.isArray(args.inputs) ? args.inputs : []).map((path) => ({ path: safeCallPath(path) })) })
   }
 }
 
@@ -321,14 +443,18 @@ export function createImageAtlasPackTool() {
       if (args.padding !== undefined && (!Number.isInteger(args.padding) || args.padding < 0 || args.padding > 64)) throw new Error('image_atlas_pack padding must be an integer between 0 and 64.')
       if (args.extrusion !== undefined && (!Number.isInteger(args.extrusion) || args.extrusion < 0 || args.extrusion > 64)) throw new Error('image_atlas_pack extrusion must be an integer between 0 and 64.')
       const inputPaths = []
+      const inputLabels = []
       for (const raw of args.inputs) {
         const path = await resolveWorkspacePath(workspace, raw, { label: 'Input', forOutput: false })
-        if (!(await pathExists(path))) throw new Error(`image_atlas_pack input does not exist in the workspace: ${raw}`)
+        const label = toWorkspaceRelative(workspace, path)
+        if (!(await pathExists(path))) throw new Error(`image_atlas_pack input does not exist in the workspace: ${label}`)
         inputPaths.push(path)
+        inputLabels.push(label)
       }
       const outputDir = await resolveWorkspacePath(workspace, args.output, { label: 'Output directory', forOutput: true })
+      const outputLabel = toWorkspaceRelative(workspace, outputDir)
       if (await pathExists(outputDir)) {
-        throw new Error(`image_atlas_pack output directory already exists: ${args.output}. Choose a new directory; the sources are never overwritten.`)
+        throw new Error(`image_atlas_pack output directory already exists: ${outputLabel}. Choose a new directory; the sources are never overwritten.`)
       }
       const cliArgs = ['--inputs-json', JSON.stringify(inputPaths), '--output', outputDir, '--max-size', String(args.maxSize)]
       if (args.padding !== undefined) cliArgs.push('--padding', String(args.padding))
@@ -337,10 +463,10 @@ export function createImageAtlasPackTool() {
       const textureName = basename(outputDir).replace(/\.png$/i, '') || 'atlas'
       const outputTexture = join(outputDir, `${textureName}.png`)
       const outputFrames = join(outputDir, `${textureName}.json`)
-      const manifest = await invokeImageOperation('atlas-pack', cliArgs, undefined, exec?.signal, expectedOutputTargets(workspace, [outputDir, outputTexture, outputFrames, join(outputDir, 'manifest.json')]), { toolName: 'image_atlas_pack', inputLabels: args.inputs, outputLabels: [args.output, `${args.output}/${textureName}.png`, `${args.output}/${textureName}.json`, `${args.output}/manifest.json`], options: { maxSize: args.maxSize, padding: args.padding, extrusion: args.extrusion, fixedGrid: args.fixedGrid === true, inputCount: args.inputs.length } })
+      const manifest = await invokeImageOperation('atlas-pack', cliArgs, undefined, exec?.signal, expectedOutputTargets(workspace, [outputDir, outputTexture, outputFrames, join(outputDir, 'manifest.json')]), { toolName: 'image_atlas_pack', inputLabels, outputLabels: [outputLabel, `${outputLabel}/${textureName}.png`, `${outputLabel}/${textureName}.json`, `${outputLabel}/manifest.json`], options: { maxSize: args.maxSize, padding: args.padding, extrusion: args.extrusion, fixedGrid: args.fixedGrid === true, inputCount: args.inputs.length } })
       return operationResult(workspace, manifest, join(outputDir, 'manifest.json'))
     },
-    presentCall: (args) => ({ card: 'generic', title: `Pack atlas (${Array.isArray(args.inputs) ? args.inputs.length : 0} inputs)`, kind: 'execute', locations: (Array.isArray(args.inputs) ? args.inputs : []).map((path) => ({ path })) })
+    presentCall: (args) => ({ card: 'generic', title: `Pack atlas (${Array.isArray(args.inputs) ? args.inputs.length : 0} inputs)`, kind: 'execute', locations: (Array.isArray(args.inputs) ? args.inputs : []).map((path) => ({ path: safeCallPath(path) })) })
   }
 }
 
@@ -367,17 +493,19 @@ export function createImageOptimizePngTool() {
       const workspace = agentWorkspace(exec)
       const input = await resolveWorkspacePath(workspace, args.input, { label: 'Input', forOutput: false })
       const output = await resolveWorkspacePath(workspace, args.output, { label: 'Output', forOutput: true })
-      if (!(await pathExists(input))) throw new Error(`image_optimize_png input does not exist in the workspace: ${args.input}`)
-      if (!/\.png$/i.test(args.input) || !/\.png$/i.test(args.output)) throw new Error('image_optimize_png requires PNG input and output paths.')
+      const inputLabel = toWorkspaceRelative(workspace, input)
+      const outputLabel = toWorkspaceRelative(workspace, output)
+      if (!(await pathExists(input))) throw new Error(`image_optimize_png input does not exist in the workspace: ${inputLabel}`)
+      if (!/\.png$/i.test(inputLabel) || !/\.png$/i.test(outputLabel)) throw new Error('image_optimize_png requires PNG input and output paths.')
       if (args.level !== undefined && (!Number.isInteger(args.level) || args.level < 0 || args.level > 6)) throw new Error('image_optimize_png level must be an integer between 0 and 6.')
       if (await pathExists(output)) {
-        throw new Error(`image_optimize_png output already exists: ${args.output}. Choose a new path; the source is never overwritten.`)
+        throw new Error(`image_optimize_png output already exists: ${outputLabel}. Choose a new path; the source is never overwritten.`)
       }
       const level = args.level === undefined ? 4 : args.level
-      const manifest = await invokeImageOperation('optimize-png', ['--input', input, '--output', output, '--level', String(level)], undefined, exec?.signal, expectedOutputTargets(workspace, [output, `${output}.manifest.json`]), { toolName: 'image_optimize_png', inputLabels: [args.input], outputLabels: [args.output, `${args.output}.manifest.json`], options: { level } })
+      const manifest = await invokeImageOperation('optimize-png', ['--input', input, '--output', output, '--level', String(level)], undefined, exec?.signal, expectedOutputTargets(workspace, [output, `${output}.manifest.json`]), { toolName: 'image_optimize_png', inputLabels: [inputLabel], outputLabels: [outputLabel, `${outputLabel}.manifest.json`], options: { level } })
       return operationResult(workspace, manifest, `${output}.manifest.json`)
     },
-    presentCall: (args) => ({ card: 'generic', title: `Optimize PNG ${args.input}`, kind: 'execute', locations: [{ path: args.input }] })
+    presentCall: (args) => ({ card: 'generic', title: `Optimize PNG ${safeCallPath(args.input)}`, kind: 'execute', locations: [{ path: safeCallPath(args.input) }] })
   }
 }
 

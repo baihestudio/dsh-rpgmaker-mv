@@ -134,6 +134,80 @@ describe('image tool adapter seam', () => {
     }
   });
 
+  test('does not expose absolute paths from malformed metadata or workspace escapes', async () => {
+    const root = await temp('adapter-metadata-redaction')
+    try {
+      const workspace = join(root, 'workspace')
+      await mkdir(workspace, { recursive: true })
+      await writeFile(join(workspace, 'hero.png'), 'png')
+      const token = 'metadata-secret-token'
+      const outside = join(root, `${token}.png`)
+      const inspect = createImageInspectTool()
+      setWorkshopRunner(async () => JSON.stringify({
+        path: outside,
+        width: 1,
+        height: 1,
+        format: 'PNG',
+        channels: 'srgba',
+        hasAlpha: true,
+        opaque: false,
+        bytes: 1,
+        sha256: 'x',
+        malicious: outside
+      }))
+      try {
+        const failure = await inspect.execute({ input: 'hero.png' }, agentExec(workspace)).then(() => undefined, (error) => error as Error & { code?: string })
+        expect(failure).toMatchObject({ code: 'IMAGE_WORKSPACE_ESCAPE' })
+        expect(failure?.message).toBe('image workspace: result metadata is outside the Agent workspace.')
+        expect(failure?.message).not.toContain(outside)
+        expect(JSON.stringify(failure)).not.toContain(token)
+      } finally {
+        clearWorkshopRunner()
+      }
+
+      const output = join(workspace, 'out.png')
+      setWorkshopRunner(async () => JSON.stringify({
+        schemaVersion: 2,
+        operation: 'resize-pixel',
+        toolchain: {
+          imageMagick: { path: outside, version: '7.1' },
+          freeTexPacker: { root: outside, version: '1.0' },
+          oxipng: { path: outside, version: '10.2' }
+        },
+        inputs: [{ kind: 'image', path: join(workspace, 'hero.png'), width: 1, height: 1 }],
+        outputs: [{ kind: 'image', path: output, width: 2, height: 2 }],
+        options: { scale: 2, maliciousPath: outside },
+        fidelity: { dimensions: true, maliciousPath: outside },
+        verificationLevel: 'decoded-pixels',
+        lossless: true
+      }))
+      try {
+        const result = await createImageResizePixelTool().execute({ input: 'hero.png', output: 'out.png', scale: 2 }, agentExec(workspace)) as unknown as {
+          outputPaths: string[]
+          manifestPath: string
+          manifest: {
+            inputs: Array<{ path?: string }>
+            outputs: Array<{ path?: string }>
+            toolchain: { imageMagick: { path?: string } }
+          }
+        }
+        const encoded = JSON.stringify(result)
+        expect(result.outputPaths).toEqual(['out.png'])
+        expect(result.manifestPath).toBe('out.png.manifest.json')
+        expect(result.manifest.inputs[0].path).toBe('hero.png')
+        expect(result.manifest.outputs[0].path).toBe('out.png')
+        expect(result.manifest.toolchain.imageMagick.path).toBeUndefined()
+        expect(encoded).not.toContain(outside)
+        expect(encoded).not.toContain(token)
+      } finally {
+        clearWorkshopRunner()
+      }
+    } finally {
+      clearWorkshopRunner()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('image_resize_pixel maps scale, rejects existing outputs and invalid params', async () => {
     const root = await temp('adapter-resize');
     try {
@@ -599,7 +673,8 @@ describe('image tool adapter seam', () => {
       stdout: PassThrough;
       stderr: PassThrough;
     };
-    child.pid = 999_999_999;
+    // Without the leader PID there is no safe process-group identity to
+    // check, so a direct-child kill remains cleanup effort only.
     child.platform = 'linux';
     child.exitCode = null;
     child.signalCode = null;
@@ -635,7 +710,7 @@ describe('image tool adapter seam', () => {
     }
   }, 7000);
 
-  test('attempts POSIX group KILL after the leader exits during pending termination', async () => {
+  test('confirms POSIX group absence after KILL even when the leader already exited', async () => {
     clearWorkshopRunner();
     clearChildSpawner();
     clearTreeTerminator();
@@ -671,8 +746,8 @@ describe('image tool adapter seam', () => {
       child.exitCode = 0;
       child.emit('close', null);
       await expect(promise).rejects.toMatchObject({
-        code: 'IMAGE_CANCELLATION_INCOMPLETE',
-        info: { processCleanupConfirmed: false }
+        code: 'cancelled',
+        info: { processCleanupConfirmed: true }
       });
       expect(killSignals).toEqual(['SIGKILL']);
     } finally {
@@ -1126,7 +1201,7 @@ describe('release bundle', () => {
     }
   });
 
-  test('settles cancellation when the terminator never settles but the child closes late', async () => {
+  test('settles cancellation after group absence when the terminator never settles but the child closes late', async () => {
     clearWorkshopRunner();
     clearChildSpawner();
     clearTreeTerminator();
@@ -1156,8 +1231,8 @@ describe('release bundle', () => {
         child.emit('close', null);
       }, 20);
       await expect(promise).rejects.toMatchObject({
-        code: 'IMAGE_CANCELLATION_INCOMPLETE',
-        info: { processCleanupConfirmed: false }
+        code: 'cancelled',
+        info: { processCleanupConfirmed: true }
       });
       expect(child.listenerCount('close')).toBe(0);
       expect(child.listenerCount('error')).toBe(0);
@@ -1170,7 +1245,7 @@ describe('release bundle', () => {
     }
   }, 7000);
 
-  test('does not confirm cleanup when the leader exits before tree termination starts', async () => {
+  test('confirms group absence when the leader exits before tree termination starts', async () => {
     clearWorkshopRunner();
     clearChildSpawner();
     clearTreeTerminator();
@@ -1201,8 +1276,8 @@ describe('release bundle', () => {
       controller.abort();
       child.emit('close', null);
       await expect(promise).rejects.toMatchObject({
-        code: 'IMAGE_CANCELLATION_INCOMPLETE',
-        info: { processCleanupConfirmed: false }
+        code: 'cancelled',
+        info: { processCleanupConfirmed: true }
       });
       expect(terminationCalls).toBe(0);
     } finally {
@@ -1211,7 +1286,7 @@ describe('release bundle', () => {
     }
   });
 
-  test('does not confirm cleanup when tree termination rejects before the leader closes', async () => {
+  test('confirms group absence when tree termination rejects before the leader closes', async () => {
     clearWorkshopRunner();
     clearChildSpawner();
     clearTreeTerminator();
@@ -1244,8 +1319,8 @@ describe('release bundle', () => {
       child.exitCode = 0;
       child.emit('close', null);
       await expect(promise).rejects.toMatchObject({
-        code: 'IMAGE_CANCELLATION_INCOMPLETE',
-        info: { processCleanupConfirmed: false }
+        code: 'cancelled',
+        info: { processCleanupConfirmed: true }
       });
       expect(terminationCalls).toBe(1);
     } finally {

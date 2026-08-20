@@ -41,6 +41,17 @@ const IMAGE_OPERATION_TOOL_NAMES = Object.freeze({
   'optimize-png': 'image_optimize_png'
 })
 const SAFE_SIGNAL_PATTERN = /^[A-Z0-9_]{1,32}$/
+const SAFE_EXECUTABLE_NAMES = Object.freeze({
+  bun: 'bun',
+  'bun.exe': 'bun.exe',
+  node: 'node',
+  'node.exe': 'node.exe',
+  magick: 'magick',
+  'magick.exe': 'magick.exe',
+  oxipng: 'oxipng',
+  'oxipng.exe': 'oxipng.exe',
+  'free-tex-packer-core': 'free-tex-packer-core'
+})
 
 /** The only grace after the official tool budget that this plugin owns. */
 export const IMAGE_OPERATION_CLEANUP_GRACE_MS = 5000
@@ -140,8 +151,8 @@ function operationError(message, code, info = {}) {
 }
 
 function executableName(value) {
-  const name = basename(String(value ?? '').replaceAll('\\', '/'))
-  return name || 'unknown-executable'
+  const name = basename(String(value ?? '').replaceAll('\\', '/')).toLowerCase()
+  return SAFE_EXECUTABLE_NAMES[name] ?? 'unknown'
 }
 
 function safeSignal(value) {
@@ -271,22 +282,38 @@ async function defaultTerminateTree(child, options = {}) {
   } catch {
     throw operationError('the image CLI process could not be terminated.', 'CLEANUP_UNCONFIRMED', {
       stage: 'termination',
-      executable: 'image-cli',
+      executable: 'unknown',
       pid: child.pid
     })
   }
 }
 
+function processGroupAbsent(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return undefined
+  try {
+    process.kill(-pid, 0)
+    return false
+  } catch (error) {
+    // ESRCH is the only positive proof that the process group is gone. EPERM
+    // and every other failure leave the tree state unconfirmed.
+    return error?.code === 'ESRCH' ? true : undefined
+  }
+}
+
 function forceTerminateTree(child, platform) {
   // The leader may already have exited while descendants retain its process
-  // group. Do not use the leader's state to skip the group escalation.
+  // group. Always attempt the group SIGKILL; the leader's state is not proof.
   if (platform !== 'win32' && child.pid !== undefined) {
     try {
       process.kill(-child.pid, 'SIGKILL')
-      return true
-    } catch {
-      // A direct handle is only cleanup effort, not tree proof.
+    } catch (error) {
+      // A direct handle is cleanup effort only. If the group is already gone,
+      // signal-0 below will provide the actual proof; EPERM/unknown remain
+      // unconfirmed even when the direct handle accepts SIGKILL.
+      try { child.kill('SIGKILL') } catch { /* the bounded wait records failure */ }
+      return processGroupAbsent(child.pid) === true
     }
+    return processGroupAbsent(child.pid) === true
   }
   try {
     child.kill(platform === 'win32' ? undefined : 'SIGKILL')
@@ -355,12 +382,15 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
       else rejectPromise(value)
     }
 
-    const treeTerminationConfirmed = () => forceKillAttempted
-      ? forceKillStatus === 'succeeded'
-      : terminationStatus === 'succeeded'
+    const treeTerminationConfirmed = () => {
+      if (!isQuiescent(child, closeObserved)) return false
+      if (platform !== 'win32') return forceKillAttempted && processGroupAbsent(child.pid) === true
+      return forceKillAttempted
+        ? forceKillStatus === 'succeeded'
+        : terminationStatus === 'succeeded'
+    }
 
-    const canSettleCancellation = () => isQuiescent(child, closeObserved)
-      && (forceKillAttempted || terminationStatus === 'succeeded')
+    const canSettleCancellation = () => treeTerminationConfirmed()
 
     const finishCancellation = async () => {
       if (settled || cancellationSettling) return
@@ -374,9 +404,9 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
 
     const escalate = () => {
       if (settled || !aborted || forceKillAttempted) return
-      // A failed or still-pending tree request still needs process-group
-      // escalation after the leader has exited; descendants can retain it.
-      if (terminationStatus === 'succeeded' && !isRunning(child)) return
+      // SIGTERM is cleanup effort, never final proof. Escalate once within the
+      // existing grace even when the leader already emitted close; descendants
+      // can retain the POSIX process group.
       forceKillAttempted = true
       const startedAt = new Date().toISOString()
       const startedTime = Date.now()
@@ -387,7 +417,7 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
         finishedAt: new Date().toISOString(),
         elapsedMs: Date.now() - startedTime,
         outcome: forceKillStatus === 'succeeded' ? 'completed' : 'failed',
-        processCleanupConfirmed: forceKillStatus === 'succeeded' && isQuiescent(child, closeObserved)
+        processCleanupConfirmed: treeTerminationConfirmed()
       }))
       if (aborted && canSettleCancellation()) void finishCancellation()
     }
@@ -404,7 +434,6 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
       })
       if (!isRunning(child)) {
         terminationStatus = 'skipped'
-        if (closeObserved) void finishCancellation()
         return
       }
       terminationStatus = 'pending'
@@ -418,7 +447,7 @@ async function runReal(operation, args, env, signal, expectedTargets, context) {
             finishedAt: new Date().toISOString(),
             elapsedMs: Date.now() - startedTime,
             outcome: terminationStatus === 'succeeded' ? 'completed' : 'failed',
-            processCleanupConfirmed: terminationStatus === 'succeeded' && isQuiescent(child, closeObserved)
+            processCleanupConfirmed: platform === 'win32' && terminationStatus === 'succeeded' && isQuiescent(child, closeObserved)
           }))
           if (aborted && canSettleCancellation()) void finishCancellation()
         }, (error) => {
@@ -557,7 +586,7 @@ async function runInjected(runner, bun, args, env, signal, operation, expectedTa
  */
 export async function invokeImageOperation(operation, cliArgs, env = process.env, signal, expectedTargets = [], diagnostics = {}) {
   const toolName = toolNameForOperation(operation)
-  if (!toolName) throw operationError('image workspace operation is not an app-owned image command.', 'COMMAND_FAILED', { stage: 'harness-cli-spawn', executable: 'image-plugin' })
+  if (!toolName) throw operationError('image workspace operation is not an app-owned image command.', 'COMMAND_FAILED', { stage: 'harness-cli-spawn', executable: 'unknown' })
   const args = [operation, ...cliArgs]
   const rawEnv = env ?? process.env
   const safeEnv = workshopEnvironment(rawEnv)
