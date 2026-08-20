@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
@@ -207,6 +207,70 @@ describe('image tool adapter seam', () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test('rejects Windows drive and UNC metadata on every host without leaking model output', async () => {
+    const root = await temp('adapter-windows-metadata-redaction');
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(root);
+      const workspace = 'C:\\Agent\\Workspace';
+      const workspacePath = resolve(workspace);
+      await mkdir(workspacePath, { recursive: true });
+      await writeFile(join(workspacePath, 'hero.png'), 'png');
+      const token = 'windows-metadata-secret-token';
+      const inspect = createImageInspectTool();
+      const metadataPaths = [
+        `D:\\${token}\\outside.png`,
+        `D:/${token}/outside\\mixed.png`,
+        '\\\\server\\share\\' + token + '.png',
+        '//server/share/' + token + '/mixed\\outside.png'
+      ];
+      for (const metadataPath of metadataPaths) {
+        setWorkshopRunner(async () => JSON.stringify({
+          path: metadataPath,
+          width: 1,
+          height: 1,
+          format: 'PNG',
+          channels: 'srgba',
+          hasAlpha: true,
+          opaque: false,
+          bytes: 1,
+          sha256: 'x'
+        }));
+        try {
+          const failure = await inspect.execute({ input: 'hero.png' }, agentExec(workspace)).then(() => undefined, (error) => error as Error & { code?: string });
+          expect(failure).toMatchObject({ code: 'IMAGE_WORKSPACE_ESCAPE' });
+          expect(failure?.message).toBe('image workspace: result metadata is outside the Agent workspace.');
+          expect(failure?.message).not.toContain(metadataPath);
+          expect(JSON.stringify(failure)).not.toContain(token);
+        } finally {
+          clearWorkshopRunner();
+        }
+      }
+
+      setWorkshopRunner(async () => JSON.stringify({
+        path: 'c:/agent/workspace/mixed\\hero.png',
+        width: 1,
+        height: 1,
+        format: 'PNG',
+        channels: 'srgba',
+        hasAlpha: true,
+        opaque: false,
+        bytes: 1,
+        sha256: 'x'
+      }));
+      try {
+        const result = await inspect.execute({ input: 'hero.png' }, agentExec(workspace)) as { path: string };
+        expect(result.path).toBe('mixed/hero.png');
+        expect(inspect.output.render({ input: 'hero.png' }, result)[0].text).toContain('mixed/hero.png');
+      } finally {
+        clearWorkshopRunner();
+      }
+    } finally {
+      process.chdir(previousCwd);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   test('image_resize_pixel maps scale, rejects existing outputs and invalid params', async () => {
     const root = await temp('adapter-resize');

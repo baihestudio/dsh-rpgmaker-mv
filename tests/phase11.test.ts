@@ -214,33 +214,68 @@ describe('image diagnostics', () => {
   });
 
   test('allowlists executable names in JSONL and model errors', async () => {
-    const root = await temp('image-executable-allowlist')
+    const root = await temp('image-executable-allowlist');
     try {
-      const logPath = join(root, 'logs', 'image-workshop.jsonl')
-      const token = 'ghp_injected-executable-token'
-      const injectedExecutable = join(root, `${token}.bin`)
       setWorkshopRunner(async () => {
-        throw new Error('caller-controlled child output must not surface')
-      })
-      const error = await invokeImageOperation('inspect', ['--input', 'sprites/hero.png'], {
-        DSH_IMAGE_WORKSHOP_CLI: 'test-owned-image-cli',
-        BUN_EXECUTABLE: injectedExecutable,
-        DSH_IMAGE_WORKSHOP_LOG: logPath
-      }).then(() => undefined, (failure) => failure as Error & { code?: string; info?: Record<string, unknown> })
-      expect(error).toMatchObject({ code: 'COMMAND_FAILED', info: { executable: 'unknown' } })
-      expect(error?.message).toContain('(unknown, unknown status)')
-      const records = await readJsonLines(logPath)
-      expect(records.length).toBeGreaterThanOrEqual(2)
-      expect(records.every((record) => record.executable === 'unknown')).toBe(true)
-      expect(JSON.stringify(records)).not.toContain(token)
-      expect(JSON.stringify(records)).not.toContain(injectedExecutable)
-      expect(JSON.stringify(error)).not.toContain(token)
-      expect(JSON.stringify(error)).not.toContain(injectedExecutable)
+        throw new Error('caller-controlled child output must not surface');
+      });
+      const cases = [
+        { value: 'constructor', safe: 'unknown' },
+        { value: '__proto__', safe: 'unknown' },
+        { value: 'prototype', safe: 'unknown' },
+        { value: 'BUN_EXECUTABLE_ghp_injected-token', safe: 'unknown' },
+        { value: join(root, 'ghp_injected-executable-token.bin'), safe: 'unknown' },
+        { value: 'bun', safe: 'bun' },
+        { value: 'C:\\owned\\bun.exe', safe: 'bun.exe' },
+        { value: '/owned/node', safe: 'node' }
+      ];
+      for (const [index, executable] of cases.entries()) {
+        const logPath = join(root, `logs-${index}`, 'image-workshop.jsonl');
+        const error = await invokeImageOperation('inspect', ['--input', 'sprites/hero.png'], {
+          DSH_IMAGE_WORKSHOP_CLI: 'test-owned-image-cli',
+          BUN_EXECUTABLE: executable.value,
+          DSH_IMAGE_WORKSHOP_LOG: logPath
+        }).then(() => undefined, (failure) => failure as Error & { code?: string; info?: Record<string, unknown> });
+        expect(error).toMatchObject({ code: 'COMMAND_FAILED', info: { executable: executable.safe } });
+        expect(error?.message).toContain(`(${executable.safe}, unknown status)`);
+        const records = await readJsonLines(logPath);
+        expect(records.length).toBeGreaterThanOrEqual(2);
+        expect(records.every((record) => record.executable === executable.safe)).toBe(true);
+        if (executable.safe === 'unknown') {
+          expect(JSON.stringify(records)).not.toContain(executable.value);
+          expect(JSON.stringify(error)).not.toContain(executable.value);
+        }
+      }
     } finally {
-      clearWorkshopRunner()
-      await rm(root, { recursive: true, force: true })
+      clearWorkshopRunner();
+      await rm(root, { recursive: true, force: true });
     }
-  })
+  });
+
+  test('writes unknown for inherited executable-shaped names in source JSONL', async () => {
+    const root = await temp('image-source-executable-allowlist');
+    try {
+      const logPath = join(root, 'logs', 'image-workshop.jsonl');
+      const context = imageDiagnosticContextFromEnvironment({ DSH_IMAGE_WORKSHOP_LOG: logPath }, { operation: 'inspect' });
+      const cases = [
+        { value: 'constructor', safe: 'unknown' },
+        { value: '__proto__', safe: 'unknown' },
+        { value: 'prototype', safe: 'unknown' },
+        { value: 'BUN_EXECUTABLE_ghp_source-token', safe: 'unknown' },
+        { value: 'bun', safe: 'bun' },
+        { value: 'C:\\owned\\bun.exe', safe: 'bun.exe' },
+        { value: '/owned/node', safe: 'node' }
+      ];
+      for (const executable of cases) {
+        await writeImageDiagnostic(context, { event: 'start', stage: 'harness-cli-spawn', executable: executable.value });
+      }
+      const records = await readJsonLines(logPath);
+      expect(records.map((record) => record.executable)).toEqual(cases.map((executable) => executable.safe));
+      expect(JSON.stringify(records)).not.toContain('BUN_EXECUTABLE_ghp_source-token');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   test('records truthful cancellation cleanup for native external stages and atlas helper', async () => {
     const root = await temp('image-stage-cancellation');

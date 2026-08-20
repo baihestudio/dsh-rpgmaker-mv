@@ -10,7 +10,7 @@
  * argv element, never as shell-encoded text.
  */
 import { stat } from 'node:fs/promises'
-import { basename, join, relative, resolve } from 'node:path'
+import { basename, join, relative, resolve, win32 } from 'node:path'
 import { resolveWorkspacePath, validateRelativePath } from './workspace.js'
 import { invokeImageOperation } from './workshop-client.js'
 
@@ -20,6 +20,7 @@ const VERIFICATION_LEVELS = new Set(['decoded-pixels', 'representative-pixels', 
 const IMAGE_WORKSPACE_ESCAPE_CODE = 'IMAGE_WORKSPACE_ESCAPE'
 const IMAGE_WORKSPACE_METADATA_CODE = 'IMAGE_WORKSPACE_METADATA_INVALID'
 const WINDOWS_ABSOLUTE_PATH = /^[A-Za-z]:[\\/]/
+const WINDOWS_DRIVE_PREFIX = /^[A-Za-z]:/
 export const IMAGE_INSPECT_TIMEOUT_MS = 30_000
 export const IMAGE_MUTATION_TIMEOUT_MS = 180_000
 
@@ -75,10 +76,39 @@ function metadataInvalidError() {
   return resultError('image workspace: CLI result metadata is invalid.', IMAGE_WORKSPACE_METADATA_CODE)
 }
 
+function isWindowsUncPath(value) {
+  return value.startsWith('\\\\') || value.startsWith('//')
+}
+
+function isWindowsStylePath(value) {
+  return WINDOWS_DRIVE_PREFIX.test(value) || value.startsWith('\\') || value.startsWith('//')
+}
+
+function windowsRoot(value) {
+  if (isWindowsUncPath(value)) return undefined
+  const root = win32.parse(value).root
+  return /^[A-Za-z]:[\\/]$/.test(root) ? root.slice(0, 2).toLowerCase() : undefined
+}
+
+function toWindowsWorkspaceRelative(workspace, abs) {
+  const workspaceRoot = windowsRoot(workspace)
+  const metadataRoot = windowsRoot(abs)
+  if (!workspaceRoot || !metadataRoot || workspaceRoot !== metadataRoot) throw workspaceEscapeError()
+  const rel = win32.relative(win32.resolve(workspace), win32.resolve(abs))
+  if (rel === '' || rel === '.' || rel === '..' || rel.startsWith(`..${win32.sep}`) || win32.isAbsolute(rel)) {
+    throw workspaceEscapeError()
+  }
+  return rel.split('\\').join('/')
+}
+
 function toWorkspaceRelative(workspace, abs) {
-  if (typeof abs !== 'string' || abs.trim() === '' || (process.platform !== 'win32' && WINDOWS_ABSOLUTE_PATH.test(abs))) throw workspaceEscapeError()
+  if (typeof abs !== 'string' || abs.trim() === '') throw workspaceEscapeError()
+  const workspacePath = String(workspace)
+  if (isWindowsStylePath(abs)) {
+    return toWindowsWorkspaceRelative(workspacePath, abs)
+  }
   try {
-    const rel = relative(resolve(workspace), resolve(abs))
+    const rel = relative(resolve(workspacePath), resolve(abs))
     if (rel === '' || rel === '.' || rel.startsWith('..') || rel.startsWith('\\') || rel.startsWith('/')) {
       throw workspaceEscapeError()
     }

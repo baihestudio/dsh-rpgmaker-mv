@@ -29,17 +29,17 @@ const SAFE_STAGE_NAMES = new Set([
   'oxipng',
   'termination'
 ]);
-const SAFE_EXECUTABLE_NAMES: Readonly<Record<string, string>> = {
-  bun: 'bun',
-  'bun.exe': 'bun.exe',
-  node: 'node',
-  'node.exe': 'node.exe',
-  magick: 'magick',
-  'magick.exe': 'magick.exe',
-  oxipng: 'oxipng',
-  'oxipng.exe': 'oxipng.exe',
-  'free-tex-packer-core': 'free-tex-packer-core'
-};
+const SAFE_EXECUTABLE_NAMES: ReadonlySet<string> = new Set([
+  'bun',
+  'bun.exe',
+  'node',
+  'node.exe',
+  'magick',
+  'magick.exe',
+  'oxipng',
+  'oxipng.exe',
+  'free-tex-packer-core'
+]);
 
 type DiagnosticOutcome = 'completed' | 'failed' | 'timed-out' | 'cancelled' | 'cleanup-unconfirmed';
 type DiagnosticErrorCode = 'CHILD_EXIT_NONZERO' | 'COMMAND_FAILED' | 'ATLAS_HELPER_FAILED' | 'CANCELLED' | 'TOOL_TIMEOUT';
@@ -150,10 +150,10 @@ function parseOptions(value: string | undefined): Record<string, string | number
   }
 }
 
-function executableName(value: string | undefined): string | undefined {
-  if (!value) return undefined;
+function executableName(value: string | undefined): string {
+  if (!value) return 'unknown';
   const name = basename(value.replaceAll('\\', '/')).toLowerCase();
-  return SAFE_EXECUTABLE_NAMES[name] ?? 'unknown';
+  return SAFE_EXECUTABLE_NAMES.has(name) ? name : 'unknown';
 }
 
 function safeSignal(value: unknown): string | undefined {

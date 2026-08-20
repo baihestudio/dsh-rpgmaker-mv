@@ -41,17 +41,17 @@ const IMAGE_OPERATION_TOOL_NAMES = Object.freeze({
   'optimize-png': 'image_optimize_png'
 })
 const SAFE_SIGNAL_PATTERN = /^[A-Z0-9_]{1,32}$/
-const SAFE_EXECUTABLE_NAMES = Object.freeze({
-  bun: 'bun',
-  'bun.exe': 'bun.exe',
-  node: 'node',
-  'node.exe': 'node.exe',
-  magick: 'magick',
-  'magick.exe': 'magick.exe',
-  oxipng: 'oxipng',
-  'oxipng.exe': 'oxipng.exe',
-  'free-tex-packer-core': 'free-tex-packer-core'
-})
+const SAFE_EXECUTABLE_NAMES = new Set([
+  'bun',
+  'bun.exe',
+  'node',
+  'node.exe',
+  'magick',
+  'magick.exe',
+  'oxipng',
+  'oxipng.exe',
+  'free-tex-packer-core'
+])
 
 /** The only grace after the official tool budget that this plugin owns. */
 export const IMAGE_OPERATION_CLEANUP_GRACE_MS = 5000
@@ -152,7 +152,7 @@ function operationError(message, code, info = {}) {
 
 function executableName(value) {
   const name = basename(String(value ?? '').replaceAll('\\', '/')).toLowerCase()
-  return SAFE_EXECUTABLE_NAMES[name] ?? 'unknown'
+  return SAFE_EXECUTABLE_NAMES.has(name) ? name : 'unknown'
 }
 
 function safeSignal(value) {
