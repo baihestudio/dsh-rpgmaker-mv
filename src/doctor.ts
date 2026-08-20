@@ -9,7 +9,13 @@ import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSev
 import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
 import { resolveImageToolchain } from './image-workshop';
-import { verifyMcpRuntime, verifyTimeoutPolicyComposition } from './rpgmaker';
+import {
+  DSH_TOOL_TIMEOUT_POLICY_PACKAGE,
+  RPGMAKER_DSH_PROFILE,
+  validateEffectiveTimeoutPolicyComposition,
+  verifyMcpRuntime,
+  verifyTimeoutPolicyComposition
+} from './rpgmaker';
 import { verifyRpgmPackerRuntime } from './release';
 import { verifyImageWorkshopPlugin, imageWorkshopPluginSummary, type ImageWorkshopPluginVerification } from './image-plugin';
 import {
@@ -334,13 +340,32 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     ));
 
     const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome);
+    const effectivePolicyErrors: string[] = [];
+    if (dshExecutable) {
+      try {
+        await validateEffectiveTimeoutPolicyComposition(
+          dshExecutable,
+          timeoutPolicy.hostCompositionPath,
+          paths.mutableRoot,
+          platform,
+          { ...commandEnv, DSH_HOME: paths.dshHome },
+          runner
+        );
+      } catch (error) {
+        effectivePolicyErrors.push(error instanceof Error ? error.message : String(error));
+      }
+    } else {
+      effectivePolicyErrors.push('Pinned DSH executable was not found; the effective timeout policy was not validated.');
+    }
+    const timeoutPolicyErrors = [...timeoutPolicy.errors, ...effectivePolicyErrors];
+    const timeoutPolicyValid = timeoutPolicyErrors.length === 0;
     checks.push(check(
       'tool-call-timeout-policy',
       'Shared DSH tool-call timeout policy',
-      timeoutPolicy.valid,
-      timeoutPolicy.valid
-        ? `One official timeout-policy Host row covers ${timeoutPolicy.coveredPresets.length} custom Agent presets`
-        : timeoutPolicy.errors.join('; '),
+      timeoutPolicyValid,
+      timeoutPolicyValid
+        ? `Pinned DSH ${RPGMAKER_DSH_PROFILE} profile supplies exactly one official ${DSH_TOOL_TIMEOUT_POLICY_PACKAGE} Host row across ${timeoutPolicy.coveredPresets.length} custom Agent presets`
+        : timeoutPolicyErrors.join('; '),
       timeoutPolicy.hostCompositionPath
     ));
 

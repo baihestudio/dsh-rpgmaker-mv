@@ -104,6 +104,7 @@ function prerequisiteRunner() {
       return { exitCode: 0, stdout: '', stderr: '' };
     }
     if (args[0] === 'pm') return { exitCode: 0, stdout: '', stderr: '' };
+    if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n', stderr: '' };
     if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
     if (name === 'node.exe') return { exitCode: 0, stdout: 'v20.18.0', stderr: '' };
     if (name === 'npm.cmd') return { exitCode: 0, stdout: '10.8.2', stderr: '' };

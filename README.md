@@ -119,7 +119,13 @@ edits an existing project ignore file without user consent.
 
 The generated preset and patch live under `DSH_HOME`; they contain owned
 runtime paths and no credentials. The pinned DSH Code preset is read from the
-installed runtime and is not edited.
+installed runtime and is not edited. Neither app-owned Host patch inserts the
+timeout policy: the pinned DSH `web` profile owns the official
+`id: timeout-policy` / `@deepseek-ai/dsh-tool-call-timeout-policy` row at Host
+scope. Launch preparation and Doctor validate `web --dump-config` and require
+exactly one effective official row across all four custom Agent presets; the
+preset compositions never contain it. Re-running preparation rewrites the
+app-owned patch, repairing older generated patches that inserted a duplicate.
 
 ## Phase 3: 游戏测试与调试助手
 

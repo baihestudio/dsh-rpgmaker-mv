@@ -1391,8 +1391,17 @@ describe('release bundle', () => {
       expect(verified.valid).toBe(true);
       expect(verified.coveredPresets).toEqual([...CUSTOM_AGENT_PRESET_IDS]);
       const composition = await readFile(verified.hostCompositionPath, 'utf8');
-      expect((composition.match(/id: timeout-policy/g) ?? [])).toHaveLength(1);
-      expect((composition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(1);
+      expect((composition.match(/id: timeout-policy/g) ?? [])).toHaveLength(0);
+      expect((composition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(0);
+      const duplicateComposition = composition.replace(
+        '\n- patch:',
+        "\n- insert:\n    - id: timeout-policy\n      name: '@deepseek-ai/dsh-tool-call-timeout-policy'\n\n- patch:"
+      );
+      expect(duplicateComposition).not.toBe(composition);
+      await writeFile(verified.hostCompositionPath, duplicateComposition);
+      const duplicateHost = await verifyTimeoutPolicyComposition(dshHome, presetRoot);
+      expect(duplicateHost.valid).toBe(false);
+      expect(duplicateHost.errors.join(' ')).toMatch(/must not define.*timeout-policy/);
       await rm(verified.hostCompositionPath, { force: true });
       const missingHost = await verifyTimeoutPolicyComposition(dshHome, presetRoot);
       expect(missingHost.valid).toBe(false);

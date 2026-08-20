@@ -172,8 +172,8 @@ describe('RPG Maker MCP deployment', () => {
       expect(composition).toContain('- patch:\n    id: agent-presets');
       expect(composition).toContain('default: rpgmaker');
       expect((composition.match(/id: mcp-rpgmaker-mv/g) ?? [])).toHaveLength(1);
-      expect((composition.match(/id: timeout-policy/g) ?? [])).toHaveLength(1);
-      expect((composition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(1);
+      expect((composition.match(/id: timeout-policy/g) ?? [])).toHaveLength(0);
+      expect((composition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(0);
       const presetComposition = await readFile(join(deployment.presetDir, 'agent.cordis.yml'), 'utf8');
       expect(presetComposition).toContain('code-tool');
       expect(presetComposition).not.toContain('dsh-mcp-client');
@@ -202,6 +202,12 @@ describe('RPG Maker MCP deployment', () => {
       expect(deployment.presetRoot).toContain('.agent-presets');
       expect(JSON.parse(await readFile(join(deployment.presetDir, '.dsh-rpgmaker-owned.json'), 'utf8')).owner).toBe('dsh-rpgmaker-mv');
 
+      const priorDuplicateComposition = composition.replace(
+        '\n\n- patch:',
+        "\n    - id: timeout-policy\n      name: '@deepseek-ai/dsh-tool-call-timeout-policy'\n\n- patch:"
+      );
+      expect(priorDuplicateComposition).not.toBe(composition);
+      await writeFile(deployment.compositionPath, priorDuplicateComposition);
       await prepareRpgMakerDeployment({
         platform: 'win32',
         dshHome,
@@ -215,8 +221,8 @@ describe('RPG Maker MCP deployment', () => {
       });
       expect(addCalls).toBe(1);
       const repairedComposition = await readFile(join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml'), 'utf8');
-      expect((repairedComposition.match(/id: timeout-policy/g) ?? [])).toHaveLength(1);
-      expect((repairedComposition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(1);
+      expect((repairedComposition.match(/id: timeout-policy/g) ?? [])).toHaveLength(0);
+      expect((repairedComposition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(0);
       const debug = await prepareRpgMakerDeployment({
         platform: 'win32',
         dshHome,
@@ -230,7 +236,10 @@ describe('RPG Maker MCP deployment', () => {
       });
       expect(debug.agentPreset).toBe('playtest-debug');
       expect(debug.presetDir).toBe(join(dshHome, '.agent-presets', 'playtest-debug'));
-      expect(await readFile(debug.compositionPath, 'utf8')).toContain('default: playtest-debug');
+      const debugComposition = await readFile(debug.compositionPath, 'utf8');
+      expect(debugComposition).toContain('default: playtest-debug');
+      expect(debugComposition).not.toContain('timeout-policy');
+      expect(debugComposition).not.toContain('@deepseek-ai/dsh-tool-call-timeout-policy');
       expect(JSON.parse(await readFile(join(debug.presetDir, '.dsh-rpgmaker-owned.json'), 'utf8')).presetId).toBe('playtest-debug');
     } finally {
       await rm(root, { recursive: true, force: true });
