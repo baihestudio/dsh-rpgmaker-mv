@@ -248,6 +248,9 @@ export async function runInstalledMount(
   nodeExecutable: string,
   commandRunner: CommandRunner = runCommand
 ): Promise<Record<string, unknown>> {
+  if (basename(nodeExecutable).toLowerCase() !== 'node.exe') {
+    throw new Error(`The installed-release gate requires a direct native node.exe runner, got ${nodeExecutable}.`);
+  }
   const runtimeDir = join(installedRoot, 'runtime', 'dsh');
   const dshLib = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib');
   const profileFileName = (await readdir(dshLib)).find((file) => file.startsWith('profile-boot-') && file.endsWith('.js'));
@@ -291,117 +294,117 @@ async function main(): Promise<void> {
   if (process.platform !== 'win32') throw new Error('The installed-release gate is a Windows-only native acceptance.');
 
   const installedRoot = resolve(requiredOption(process.argv.slice(2), 'installed-root'));
-if (!(await exists(join(installedRoot, 'Launch.cmd')))) throw new Error(`Supported installed Launch.cmd was not found under ${installedRoot}.`);
-const requestedBun = optionalOption(process.argv.slice(2), 'bun-executable');
-const bunExecutable = requestedBun
-  ? resolve(requestedBun)
-  : await resolveExecutable('bun.exe', { platform: 'win32', env: process.env });
-if (!bunExecutable || basename(bunExecutable).toLowerCase() !== 'bun.exe') throw new Error(`The installed-release gate requires a direct bun.exe runner, got ${bunExecutable ?? 'not found'}.`);
-const nodeExecutable = await resolveInstalledNode(process.env);
-await verifyInstalledRuntimes(installedRoot, bunExecutable);
-const root = await mkdtemp(join(tmpdir(), 'dsh-rpgmaker-phase7-installed-'));
-const env = cleanEnvironment(root, bunExecutable);
-const mutableRoot = join(env.LOCALAPPDATA, 'BaiheStudio', 'DSH-RPGMaker-MV');
-const dshHome = join(mutableRoot, 'state');
-const neutralLanding = join(installedRoot, 'neutral');
-const workspace = await makeWorkspace(root);
-const launchCmd = join(installedRoot, 'Launch.cmd');
-const active: StartedProcess[] = [];
-const startedAt = Date.now();
-let primaryFailure: unknown;
-let primaryFailed = false;
-let cleanupFailure: Error | undefined;
+  if (!(await exists(join(installedRoot, 'Launch.cmd')))) throw new Error(`Supported installed Launch.cmd was not found under ${installedRoot}.`);
+  const requestedBun = optionalOption(process.argv.slice(2), 'bun-executable');
+  const bunExecutable = requestedBun
+    ? resolve(requestedBun)
+    : await resolveExecutable('bun.exe', { platform: 'win32', env: process.env });
+  if (!bunExecutable || basename(bunExecutable).toLowerCase() !== 'bun.exe') throw new Error(`The installed-release gate requires a direct bun.exe runner, got ${bunExecutable ?? 'not found'}.`);
+  const nodeExecutable = await resolveInstalledNode(process.env);
+  await verifyInstalledRuntimes(installedRoot, bunExecutable);
+  const root = await mkdtemp(join(tmpdir(), 'dsh-rpgmaker-phase7-installed-'));
+  const env = cleanEnvironment(root, bunExecutable);
+  const mutableRoot = join(env.LOCALAPPDATA, 'BaiheStudio', 'DSH-RPGMaker-MV');
+  const dshHome = join(mutableRoot, 'state');
+  const neutralLanding = join(installedRoot, 'neutral');
+  const workspace = await makeWorkspace(root);
+  const launchCmd = join(installedRoot, 'Launch.cmd');
+  const active: StartedProcess[] = [];
+  const startedAt = Date.now();
+  let primaryFailure: unknown;
+  let primaryFailed = false;
+  let cleanupFailure: Error | undefined;
 
-try {
-  await mkdir(neutralLanding, { recursive: true });
-  const firstStarted = startInstalledLaunch(launchCmd, installedRoot, env);
-  active.push(firstStarted);
-  const firstLaunch = await waitForLaunchReady(firstStarted, installedRoot, neutralLanding, env);
-  const firstProfile = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
-  assert.equal(firstProfile.valid, true, 'first installed workspace MCP bundle verification failed');
-  const firstPortClosed = await stopInstalledLaunch(firstStarted, env);
-  assert.equal(firstPortClosed, true, 'first installed Launch.cmd teardown did not terminate its process tree and close the fixed web port');
-  active.splice(active.indexOf(firstStarted), 1);
+  try {
+    await mkdir(neutralLanding, { recursive: true });
+    const firstStarted = startInstalledLaunch(launchCmd, installedRoot, env);
+    active.push(firstStarted);
+    const firstLaunch = await waitForLaunchReady(firstStarted, installedRoot, neutralLanding, env);
+    const firstProfile = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
+    assert.equal(firstProfile.valid, true, 'first installed workspace MCP bundle verification failed');
+    const firstPortClosed = await stopInstalledLaunch(firstStarted, env);
+    assert.equal(firstPortClosed, true, 'first installed Launch.cmd teardown did not terminate its process tree and close the fixed web port');
+    active.splice(active.indexOf(firstStarted), 1);
 
-  const profilePackage = join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
-  await rm(profilePackage, { recursive: true, force: true });
-  const brokenProfile = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
-  assert.equal(brokenProfile.valid, false, 'deliberate workspace MCP bundle break was not detected');
+    const profilePackage = join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
+    await rm(profilePackage, { recursive: true, force: true });
+    const brokenProfile = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
+    assert.equal(brokenProfile.valid, false, 'deliberate workspace MCP bundle break was not detected');
 
-  const repairStarted = startInstalledLaunch(launchCmd, installedRoot, env);
-  active.push(repairStarted);
-  const repairLaunch = await waitForLaunchReady(repairStarted, installedRoot, neutralLanding, env);
-  const repairedProfile = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
-  assert.equal(repairedProfile.valid, true, 'repaired installed workspace MCP bundle verification failed');
-  const repairPortClosed = await stopInstalledLaunch(repairStarted, env);
-  assert.equal(repairPortClosed, true, 'repair installed Launch.cmd teardown did not terminate its process tree and close the fixed web port');
-  active.splice(active.indexOf(repairStarted), 1);
+    const repairStarted = startInstalledLaunch(launchCmd, installedRoot, env);
+    active.push(repairStarted);
+    const repairLaunch = await waitForLaunchReady(repairStarted, installedRoot, neutralLanding, env);
+    const repairedProfile = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
+    assert.equal(repairedProfile.valid, true, 'repaired installed workspace MCP bundle verification failed');
+    const repairPortClosed = await stopInstalledLaunch(repairStarted, env);
+    assert.equal(repairPortClosed, true, 'repair installed Launch.cmd teardown did not terminate its process tree and close the fixed web port');
+    active.splice(active.indexOf(repairStarted), 1);
 
-  const agentEvidence = await runInstalledMount(installedRoot, dshHome, neutralLanding, workspace, env, nodeExecutable);
-  const directCalls = agentEvidence.directAgentToolCalls as Array<{ isError?: boolean; valueObserved?: boolean }> | undefined;
-  const processEvidence = agentEvidence.xeroloProcessEvidence as { children?: unknown[]; shellProcesses?: unknown[] } | undefined;
-  assert.equal(agentEvidence.ok, true, 'installed Agent probe reported failure');
-  assert.equal(agentEvidence.stableTools, 41, 'installed Agent probe exposed an unexpected stable tool count');
-  assert.equal(directCalls?.length, 2, 'installed Agent probe did not record both direct tool calls');
-  assert.equal(directCalls?.some((call) => call.isError !== false || call.valueObserved !== true), false, 'installed Agent direct tool calls did not both succeed and observe values');
-  assert.equal(processEvidence?.children?.length, 1, 'installed Agent probe did not observe exactly one Xerolo child');
-  assert.equal(processEvidence?.shellProcesses?.length, 0, 'installed Agent probe observed an unexpected shell process');
+    const agentEvidence = await runInstalledMount(installedRoot, dshHome, neutralLanding, workspace, env, nodeExecutable);
+    const directCalls = agentEvidence.directAgentToolCalls as Array<{ isError?: boolean; valueObserved?: boolean }> | undefined;
+    const processEvidence = agentEvidence.xeroloProcessEvidence as { children?: unknown[]; shellProcesses?: unknown[] } | undefined;
+    assert.equal(agentEvidence.ok, true, 'installed Agent probe reported failure');
+    assert.equal(agentEvidence.stableTools, 41, 'installed Agent probe exposed an unexpected stable tool count');
+    assert.equal(directCalls?.length, 2, 'installed Agent probe did not record both direct tool calls');
+    assert.equal(directCalls?.some((call) => call.isError !== false || call.valueObserved !== true), false, 'installed Agent direct tool calls did not both succeed and observe values');
+    assert.equal(processEvidence?.children?.length, 1, 'installed Agent probe did not observe exactly one Xerolo child');
+    assert.equal(processEvidence?.shellProcesses?.length, 0, 'installed Agent probe observed an unexpected shell process');
 
-  console.log(diagnostic(JSON.stringify({
-    ok: true,
-    gate: 'phase7-windows-installed',
-    dsh: DSH_VERSION,
-    provisioned: {
-      installedRoot,
-      dshHome,
-      workspace,
-      neutralLanding,
-      fixedWeb: `${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}`
-    },
-    firstLaunch: {
-      command: 'Launch.cmd',
-      durationMs: firstLaunch.durationMs,
-      port: firstLaunch.port,
-      launcher: firstLaunch.launcher,
-      profile: { valid: firstProfile.valid, bundleOccurrences: firstProfile.bundleOccurrences }
-    },
-    repair: {
-      linkBroken: !brokenProfile.valid,
-      brokenProfileErrors: brokenProfile.errors.length,
-      command: 'Launch.cmd',
-      durationMs: repairLaunch.durationMs,
-      port: repairLaunch.port,
-      launcher: repairLaunch.launcher,
-      profile: { valid: repairedProfile.valid, bundleOccurrences: repairedProfile.bundleOccurrences }
-    },
-    agentEvidence,
-    shutdown: { firstPortClosed, repairPortClosed },
-    durationMs: Date.now() - startedAt
-  })));
-} catch (error) {
-  primaryFailure = error;
-  primaryFailed = true;
-} finally {
-  const cleanupErrors: string[] = [];
-  for (const process of [...active].reverse()) {
+    console.log(diagnostic(JSON.stringify({
+      ok: true,
+      gate: 'phase7-windows-installed',
+      dsh: DSH_VERSION,
+      provisioned: {
+        installedRoot,
+        dshHome,
+        workspace,
+        neutralLanding,
+        fixedWeb: `${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}`
+      },
+      firstLaunch: {
+        command: 'Launch.cmd',
+        durationMs: firstLaunch.durationMs,
+        port: firstLaunch.port,
+        launcher: firstLaunch.launcher,
+        profile: { valid: firstProfile.valid, bundleOccurrences: firstProfile.bundleOccurrences }
+      },
+      repair: {
+        linkBroken: !brokenProfile.valid,
+        brokenProfileErrors: brokenProfile.errors.length,
+        command: 'Launch.cmd',
+        durationMs: repairLaunch.durationMs,
+        port: repairLaunch.port,
+        launcher: repairLaunch.launcher,
+        profile: { valid: repairedProfile.valid, bundleOccurrences: repairedProfile.bundleOccurrences }
+      },
+      agentEvidence,
+      shutdown: { firstPortClosed, repairPortClosed },
+      durationMs: Date.now() - startedAt
+    })));
+  } catch (error) {
+    primaryFailure = error;
+    primaryFailed = true;
+  } finally {
+    const cleanupErrors: string[] = [];
+    for (const process of [...active].reverse()) {
+      try {
+        const portClosed = await stopInstalledLaunch(process, env);
+        if (!portClosed) throw new Error('fixed web port remained open after Launch.cmd process-tree termination');
+      } catch (error) {
+        cleanupErrors.push(`Launch.cmd cleanup for PID ${process.child.pid ?? 'unknown'} failed: ${errorMessage(error)}`);
+      }
+    }
     try {
-      const portClosed = await stopInstalledLaunch(process, env);
-      if (!portClosed) throw new Error('fixed web port remained open after Launch.cmd process-tree termination');
+      await rm(root, { recursive: true, force: true });
     } catch (error) {
-      cleanupErrors.push(`Launch.cmd cleanup for PID ${process.child.pid ?? 'unknown'} failed: ${errorMessage(error)}`);
+      cleanupErrors.push(`temporary gate workspace cleanup failed: ${errorMessage(error)}`);
+    }
+    if (cleanupErrors.length > 0) {
+      const message = diagnostic(`installed gate cleanup failed: ${cleanupErrors.join('; ')}`);
+      console.error(message);
+      if (!primaryFailed) cleanupFailure = new Error(message);
     }
   }
-  try {
-    await rm(root, { recursive: true, force: true });
-  } catch (error) {
-    cleanupErrors.push(`temporary gate workspace cleanup failed: ${errorMessage(error)}`);
-  }
-  if (cleanupErrors.length > 0) {
-    const message = diagnostic(`installed gate cleanup failed: ${cleanupErrors.join('; ')}`);
-    console.error(message);
-    if (!primaryFailed) cleanupFailure = new Error(message);
-  }
-}
 
   if (primaryFailed) throw primaryFailure;
   if (cleanupFailure) throw cleanupFailure;

@@ -348,6 +348,23 @@ describe('Windows release gate foundations', () => {
     }
   });
 
+  test('rejects a non-Node runner at the installed mount helper boundary', async () => {
+    let invoked = false;
+    await expect(runInstalledMount(
+      'installed root',
+      'dsh home',
+      'neutral landing',
+      'workspace',
+      { BUN_EXECUTABLE: 'bun.exe' },
+      'bun.exe',
+      async () => {
+        invoked = true;
+        return { exitCode: 0, stdout: '{"ok":true}\n', stderr: '' };
+      }
+    )).rejects.toThrow(/direct native node\.exe runner/i);
+    expect(invoked).toBe(false);
+  });
+
   test('prefers a real PowerShell 7 install over the WindowsApps execution alias', async () => {
     const root = await temp('phase7-pwsh-alias');
     try {
