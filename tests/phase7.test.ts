@@ -319,6 +319,58 @@ describe('Windows release gate foundations', () => {
     }
   });
 
+  test('fails when the remover resolves but leaves the exact Windows gate root', async () => {
+    const root = await temp('phase7-gate-cleanup-unremoved');
+    try {
+      const checkedPaths: string[] = [];
+      let attempts = 0;
+      let failure: Error | undefined;
+      try {
+        await cleanupInstalledGateWorkspace(root, {
+          platform: 'win32',
+          removePath: async () => { attempts += 1; },
+          existsPath: async (path) => { checkedPaths.push(path); return true; },
+          delay: async () => undefined
+        });
+      } catch (error) {
+        failure = error instanceof Error ? error : new Error(String(error));
+      }
+      expect(failure).toBeDefined();
+      expect(failure?.message).toContain(root);
+      expect(failure?.message).toMatch(/remover resolved|still exists/i);
+      expect(checkedPaths).toEqual([root]);
+      expect(attempts).toBe(1);
+      await expect(stat(root)).resolves.toBeDefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('does not retry transient errors off Windows or unlisted Windows errors', async () => {
+    const root = await temp('phase7-gate-cleanup-no-retry');
+    try {
+      for (const scenario of [
+        { platform: 'darwin', code: 'EBUSY' },
+        { platform: 'win32', code: 'EINVAL' }
+      ]) {
+        let attempts = 0;
+        const delays: number[] = [];
+        await expect(cleanupInstalledGateWorkspace(root, {
+          platform: scenario.platform,
+          removePath: async () => {
+            attempts += 1;
+            throw Object.assign(new Error(`cleanup ${scenario.code}`), { code: scenario.code });
+          },
+          delay: async (milliseconds) => { delays.push(milliseconds); }
+        })).rejects.toThrow(`cleanup ${scenario.code}`);
+        expect(attempts).toBe(1);
+        expect(delays).toEqual([]);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('reports the disposable root and final error when Windows gate cleanup stays locked', async () => {
     const root = await temp('phase7-gate-cleanup-persistent');
     try {

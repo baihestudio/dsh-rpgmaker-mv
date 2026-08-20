@@ -56,10 +56,12 @@ const WINDOWS_GATE_CLEANUP_RETRY_DELAYS_MS = [100, 200, 400, 800] as const;
 const WINDOWS_TRANSIENT_CLEANUP_CODES = new Set(['EACCES', 'EPERM', 'EBUSY', 'ENOTEMPTY']);
 
 type GateWorkspaceRemove = (path: string, options: { recursive: true; force: true }) => Promise<void>;
+type GateWorkspaceExists = (path: string) => Promise<boolean>;
 
 export interface GateWorkspaceCleanupOptions {
   platform?: string;
   removePath?: GateWorkspaceRemove;
+  existsPath?: GateWorkspaceExists;
   delay?: (milliseconds: number) => Promise<void>;
 }
 
@@ -71,12 +73,14 @@ function isTransientWindowsCleanupError(error: unknown): boolean {
 export async function cleanupInstalledGateWorkspace(root: string, options: GateWorkspaceCleanupOptions = {}): Promise<void> {
   const platform = options.platform ?? process.platform;
   const removePath = options.removePath ?? rm;
+  const existsPath = options.existsPath ?? gateRootExists;
   const wait = options.delay ?? delay;
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= WINDOWS_GATE_CLEANUP_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
       await removePath(root, { recursive: true, force: true });
+      if (await existsPath(root)) throw new Error(`gate root ${root} still exists after remover resolved`);
       return;
     } catch (error) {
       lastError = error;
@@ -110,6 +114,17 @@ async function exists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function gateRootExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+    throw error;
   }
 }
 
