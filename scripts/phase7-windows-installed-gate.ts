@@ -6,7 +6,7 @@ import { strict as assert } from 'node:assert';
 
 import { DSH_VERSION, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, withEnvironmentPath } from '../src/config';
 import { verifyRuntime } from '../src/bootstrap';
-import { prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree } from '../src/process';
+import { prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, type CommandRunner } from '../src/process';
 import { verifyMcpRuntime } from '../src/rpgmaker';
 import { verifyMcporterRuntime } from '../src/mcport';
 import { PNPM_VERSION } from '../src/vision-toolkit';
@@ -230,12 +230,23 @@ async function stopInstalledLaunch(started: StartedProcess, env: Record<string, 
   return trackedStop;
 }
 
-async function runInstalledMount(
+export async function resolveInstalledNode(env: Record<string, string | undefined> = process.env): Promise<string> {
+  const requested = env.NODE_EXECUTABLE ?? 'node.exe';
+  const nodeExecutable = await resolveExecutable(requested, { platform: 'win32', env });
+  if (!nodeExecutable || basename(nodeExecutable).toLowerCase() !== 'node.exe') {
+    throw new Error(`The installed-release gate requires a direct native node.exe runner; ${nodeExecutable ? `resolved ${nodeExecutable}` : `${requested} was not found`}.`);
+  }
+  return nodeExecutable;
+}
+
+export async function runInstalledMount(
   installedRoot: string,
   dshHome: string,
   neutralLanding: string,
   workspace: string,
-  env: Record<string, string>
+  env: Record<string, string>,
+  nodeExecutable: string,
+  commandRunner: CommandRunner = runCommand
 ): Promise<Record<string, unknown>> {
   const runtimeDir = join(installedRoot, 'runtime', 'dsh');
   const dshLib = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib');
@@ -264,7 +275,7 @@ async function runInstalledMount(
   };
   const mountScript = join(installedRoot, 'scripts', 'phase2-real-mount.mjs');
   if (!(await exists(mountScript))) throw new Error('installed phase2 process-observation probe was not included in the Release tree');
-  const probe = await runCommand(env.BUN_EXECUTABLE, [mountScript], {
+  const probe = await commandRunner(nodeExecutable, [mountScript], {
     cwd: neutralLanding,
     env: mountEnv,
     platform: 'win32',
@@ -276,15 +287,17 @@ async function runInstalledMount(
   return JSON.parse(line) as Record<string, unknown>;
 }
 
-if (process.platform !== 'win32') throw new Error('The installed-release gate is a Windows-only native acceptance.');
+async function main(): Promise<void> {
+  if (process.platform !== 'win32') throw new Error('The installed-release gate is a Windows-only native acceptance.');
 
-const installedRoot = resolve(requiredOption(process.argv.slice(2), 'installed-root'));
+  const installedRoot = resolve(requiredOption(process.argv.slice(2), 'installed-root'));
 if (!(await exists(join(installedRoot, 'Launch.cmd')))) throw new Error(`Supported installed Launch.cmd was not found under ${installedRoot}.`);
 const requestedBun = optionalOption(process.argv.slice(2), 'bun-executable');
 const bunExecutable = requestedBun
   ? resolve(requestedBun)
   : await resolveExecutable('bun.exe', { platform: 'win32', env: process.env });
 if (!bunExecutable || basename(bunExecutable).toLowerCase() !== 'bun.exe') throw new Error(`The installed-release gate requires a direct bun.exe runner, got ${bunExecutable ?? 'not found'}.`);
+const nodeExecutable = await resolveInstalledNode(process.env);
 await verifyInstalledRuntimes(installedRoot, bunExecutable);
 const root = await mkdtemp(join(tmpdir(), 'dsh-rpgmaker-phase7-installed-'));
 const env = cleanEnvironment(root, bunExecutable);
@@ -324,7 +337,7 @@ try {
   assert.equal(repairPortClosed, true, 'repair installed Launch.cmd teardown did not terminate its process tree and close the fixed web port');
   active.splice(active.indexOf(repairStarted), 1);
 
-  const agentEvidence = await runInstalledMount(installedRoot, dshHome, neutralLanding, workspace, env);
+  const agentEvidence = await runInstalledMount(installedRoot, dshHome, neutralLanding, workspace, env, nodeExecutable);
   const directCalls = agentEvidence.directAgentToolCalls as Array<{ isError?: boolean; valueObserved?: boolean }> | undefined;
   const processEvidence = agentEvidence.xeroloProcessEvidence as { children?: unknown[]; shellProcesses?: unknown[] } | undefined;
   assert.equal(agentEvidence.ok, true, 'installed Agent probe reported failure');
@@ -390,5 +403,8 @@ try {
   }
 }
 
-if (primaryFailed) throw primaryFailure;
-if (cleanupFailure) throw cleanupFailure;
+  if (primaryFailed) throw primaryFailure;
+  if (cleanupFailure) throw cleanupFailure;
+}
+
+if (import.meta.main) await main();

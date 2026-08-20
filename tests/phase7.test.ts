@@ -16,13 +16,14 @@ import { findDshExecutable } from '../src/bootstrap';
 import { prepareRpgMakerLaunch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
 import { RPGMPACKER_NPM_INTEGRITY, RPGMPACKER_PACKAGE, RPGMPACKER_SCRIPT, RPGMPACKER_VERSION } from '../src/release';
-import { verifyWorkspaceMcpBundle, WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
+import { JS_RUNNER_ENV, XEROLO_RUNTIME_ENV, verifyWorkspaceMcpBundle, WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
 import { installWindowsPrerequisites, PrerequisiteConsentError, verifyWindowsPrerequisites } from '../src/prerequisites';
 import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
 import { runDoctor } from '../src/doctor';
 import { runCommand } from '../src/process';
 import { run as runProcessObservation } from '../scripts/process-observation.mjs';
+import { resolveInstalledNode, runInstalledMount } from '../scripts/phase7-windows-installed-gate';
 import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, uninstallHarness, UninstallSafetyError } from '../src/windows';
 import { visionToolkitActivationFixture, visionToolkitFixture } from './fixtures/vision-toolkit';
@@ -291,6 +292,60 @@ describe('Windows release gate foundations', () => {
     observer.emit('exit', 1, null);
     observer.emit('close', 1);
     await expect(observation).rejects.toThrow(/process observation command timed out/);
+  });
+
+  test('runs the installed mount probe with native Node while keeping Bun as the Xerolo runner', async () => {
+    const root = await temp('phase7-installed-mount-runner');
+    try {
+      const { bin } = await prerequisiteBin(root);
+      const bun = join(bin, 'bun.exe');
+      const node = join(bin, 'node.exe');
+      expect(await resolveInstalledNode({ PATH: bin })).toBe(node);
+      await expect(resolveInstalledNode({ PATH: join(root, 'missing node bin') })).rejects.toThrow(/node\.exe was not found/i);
+      await expect(resolveInstalledNode({ PATH: bin, NODE_EXECUTABLE: bun })).rejects.toThrow(/direct native node\.exe runner/i);
+
+      const installedRoot = join(root, 'program');
+      const dshHome = join(root, 'state');
+      const neutralLanding = join(installedRoot, 'neutral');
+      const workspace = join(root, '游戏 workspace with spaces');
+      const dshLib = join(installedRoot, 'runtime', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib');
+      await mkdir(dshLib, { recursive: true });
+      await writeFile(join(dshLib, 'profile-boot-fixture.js'), 'export {}\n');
+      const mcpRuntime = join(installedRoot, 'runtime', 'mcp');
+      await writePinnedPackageRuntime(
+        mcpRuntime,
+        RPGMAKER_MCP_PACKAGE,
+        RPGMAKER_MCP_VERSION,
+        'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==',
+        { version: RPGMAKER_MCP_VERSION, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } },
+        { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }
+      );
+      const mountScript = join(installedRoot, 'scripts', 'phase2-real-mount.mjs');
+      await mkdir(dirname(mountScript), { recursive: true });
+      await writeFile(mountScript, '');
+
+      let invocation: { command: string; args: string[]; cwd?: string; env?: Record<string, string | undefined> } | undefined;
+      const result = await runInstalledMount(
+        installedRoot,
+        dshHome,
+        neutralLanding,
+        workspace,
+        { BUN_EXECUTABLE: bun },
+        node,
+        async (command, args, options) => {
+          invocation = { command, args: [...args], cwd: options.cwd, env: options.env };
+          return { exitCode: 0, stdout: '{"ok":true}\n', stderr: '' };
+        }
+      );
+      expect(result.ok).toBe(true);
+      expect(invocation?.command).toBe(node);
+      expect(invocation?.args).toEqual([mountScript]);
+      expect(invocation?.cwd).toBe(neutralLanding);
+      expect(invocation?.env?.[JS_RUNNER_ENV]).toBe(bun);
+      expect(invocation?.env?.[XEROLO_RUNTIME_ENV]).toBe(mcpRuntime);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test('prefers a real PowerShell 7 install over the WindowsApps execution alias', async () => {
