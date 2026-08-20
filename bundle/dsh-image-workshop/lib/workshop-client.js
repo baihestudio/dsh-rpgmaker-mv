@@ -17,7 +17,6 @@ import { appendImageDiagnostic, createImageDiagnosticContext, diagnosticAbortOut
 const SECRET_KEYS = [
   'DEEPSEEK_API_KEY',
   'DSH_API_KEY',
-  'ANIONEX_FREE_VISION',
   'NPM_TOKEN',
   'NODE_AUTH_TOKEN',
   'GITHUB_TOKEN',

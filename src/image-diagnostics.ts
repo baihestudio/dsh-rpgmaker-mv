@@ -94,7 +94,7 @@ function boundedText(value: unknown, context?: ImageDiagnosticContext): string |
   for (const secret of context?.redactionValues ?? []) text = text.split(secret).join('[redacted]');
   text = redactSensitive(text);
   text = text.replace(
-    /(ANIONEX_FREE_VISION|NPM_TOKEN|NODE_AUTH_TOKEN|GITHUB_TOKEN|GITLAB_TOKEN)\s*[:=]\s*[^\s,;}]+/gi,
+    /(NPM_TOKEN|NODE_AUTH_TOKEN|GITHUB_TOKEN|GITLAB_TOKEN)\s*[:=]\s*[^\s,;}]+/gi,
     '$1=[redacted]'
   );
   return text.length <= DIAGNOSTIC_TEXT_LIMIT ? text : text.slice(-DIAGNOSTIC_TEXT_LIMIT);
@@ -182,7 +182,6 @@ export function imageDiagnosticContextFromEnvironment(
   const redactionValues = [
     env.DEEPSEEK_API_KEY,
     env.DSH_API_KEY,
-    env.ANIONEX_FREE_VISION,
     env.NPM_TOKEN,
     env.NODE_AUTH_TOKEN,
     env.GITHUB_TOKEN,

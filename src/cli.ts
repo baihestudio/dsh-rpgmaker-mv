@@ -17,7 +17,6 @@ import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT } from './config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, uninstallWindowsRelease } from './release-gate';
 import type { PrerequisiteConsent } from './prerequisites';
 import type { PortConflictAction, ExistingSessionOpener, PortProbe } from './windows';
-import { visionToolkitDisclosure } from './vision-toolkit';
 
 export interface CliIO {
   stdout: { write: (text: string) => unknown };
@@ -415,7 +414,6 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
       io.stdout.write(`Installed DSH for RPG Maker MV under ${result.paths.programRoot}\n`);
       io.stdout.write(`Mutable state: ${result.paths.mutableRoot}; DSH_HOME: ${result.paths.dshHome}\n`);
       io.stdout.write(`Start Menu shortcut: ${result.shortcutPath}\n`);
-      io.stdout.write(`Vision Toolkit: ${visionToolkitDisclosure()}\n`);
       return 0;
     }
 

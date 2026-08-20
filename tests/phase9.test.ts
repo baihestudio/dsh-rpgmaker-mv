@@ -1160,6 +1160,27 @@ describe('asset-workshop preset composition', () => {
     return source;
   }
 
+  test('composes all four shipped Agents without remote image tools while retaining the local image row only for Asset Workshop', async () => {
+    const root = await temp('preset-remote-image-removal');
+    try {
+      const dshHome = join(root, 'dsh-home');
+      const runtime = join(root, 'runtime');
+      const code = join(runtime, 'code.cordis.yml');
+      await mkdir(dirname(code), { recursive: true });
+      await writeFile(code, CODE);
+      for (const presetId of CUSTOM_AGENT_PRESET_IDS) {
+        const { presetDir } = await installPreset(join(process.cwd(), 'presets', presetId), dshHome, code, presetId);
+        const composed = await readFile(join(presetDir, 'agent.cordis.yml'), 'utf8');
+        expect(composed).not.toContain('@anionex/dsh-vision-toolkit');
+        expect(composed).not.toMatch(/vision_[a-z_]+/);
+        if (presetId === 'asset-workshop') expect(composed).toContain(`id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}`);
+        else expect(composed).not.toContain(`id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}`);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('composes the asset preset with exactly one persona and one app-owned plugin row', async () => {
     const root = await temp('preset-asset');
     try {

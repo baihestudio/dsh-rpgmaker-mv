@@ -24,20 +24,6 @@ import {
 } from './rpgmaker';
 import { verifyRpgmPackerRuntime } from './release';
 import { verifyImageWorkshopPlugin, imageWorkshopPluginSummary, type ImageWorkshopPluginVerification } from './image-plugin';
-import {
-  checkVisionToolkitActivation,
-  verifyVisionToolkit,
-  VISION_TOOLKIT_BASE_URL,
-  VISION_TOOLKIT_CREDENTIAL,
-  VISION_TOOLKIT_DAILY_LIMIT,
-  VISION_TOOLKIT_IMAGES_PER_REQUEST,
-  VISION_TOOLKIT_MAX_IMAGE_BYTES,
-  VISION_TOOLKIT_MAX_IMAGE_PIXELS,
-  VISION_TOOLKIT_MAX_OUTPUT_TOKENS,
-  VISION_TOOLKIT_MODEL,
-  type VisionToolkitActivation,
-  type VisionToolkitVerification
-} from './vision-toolkit';
 
 export interface DoctorOptions extends PathOptions {
   commandRunner?: CommandRunner;
@@ -51,8 +37,6 @@ export interface DoctorOptions extends PathOptions {
   sevenZipExecutable?: string;
   verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; image: DoctorCheck; packager: DoctorCheck }>;
   verifyImageWorkshopPlugin?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<ImageWorkshopPluginVerification>;
-  verifyVisionToolkit?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<VisionToolkitVerification>;
-  verifyVisionToolkitActivation?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<VisionToolkitActivation>;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
 }
@@ -420,69 +404,6 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
         ? `Pinned DSH ${RPGMAKER_DSH_PROFILE} profile supplies exactly one official ${DSH_TOOL_TIMEOUT_POLICY_PACKAGE} Host row across ${timeoutPolicy.coveredPresets.length} custom Agent presets`
         : timeoutPolicyErrors.join('; '),
       timeoutPolicy.hostCompositionPath
-    ));
-
-    const vision = await (options.verifyVisionToolkit ?? (context => verifyVisionToolkit({
-      platform: context.platform,
-      env: context.env,
-      dshHome: context.paths.dshHome,
-      programRoot: context.paths.programRoot,
-      runtimeDir: context.paths.runtimeDir,
-      commandRunner: context.commandRunner
-    })))({ platform, env: commandEnv, paths, commandRunner: runner });
-    if (vision.packageDir) executablePaths['vision-toolkit'] = vision.packageDir;
-    checks.push(check(
-      'vision-toolkit-profile',
-      `Vision Toolkit ${vision.packageVersion ?? 'profile'}`,
-      vision.valid,
-      vision.valid
-        ? 'Pinned Vision Toolkit profile layer and package metadata are verified'
-        : vision.errors.join('; '),
-      vision.packageDir ?? vision.profileDir
-    ));
-    const provider = vision.provider;
-    const providerValid = provider.baseUrl === VISION_TOOLKIT_BASE_URL
-      && provider.model === VISION_TOOLKIT_MODEL
-      && provider.credential === VISION_TOOLKIT_CREDENTIAL
-      && provider.dailyLimit === VISION_TOOLKIT_DAILY_LIMIT
-      && provider.imagesPerRequest === VISION_TOOLKIT_IMAGES_PER_REQUEST
-      && provider.maxImageBytes === VISION_TOOLKIT_MAX_IMAGE_BYTES
-      && provider.maxImagePixels === VISION_TOOLKIT_MAX_IMAGE_PIXELS
-      && provider.maxOutputTokens === VISION_TOOLKIT_MAX_OUTPUT_TOKENS;
-    checks.push(check(
-      'vision-toolkit-provider',
-      'Vision Toolkit default provider metadata',
-      providerValid,
-      providerValid
-        ? `Default provider is ${provider.baseUrl} / ${provider.model}; shared quota is ${provider.dailyLimit} images per machine per day`
-        : 'Vision Toolkit default provider metadata does not match the pinned disclosure contract'
-    ));
-    const activation = vision.valid
-      ? await (options.verifyVisionToolkitActivation ?? (context => checkVisionToolkitActivation({
-        platform: context.platform,
-        env: context.env,
-        dshHome: context.paths.dshHome,
-        programRoot: context.paths.programRoot,
-        runtimeDir: context.paths.runtimeDir,
-        commandRunner: context.commandRunner
-      })))({ platform, env: commandEnv, paths, commandRunner: runner })
-      : { valid: false, errors: ['Vision Toolkit profile metadata is not valid; activation was not attempted.'], settingsReady: false, attachmentAdmissionReady: false, tools: [] } satisfies VisionToolkitActivation;
-    checks.push(check(
-      'vision-toolkit-activation',
-      'Vision Toolkit DSH rc.7 activation',
-      activation.valid,
-      activation.valid
-        ? `DSH activation, image attachment admission, and ${activation.tools.length} visual schemas are verified without a provider call`
-        : activation.errors.join('; ') || 'Vision Toolkit activation was not verified'
-    ));
-    checks.push(check(
-      'vision-toolkit-runtime',
-      'Vision Toolkit managed Python runtime',
-      vision.valid && vision.managedRuntimeReady,
-      vision.managedRuntimeReady
-        ? `Managed runtime is materialized under ${vision.runtimeCacheDir}`
-        : `Managed runtime is not materialized; run Install.cmd or launch DSH to prepare the pinned isolated Python runtime under ${vision.runtimeCacheDir}`,
-      vision.runtimeCacheDir
     ));
 
     const layoutPaths = [paths.mutableRoot, paths.dshHome, paths.logsDir, paths.cacheDir];

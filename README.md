@@ -3,7 +3,7 @@ DeepSeek for RPG Maker MV
 
 ## Windows Release ZIP (Phase 7)
 
-For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs Python 3.13 through WinGet for Vision Toolkit's isolated managed environment, installs the pinned DSH, RPG Maker MCP, build-packager, and Vision Toolkit dependencies plus the complete image toolchain, and creates the per-user Start Menu shortcut **DSH for RPG Maker MV**. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for the pinned community package notice.
+For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs the verified Python 3.13 WinGet runtime as a general Agent utility, installs the pinned DSH, RPG Maker MCP, build-packager, and complete image toolchain, and creates the per-user Start Menu shortcut **DSH for RPG Maker MV**. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for the pinned community package notice.
 
 The full first-run, repair, port-conflict, workspace-selection, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata and preserves rollback/recovery state, mutable state, credentials, logs, and projects; `uninstall.ps1 -Purge` is explicit.
 
@@ -89,8 +89,6 @@ bun run check
 bun run phase4:real
 # Optional real project-neutral DSH + Xerolo workspace acceptance
 bun run phase2:real
-# Optional real DSH rc.7 + Vision Toolkit compatibility (no image upload)
-bun run phase8:real
 ```
 
 Tests use disposable runtime, DSH home, credential, and MV project directories. They do not touch a user's installed DSH state, RPG Maker projects, applications, or credentials. The ordinary suite uses fake prerequisite/runtime executables; `bun run phase2:real` additionally installs the pinned DSH/MCPorter/Xerolo packages into a disposable temp runtime and verifies the project-neutral workspace Host, 41 stable tools, CJK/space paths, one pooled server, and shutdown. The two-workspace mutation matrix remains in the ordinary workspace test; it is not duplicated in the Windows gate. Real PowerShell/Coreutils identity, Windows `.cmd` launch, and installed MV checks remain the complementary Windows runner gate.
@@ -144,7 +142,7 @@ Select the deterministic image preset when creating a DSH Web Agent:
 
 `Install.cmd` provisions the complete app-owned image toolchain for every agent: ImageMagick `7.1.2-29`, `free-tex-packer-core@0.3.9`, and `oxipng@10.2.0`. Downloads are staged, checked against the pinned archive and executable hashes, verified by version, and installed atomically. Re-running the installer or launcher verifies and reuses a valid installation instead of downloading it again. Every launched session receives the resolved image workflow environment, so selecting 游戏图片素材助手 in the Web UI does not depend on which preset originally started DSH. Explicit overrides must still supply their expected SHA-256 and PATH aliases or `convert` are never accepted. `oxipng` is installed for readiness but is invoked only by an explicit `optimize-png` operation with a distinct output path.
 
-Install prepares the Vision Toolkit managed Python runtime through a short local DSH Web boot; repeat installs and launches reuse its verified cache. All four RPG Maker assistants can use the shared Vision Toolkit for image understanding, OCR, grounding, and pixel comparison. The default provider is `https://vision.anionex.me/v1` with `gemini-3.7-flash`; image data is sent to that shared remote service. It allows 300 images per machine per day, five images per request, 4 MiB and 20,000,000 decoded pixels per image, and 4,096 output tokens. Configure a private or higher-quota provider under **Settings → Vision Toolkit**. Vision failures are reported separately from local image processing, and AI image generation is not included.
+Python 3.13 remains a verified WinGet-managed general Agent utility and is checked independently by Doctor. Image work is local and deterministic: the Asset Workshop Agent exposes seven structured tools backed by the pinned ImageMagick, free-tex-packer-core, and oxipng toolchain. No remote vision, OCR, or AI image-generation provider is installed or configured.
 
 The skill owns pixel-safe resize, transparent trim/pad, fixed-grid sheet
 slice/assembly, and no-rotation atlas packing. Each operation rejects an
@@ -233,7 +231,6 @@ bun run check
 bun run phase2:real
 bun run phase4:real
 bun run phase6:real
-bun run phase8:real
 # On Windows, after the disposable real gates:
 bun run phase6:windows-manual -- --rpgmaker-installation 'C:\Program Files\RPG Maker MV'
 ```

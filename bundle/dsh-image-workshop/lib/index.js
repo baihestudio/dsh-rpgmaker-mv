@@ -2,9 +2,9 @@
  * @baihestudio/dsh-image-workshop — app-owned, Agent-scoped DSH tool plugin.
  *
  * Mounted only inside the asset-workshop preset composition, so the tools it
- * registers are visible only to 游戏图片素材助手 Agents. All four presets keep
- * the shared Vision Toolkit; the other three presets never resolve the image
- * tools because this plugin is absent from their compositions.
+ * registers are visible only to 游戏图片素材助手 Agents. The other three
+ * presets never resolve the image tools because this plugin is absent from
+ * their compositions.
  */
 import {
   createImageInspectTool,

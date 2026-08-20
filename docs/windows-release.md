@@ -6,13 +6,13 @@
 2. Double-click `Install.cmd`.
 3. Give the installer one explicit consent when prompted if it may install or repair prerequisites. This consent covers missing, wrong-version, and wrong-identity checks; command presence is never treated as consent. The installer uses WinGet only after that consent for:
    - Node.js LTS and npm (`OpenJS.NodeJS.LTS`)
-   - Python 3.13 (`Python.Python.3.13`; Vision Toolkit requires Python 3.11+)
+   - Python 3.13 (`Python.Python.3.13`; retained as a general Agent utility)
    - Bun (`Oven-sh.Bun`)
    - PowerShell 7.4+ (`Microsoft.PowerShell`)
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
    - 7-Zip (`7zip.7zip`; extracts the pinned ImageMagick `.7z` archive)
-4. The installer verifies executable paths and versions, supplies the verified WinGet Python to Vision Toolkit's isolated managed environment, extracts the pinned portable ImageMagick with the verified 7-Zip, stages the pinned DSH `0.1.0-rc.7` runtime with Bun, installs the exact RPG Maker MCP, build packager, Vision Toolkit profile dependency, and the app-owned image tool plugin (scoped to 游戏图片素材助手), then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, four presets, and neutral composition as needed. The Vision Toolkit package and license notice are listed in [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md).
+4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, extracts the pinned portable ImageMagick with the verified 7-Zip, stages the pinned DSH `0.1.0-rc.7` runtime with Bun, installs the exact RPG Maker MCP, build packager, and app-owned image tool plugin (scoped to 游戏图片素材助手), then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, four presets, and neutral composition as needed.
 
 No Git clone, npm install, or manual package command is needed for this path. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported repair path; a previous runtime is retained by the staged runtime swap for recovery. If post-swap bootstrap, metadata, or shortcut creation fails, the prior program tree is restored and the failed new tree is retained as a named diagnostic/recovery directory.
 
@@ -74,7 +74,7 @@ The agent and its `rpgmaker_*` tools are the sole writers. If the RPG Maker
 editor is open, it is read-only: do not save from it, and reopen it before
 inspecting agent changes.
 
-The web session always binds to `http://127.0.0.1:3081`. If that port is occupied, the launcher offers to open the existing session or asks you to close it and retry. It never silently selects another port and never starts concurrent project sessions. The disposable Vision Toolkit compatibility probe is `bun run phase8:real`; it boots DSH rc.7, prepares the managed runtime, activates the ten visual tools in each shipped preset, and never sends an image to the provider.
+The web session always binds to `http://127.0.0.1:3081`. If that port is occupied, the launcher offers to open the existing session or asks you to close it and retry. It never silently selects another port and never starts concurrent project sessions.
 
 ## Post-review acceptance sequence
 
@@ -143,7 +143,7 @@ From the installed program root:
 ./doctor.ps1
 ```
 
-Doctor reports the resolved Node/npm, Bun, PowerShell, Git, Coreutils, DSH runtime, RPG Maker MCP runtime, complete image toolchain, pinned build packager, Vision Toolkit profile and managed-runtime status, credential metadata, and mutable-layout facts without reading credential values. Installation performs a short local Web boot to prepare the Vision Toolkit managed Python cache; it never calls the remote vision provider. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
+Doctor reports the resolved Node/npm, Python, Bun, PowerShell, Git, Coreutils, DSH runtime, RPG Maker MCP runtime, complete image toolchain, pinned build packager, credential metadata, and mutable-layout facts without reading credential values. Python is verified independently as a general Agent utility; no managed image runtime is prepared. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
 
 ## Uninstall
 
@@ -166,7 +166,7 @@ Four selectable presets use one shared DSH host/MCP composition and stable Agent
 - `asset-workshop` — deterministic ImageMagick and atlas workflows;
 - `build-release` — pinned Windows/Web packaging and smoke checks.
 
-All four presets expose Vision Toolkit understanding and OCR tools. By default, visual requests send images to the shared `https://vision.anionex.me/v1` service; the service has a 300-image daily machine quota, five-image request limit, 4 MiB/20,000,000-pixel image limits, and 4,096 output-token limit. Configure a private provider under **Settings → Vision Toolkit**. AI image generation is not included.
+Only the `asset-workshop` preset exposes the seven deterministic local image tools. The other three presets do not mount image tools. No remote vision, OCR, or AI image-generation provider is installed or configured.
 
 The Debug preset can truthfully report process launch, logs, MCP stop, and post-stop status. A launched process is not a gameplay or visual assertion. Actual RPG Maker MV/NW.js Windows launch, installed MV discovery, and behavior remain Windows hardware-gate observations. Automated `phase6:real` uses only a disposable fixture; the explicit opt-in `bun run phase6:windows-manual -- --rpgmaker-installation <path>` gate is required for an installed MV path. macOS substitutes are reported as non-blocking and never presented as Windows evidence. Photoshop, Aseprite, and TexturePacker are optional user-owned enhancements.
 

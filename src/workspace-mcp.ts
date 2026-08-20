@@ -11,7 +11,7 @@ import {
   preparePnpmRuntime,
   profileDirFor,
   resolveDshInvocation
-} from './vision-toolkit';
+} from './profile';
 
 export const WORKSPACE_MCP_PACKAGE = '@baihestudio/dsh-workspace-mcp';
 export const WORKSPACE_MCP_VERSION = '0.1.0';

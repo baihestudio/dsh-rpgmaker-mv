@@ -10,7 +10,7 @@ import { verifyRuntime } from '../src/bootstrap';
 import { prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, type CommandRunner, withoutCredentials } from '../src/process';
 import { verifyMcpRuntime } from '../src/rpgmaker';
 import { verifyMcporterRuntime } from '../src/mcport';
-import { PNPM_VERSION } from '../src/vision-toolkit';
+import { PNPM_VERSION } from '../src/profile';
 import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
 import { atLeast } from '../src/prerequisites';
 import { WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';

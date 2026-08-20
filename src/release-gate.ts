@@ -13,7 +13,8 @@ import { prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { prepareMcporterRuntime } from './mcport';
 import { prepareRpgmPackerRuntime } from './release';
 import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE, IMAGE_WORKSHOP_BUNDLE_RELATIVE } from './image-plugin';
-import { preparePnpmRuntime, prepareVisionToolkit } from './vision-toolkit';
+import { preparePnpmRuntime } from './profile';
+import { removeObsoleteVisionToolkitState } from './profile-repair';
 import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
@@ -241,6 +242,14 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         bunExecutable: options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE,
         commandRunner: options.commandRunner
       });
+      await removeObsoleteVisionToolkitState({
+        platform,
+        env: installedEnv,
+        dshHome: paths.dshHome,
+        programRoot: paths.programRoot,
+        mutableRoot: paths.mutableRoot,
+        runtimeDir: paths.runtimeDir
+      });
       const bunExecutable = options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE ?? 'bun';
       const prepareAgentDependencies = options.prepareAgentDependencies ?? (async (context) => {
         await preparePnpmRuntime({
@@ -289,16 +298,6 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           bunExecutable: context.bunExecutable,
           commandRunner: context.commandRunner
         }, platform, context.env);
-        await prepareVisionToolkit({
-          platform,
-          env: context.env,
-          dshHome: context.paths.dshHome,
-          programRoot: context.paths.programRoot,
-          runtimeDir: context.paths.runtimeDir,
-          dshExecutable: context.env.DSH_EXECUTABLE,
-          npmExecutable: context.npmExecutable,
-          commandRunner: context.commandRunner
-        });
         await prepareImageWorkshopPlugin({
           platform,
           env: context.env,
@@ -437,7 +436,8 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'src/cli.ts',
     'src/mcport.ts',
     'src/workspace-mcp.ts',
-    'src/vision-toolkit.ts',
+    'src/profile.ts',
+    'src/profile-repair.ts',
     'presets/rpgmaker/preset.yml',
     `${IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,

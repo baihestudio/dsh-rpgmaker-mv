@@ -11,7 +11,7 @@ import {
   preparePnpmRuntime,
   profileDirFor,
   resolveDshInvocation
-} from './vision-toolkit';
+} from './profile';
 
 export const IMAGE_WORKSHOP_PLUGIN_PACKAGE = '@baihestudio/dsh-image-workshop';
 export const IMAGE_WORKSHOP_PLUGIN_VERSION = '0.1.0';
@@ -19,7 +19,7 @@ export const IMAGE_WORKSHOP_PLUGIN_LICENSE = 'MIT';
 export const IMAGE_WORKSHOP_PLUGIN_PROFILE = 'web';
 export const IMAGE_WORKSHOP_PLUGIN_ENTRYPOINT = 'lib/index.js';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const IMAGE_WORKSHOP_PLUGIN_SHA256 = '88ef85e05da0114b14f1f4e2c14579686b4b4e933484bba501ddea2e9336ee07';
+export const IMAGE_WORKSHOP_PLUGIN_SHA256 = 'c792fccd65a74e7e6cd2267ac45debbe105e3ebe7a33280922e2f51cfaaf85d1';
 export const IMAGE_WORKSHOP_BUNDLE_RELATIVE = join('bundle', 'dsh-image-workshop');
 /** Archive entries always use POSIX separators, including on Windows. */
 export const IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE = 'bundle/dsh-image-workshop';
@@ -134,8 +134,7 @@ interface ImageWorkshopProfileSnapshot {
 /**
  * Image-plugin-owned profile snapshot. Covers the manifest, lockfile, patch,
  * and this plugin's OWN node_modules entry so a failed or partial `plugin add`
- * can never leave an orphaned image-tool package row. Deliberately does not
- * reuse Vision Toolkit's package-specific rollback internals.
+ * can never leave an orphaned image-tool package row.
  */
 async function snapshotImageWorkshopProfile(paths: HarnessPaths, profileDir: string): Promise<ImageWorkshopProfileSnapshot> {
   const root = await mkdtemp(join(paths.dshHome, '.image-workshop-profile-rollback-'));
