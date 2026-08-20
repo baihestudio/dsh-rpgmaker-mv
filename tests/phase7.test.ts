@@ -32,6 +32,10 @@ async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
 }
 
+async function installedGateTemp(suffix = ''): Promise<string> {
+  return mkdtemp(join(tmpdir(), `dsh-rpgmaker-phase7-installed-${suffix}`));
+}
+
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const prepareAgentDependencies = async (): Promise<void> => undefined;
@@ -295,8 +299,8 @@ describe('Windows release gate foundations', () => {
     await expect(observation).rejects.toThrow(/process observation command timed out/);
   });
 
-  test('invokes native cleanup with the exact root as one literal argv and proves absence', async () => {
-    const root = await temp('phase7-gate-cleanup-100%! & ;()[]$');
+  test('validates PowerShell identity before literal native cleanup and proves absence', async () => {
+    const root = await installedGateTemp('100%! & ;()[]$');
     try {
       await writeFile(join(root, 'fixture.txt'), 'fixture');
       const calls: Array<{ command: string; args: string[]; cwd?: string; env?: Record<string, string | undefined> }> = [];
@@ -313,32 +317,111 @@ describe('Windows release gate foundations', () => {
         pwshExecutable: pwsh,
         commandRunner: async (command, args, options) => {
           calls.push({ command, args: [...args], cwd: options.cwd, env: options.env });
+          if (args[0] === '--version') return { exitCode: 0, stdout: 'PowerShell 7.4.6\n', stderr: '' };
           await rm(args.at(-1)!, { recursive: true, force: true });
           return { exitCode: 0, stdout: '', stderr: '' };
         }
       });
 
-      expect(calls).toHaveLength(1);
+      expect(calls).toHaveLength(2);
       expect(calls[0]?.command).toBe(pwsh);
-      expect(calls[0]?.args).toEqual([
+      expect(calls[0]?.args).toEqual(['--version']);
+      expect(calls[1]?.command).toBe(pwsh);
+      expect(calls[1]?.args).toEqual([
         '-NoLogo', '-NoProfile', '-NonInteractive', '-File',
         join(REPOSITORY_ROOT, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE),
-        '-LiteralPath', root
+        '-LiteralPath', resolve(root)
       ]);
-      expect(calls[0]?.args.filter((value) => value === root)).toEqual([root]);
-      expect(calls[0]?.cwd).toBe(dirname(root));
-      expect(calls[0]?.env?.USERPROFILE).toBe(dirname(root));
-      expect(calls[0]?.env?.TEMP).toBe(dirname(root));
-      expect(calls[0]?.env?.TMP).toBe(dirname(root));
-      expect(calls[0]?.env?.DEEPSEEK_API_KEY).toBeUndefined();
+      expect(calls[1]?.args.filter((value) => value === resolve(root))).toEqual([resolve(root)]);
+      expect(calls[0]?.cwd).toBe(dirname(resolve(root)));
+      expect(calls[1]?.cwd).toBe(dirname(resolve(root)));
+      expect(calls[1]?.env?.USERPROFILE).toBe(dirname(resolve(root)));
+      expect(calls[1]?.env?.TEMP).toBe(dirname(resolve(root)));
+      expect(calls[1]?.env?.TMP).toBe(dirname(resolve(root)));
+      expect(calls[1]?.env?.DEEPSEEK_API_KEY).toBeUndefined();
       await expect(stat(root)).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
+  test('rejects outside, wrong-prefix, relative, and ambiguous roots before invoking PowerShell', async () => {
+    const expectedTempRoot = await temp('phase7-gate-cleanup-expected-parent');
+    const outsideParent = await temp('phase7-gate-cleanup-outside-parent');
+    const outside = await mkdtemp(join(outsideParent, 'dsh-rpgmaker-phase7-installed-'));
+    const wrongPrefix = await mkdtemp(join(expectedTempRoot, 'phase7-gate-cleanup-wrong-prefix-'));
+    const ambiguousBase = await mkdtemp(join(expectedTempRoot, 'dsh-rpgmaker-phase7-installed-ambiguous-'));
+    const cases = [
+      { label: 'outside', root: outside },
+      { label: 'wrong prefix', root: wrongPrefix },
+      { label: 'relative', root: 'relative/dsh-rpgmaker-phase7-installed-fixture' },
+      { label: 'ambiguous', root: `${ambiguousBase}/.` }
+    ];
+    let invoked = 0;
+    try {
+      for (const scenario of cases) {
+        await expect(cleanupInstalledGateWorkspace(scenario.root, {
+          platform: 'win32',
+          tempRoot: expectedTempRoot,
+          pwshExecutable: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+          commandRunner: async () => {
+            invoked += 1;
+            throw new Error('PowerShell must not be invoked for an unowned root');
+          }
+        })).rejects.toThrow(/temporary|absolute|prefix|owned/i);
+      }
+      expect(invoked).toBe(0);
+    } finally {
+      await rm(expectedTempRoot, { recursive: true, force: true });
+      await rm(outsideParent, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects injected non-native or unverified PowerShell before helper deletion', async () => {
+    const scenarios = [
+      { label: 'bun runner', executable: 'C:\\tools\\bun.exe', output: 'PowerShell 7.4.6\n', probes: 0 },
+      { label: 'fake PowerShell basename', executable: 'C:\\tools\\fake-pwsh.exe', output: 'PowerShell 7.4.6\n', probes: 0 },
+      { label: 'WindowsApps execution alias', executable: 'C:\\Program Files\\WindowsApps\\pwsh.exe', output: 'PowerShell 7.4.6\n', probes: 0 },
+      { label: 'unrecognized identity', executable: 'C:\\tools\\pwsh.exe', output: 'Fake PowerShell 7.4.6\n', probes: 1 },
+      { label: 'wrong version', executable: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', output: 'PowerShell 7.3.9\n', probes: 1 }
+    ];
+
+    for (const scenario of scenarios) {
+      const root = await installedGateTemp(`rejected-${scenario.label.replaceAll(' ', '-')}`);
+      let probes = 0;
+      let helperCalls = 0;
+      try {
+        let failure: Error | undefined;
+        try {
+          await cleanupInstalledGateWorkspace(root, {
+            platform: 'win32',
+            env: { DEEPSEEK_API_KEY: 'secret-value' },
+            pwshExecutable: scenario.executable,
+            commandRunner: async (_command, args) => {
+              if (args[0] === '--version') {
+                probes += 1;
+                return { exitCode: 0, stdout: scenario.output, stderr: 'secret-value' };
+              }
+              helperCalls += 1;
+              return { exitCode: 0, stdout: '', stderr: '' };
+            }
+          });
+        } catch (error) {
+          failure = error instanceof Error ? error : new Error(String(error));
+        }
+        expect(failure).toBeDefined();
+        expect(failure?.message).not.toContain('secret-value');
+        expect(probes).toBe(scenario.probes);
+        expect(helperCalls).toBe(0);
+        await expect(stat(root)).resolves.toBeDefined();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   test('retries a classified native sharing failure before confirming absence', async () => {
-    const root = await temp('phase7-gate-cleanup-transient');
+    const root = await installedGateTemp('transient');
     try {
       await writeFile(join(root, 'fixture.txt'), 'fixture');
       const delays: number[] = [];
@@ -346,10 +429,11 @@ describe('Windows release gate foundations', () => {
       await cleanupInstalledGateWorkspace(root, {
         platform: 'win32',
         pwshExecutable: 'pwsh.exe',
-        commandRunner: async () => {
+        commandRunner: async (_command, args) => {
+          if (args[0] === '--version') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
           attempts += 1;
-          if (attempts === 1) return { exitCode: 1, stdout: '', stderr: `ERROR_SHARING_VIOLATION: ${root}` };
-          await rm(root, { recursive: true, force: true });
+          if (attempts === 1) return { exitCode: 1, stdout: '', stderr: `ERROR_SHARING_VIOLATION: ${resolve(root)}` };
+          await rm(resolve(root), { recursive: true, force: true });
           return { exitCode: 0, stdout: '', stderr: '' };
         },
         delay: async (milliseconds) => { delays.push(milliseconds); }
@@ -363,19 +447,20 @@ describe('Windows release gate foundations', () => {
   });
 
   test('fails immediately on a persistent native removal error with the exact root', async () => {
-    const root = await temp('phase7-gate-cleanup-persistent');
+    const root = await installedGateTemp('persistent');
     try {
       const delays: number[] = [];
       let attempts = 0;
       await expect(cleanupInstalledGateWorkspace(root, {
         platform: 'win32',
         pwshExecutable: 'pwsh.exe',
-        commandRunner: async () => {
+        commandRunner: async (_command, args) => {
+          if (args[0] === '--version') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
           attempts += 1;
-          return { exitCode: 1, stdout: '', stderr: `UnauthorizedAccessException: access denied for ${root}` };
+          return { exitCode: 1, stdout: '', stderr: `UnauthorizedAccessException: access denied for ${resolve(root)}` };
         },
         delay: async (milliseconds) => { delays.push(milliseconds); }
-      })).rejects.toThrow(new RegExp(`temporary gate workspace cleanup failed.*${root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      })).rejects.toThrow(new RegExp(`temporary gate workspace cleanup failed.*${resolve(root).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
       expect(attempts).toBe(1);
       expect(delays).toEqual([]);
       await expect(stat(root)).resolves.toBeDefined();

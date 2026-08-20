@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { strict as assert } from 'node:assert';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ import { verifyMcpRuntime } from '../src/rpgmaker';
 import { verifyMcporterRuntime } from '../src/mcport';
 import { PNPM_VERSION } from '../src/vision-toolkit';
 import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
+import { atLeast } from '../src/prerequisites';
 import { WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import {
   JS_RUNNER_ENV,
@@ -65,6 +66,7 @@ const WINDOWS_GATE_CLEANUP_HELPER = resolve(
   dirname(fileURLToPath(import.meta.url)),
   basename(WINDOWS_GATE_CLEANUP_HELPER_RELATIVE)
 );
+const WINDOWS_GATE_WORKSPACE_PREFIX = 'dsh-rpgmaker-phase7-installed-';
 
 type GateWorkspaceExists = (path: string) => Promise<boolean>;
 
@@ -72,6 +74,8 @@ export interface GateWorkspaceCleanupOptions {
   platform?: string;
   env?: Record<string, string | undefined>;
   pwshExecutable?: string;
+  /** Test-only override for the approved temporary parent. */
+  tempRoot?: string;
   commandRunner?: CommandRunner;
   existsPath?: GateWorkspaceExists;
   delay?: (milliseconds: number) => Promise<void>;
@@ -84,15 +88,56 @@ function isTransientNativeCleanupError(error: unknown): boolean {
 }
 
 function cleanupEnvironment(root: string, source: Record<string, string | undefined>): Record<string, string | undefined> {
-  const parent = dirname(resolve(root));
+  const parent = dirname(root);
   const safe = withoutCredentials(source);
   for (const key of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP']) safe[key] = parent;
   return safe;
 }
 
+function windowsBasename(value: string): string {
+  return basename(value.replaceAll('\\', '/')).toLowerCase();
+}
+
+function isNativePowerShellExecutable(value: string): boolean {
+  return windowsBasename(value) === 'pwsh.exe' && !/[\\/]WindowsApps[\\/]pwsh\.exe$/i.test(value);
+}
+
+function parsePowerShellVersion(output: string): [number, number, number] | undefined {
+  const match = output.match(/(?:^|\r?\n)\s*PowerShell\s+(\d+)\.(\d+)\.(\d+)(?:[^\d]|$)/i);
+  if (!match) return undefined;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+async function verifyNativePowerShell(
+  pwsh: string,
+  runner: CommandRunner,
+  parent: string,
+  cleanupEnv: Record<string, string | undefined>,
+  sourceEnv: Record<string, string | undefined>
+): Promise<void> {
+  if (!isNativePowerShellExecutable(pwsh)) {
+    throw new Error(`installed gate cleanup requires the native pwsh.exe runner, got ${diagnostic(pwsh, sourceEnv)}`);
+  }
+
+  let result;
+  try {
+    result = await runner(pwsh, ['--version'], { cwd: parent, env: cleanupEnv, platform: 'win32', timeoutMs: 30_000 });
+  } catch (error) {
+    const detail = diagnostic(errorMessage(error), sourceEnv);
+    throw new Error(`installed gate cleanup PowerShell identity probe failed${detail ? `: ${detail}` : ''}`, { cause: error });
+  }
+
+  const output = `${result.stdout}\n${result.stderr}`;
+  const version = parsePowerShellVersion(output);
+  if (result.exitCode !== 0 || !version || !atLeast(version, [7, 4, 0])) {
+    const detail = diagnostic(output.trim(), sourceEnv).trim();
+    throw new Error(`installed gate cleanup requires verified PowerShell 7.4+ identity${detail ? `: ${detail}` : ''}`);
+  }
+}
+
 function nativeCleanupFailure(root: string, result: { exitCode: number; stdout: string; stderr: string }, env: Record<string, string | undefined>): Error {
   const detail = diagnostic(`${result.stderr}\n${result.stdout}`.trim(), env).trim();
-  return new Error(`native PowerShell gate workspace cleanup failed for ${root} (exit code ${result.exitCode})${detail ? `: ${detail}` : ''}`);
+  return new Error(`native PowerShell gate workspace cleanup failed for ${diagnostic(root, env)} (exit code ${result.exitCode})${detail ? `: ${detail}` : ''}`);
 }
 
 export async function cleanupInstalledGateWorkspace(root: string, options: GateWorkspaceCleanupOptions = {}): Promise<void> {
@@ -100,24 +145,34 @@ export async function cleanupInstalledGateWorkspace(root: string, options: GateW
   if (platform !== 'win32') throw new Error('installed gate workspace cleanup is Windows-only');
 
   const sourceEnv = options.env ?? process.env;
-  const cleanupEnv = cleanupEnvironment(root, sourceEnv);
-  const parent = dirname(resolve(root));
-  if (parent === resolve(root)) throw new Error(`installed gate workspace root must have a safe parent: ${root}`);
+  const resolvedRoot = resolve(root);
+  const expectedTempRoot = resolve(options.tempRoot ?? tmpdir());
+  if (!isAbsolute(root) || root !== resolvedRoot) {
+    throw new Error(`installed gate workspace root must be an absolute canonical path: ${diagnostic(resolvedRoot, sourceEnv)}`);
+  }
+  const parent = dirname(resolvedRoot);
+  if (parent !== expectedTempRoot || !basename(resolvedRoot).startsWith(WINDOWS_GATE_WORKSPACE_PREFIX)) {
+    throw new Error(`installed gate workspace root is not an owned temporary workspace: ${diagnostic(resolvedRoot, sourceEnv)}`);
+  }
+
+  const cleanupEnv = cleanupEnvironment(resolvedRoot, sourceEnv);
   const pwsh = options.pwshExecutable ?? await resolveWindowsPwsh({ platform: 'win32', env: sourceEnv });
   if (!pwsh) throw new Error('native PowerShell 7 executable was not found for installed gate workspace cleanup');
-  if (!(await exists(WINDOWS_GATE_CLEANUP_HELPER))) throw new Error(`installed gate cleanup helper is missing: ${WINDOWS_GATE_CLEANUP_HELPER}`);
 
   const runner = options.commandRunner ?? runCommand;
+  await verifyNativePowerShell(pwsh, runner, parent, cleanupEnv, sourceEnv);
+  if (!(await exists(WINDOWS_GATE_CLEANUP_HELPER))) throw new Error(`installed gate cleanup helper is missing: ${WINDOWS_GATE_CLEANUP_HELPER}`);
+
   const existsPath = options.existsPath ?? gateRootExists;
   const wait = options.delay ?? delay;
-  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', WINDOWS_GATE_CLEANUP_HELPER, '-LiteralPath', root];
+  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', WINDOWS_GATE_CLEANUP_HELPER, '-LiteralPath', resolvedRoot];
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= WINDOWS_GATE_CLEANUP_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
       const result = await runner(pwsh, args, { cwd: parent, env: cleanupEnv, platform: 'win32', timeoutMs: 30_000 });
-      if (result.exitCode !== 0) throw nativeCleanupFailure(root, result, sourceEnv);
-      if (await existsPath(root)) throw new Error(`native PowerShell cleanup resolved but gate root ${root} still exists`);
+      if (result.exitCode !== 0) throw nativeCleanupFailure(resolvedRoot, result, sourceEnv);
+      if (await existsPath(resolvedRoot)) throw new Error(`native PowerShell cleanup resolved but gate root ${diagnostic(resolvedRoot, sourceEnv)} still exists`);
       return;
     } catch (error) {
       lastError = error;
@@ -130,7 +185,7 @@ export async function cleanupInstalledGateWorkspace(root: string, options: GateW
   }
 
   const detail = diagnostic(errorMessage(lastError), sourceEnv);
-  throw new Error(`temporary gate workspace cleanup failed for ${root}: ${detail}`, { cause: lastError });
+  throw new Error(`temporary gate workspace cleanup failed for ${diagnostic(resolvedRoot, sourceEnv)}: ${detail}`, { cause: lastError });
 }
 
 function optionalOption(argv: string[], name: string): string | undefined {
