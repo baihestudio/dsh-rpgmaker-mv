@@ -1097,8 +1097,8 @@ describe('real DSH Agent seam', () => {
           const hostCtx = new HarnessScope('host-isolation');
           hostBundle.apply(hostCtx);
           try {
-            // All four shipped preset compositions mount the Agent access row;
-            // they intentionally share the same canonical workspace server.
+            // The four MCP-capable shipped preset compositions mount the Agent access
+            // row; they intentionally share the same canonical workspace server.
             const shippedPresetIds = ['rpgmaker', 'playtest-debug', 'asset-workshop', 'build-release'] as const;
             const agentsA = shippedPresetIds.map((agentPreset, index) => createComposedAgent(agentBundle, `workspace-a-${index}`, {
               cwd: projectA,

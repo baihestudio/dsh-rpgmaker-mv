@@ -1160,7 +1160,7 @@ describe('asset-workshop preset composition', () => {
     return source;
   }
 
-  test('composes all four shipped Agents without remote image tools while retaining the local image row only for Asset Workshop', async () => {
+  test('composes all five shipped Agents without remote image tools while retaining the local image row only for Asset Workshop', async () => {
     const root = await temp('preset-remote-image-removal');
     try {
       const dshHome = join(root, 'dsh-home');
@@ -1536,7 +1536,7 @@ describe('release bundle', () => {
     }
   });
 
-  test('verifies one shared Host timeout row covers all four custom Agent presets', async () => {
+  test('verifies one shared Host timeout row covers all five custom Agent presets', async () => {
     const root = await temp('timeout-policy-composition');
     try {
       const dshHome = join(root, 'dsh-home');
@@ -1553,9 +1553,13 @@ describe('release bundle', () => {
       const composition = await readFile(verified.hostCompositionPath, 'utf8');
       expect((composition.match(/id: timeout-policy/g) ?? [])).toHaveLength(0);
       expect((composition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(0);
+      expect(composition).toContain('id: agent-default-model');
+      expect(composition).toContain('model: deepseek-v4-flash-vision-exp');
+      expect(composition).toContain('id: llm-deepseek');
+      expect(composition).toContain('inputModalities: [text, image]');
       const duplicateComposition = composition.replace(
-        '\n- patch:',
-        "\n- insert:\n    - id: timeout-policy\n      name: '@deepseek-ai/dsh-tool-call-timeout-policy'\n\n- patch:"
+        '\n- id: agent-presets',
+        "\n- insert:\n    - id: timeout-policy\n      name: '@deepseek-ai/dsh-tool-call-timeout-policy'\n\n- id: agent-presets"
       );
       expect(duplicateComposition).not.toBe(composition);
       await writeFile(verified.hostCompositionPath, duplicateComposition);

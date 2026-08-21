@@ -7,7 +7,7 @@ description: Deterministic, Windows-first RPG Maker MV image transformations wit
 
 ## Scope
 
-This Agent provides the seven deterministic local image tools below. It does not provide remote visual analysis, OCR, or AI image generation.
+This Agent provides the seven deterministic local image tools below. It may analyze images the user attaches in DSH Web, including visible text and visual details, but actual raster changes must use the deterministic tools; it does not provide AI image generation or original illustration.
 
 Use the harness-owned image workflow for every raster transformation. Do not
 write an ImageMagick command from memory, use `convert`, use a PATH-discovered

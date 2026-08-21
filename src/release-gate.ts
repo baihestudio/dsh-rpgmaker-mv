@@ -13,6 +13,7 @@ import { prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { prepareMcporterRuntime } from './mcport';
 import { prepareRpgmPackerRuntime } from './release';
 import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE, IMAGE_WORKSHOP_BUNDLE_RELATIVE } from './image-plugin';
+import { prepareDshWebPlugin } from './dsh-web';
 import { preparePnpmRuntime } from './profile';
 import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
@@ -299,6 +300,16 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           npmExecutable: context.npmExecutable,
           commandRunner: context.commandRunner
         });
+        await prepareDshWebPlugin({
+          platform,
+          env: context.env,
+          dshHome: context.paths.dshHome,
+          programRoot: context.paths.programRoot,
+          runtimeDir: context.paths.runtimeDir,
+          dshExecutable: context.env.DSH_EXECUTABLE,
+          npmExecutable: context.npmExecutable,
+          commandRunner: context.commandRunner
+        });
       });
       await prepareAgentDependencies({
         paths,
@@ -429,6 +440,11 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'src/workspace-mcp.ts',
     'src/profile.ts',
     'presets/rpgmaker/preset.yml',
+    'presets/game-design/preset.yml',
+    'presets/playtest-debug/preset.yml',
+    'presets/asset-workshop/preset.yml',
+    'presets/build-release/preset.yml',
+    'src/dsh-web.ts',
     `${IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/cordis.patch.yml`,

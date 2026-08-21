@@ -169,8 +169,12 @@ describe('RPG Maker MCP deployment', () => {
       expect(composition).toContain("'--project', !!js process.cwd()");
       expect(composition).not.toContain('.cmd');
       expect(composition).not.toContain('cmd.exe');
-      expect(composition).toContain('- patch:\n    id: agent-presets');
+      expect(composition).toContain('- id: agent-presets');
       expect(composition).toContain('default: rpgmaker');
+      expect(composition).toContain('id: agent-default-model');
+      expect(composition).toContain('model: deepseek-v4-flash-vision-exp');
+      expect(composition).toContain('id: llm-deepseek');
+      expect(composition).toContain('inputModalities: [text, image]');
       expect((composition.match(/id: mcp-rpgmaker-mv/g) ?? [])).toHaveLength(1);
       expect((composition.match(/id: timeout-policy/g) ?? [])).toHaveLength(0);
       expect((composition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(0);
@@ -179,11 +183,13 @@ describe('RPG Maker MCP deployment', () => {
       expect(presetComposition).not.toContain('dsh-mcp-client');
       expect(presetComposition).toContain('customSkillDirs');
       expect(await readFile(join(deployment.presetDir, 'skills', 'rpgmaker-mv', 'SKILL.md'), 'utf8')).toContain('validate_project');
+      expect(await Bun.file(join(deployment.presetDir, 'skills', 'rpgmaker-mv', 'mv-reference.md')).exists()).toBe(true);
       const specializedPresets = [
-        { id: 'rpgmaker', name: 'RPG Maker MV 开发助手', fact: '默认入口和轻量协调者' },
-        { id: 'playtest-debug', name: '游戏测试与调试助手', fact: '静态验证、进程启动、状态与日志证据' },
-        { id: 'asset-workshop', name: '游戏图片素材助手', fact: '确定性图片素材处理' },
-        { id: 'build-release', name: '游戏构建与发布助手', fact: '可复现 Windows 和 Web 构建' }
+        { id: 'rpgmaker', name: '🐒 程序猿', fact: '默认入口和轻量协调者', workspaceMcp: true },
+        { id: 'game-design', name: '🐶 策划汪', fact: 'Markdown 设计资料', workspaceMcp: false },
+        { id: 'playtest-debug', name: '🐱 调试喵', fact: '静态验证、Windows NW.js', workspaceMcp: true },
+        { id: 'asset-workshop', name: '🎨 P图仔', fact: '确定性图片素材处理', workspaceMcp: true },
+        { id: 'build-release', name: '🐭 打包鼠', fact: '可复现 Windows 和 Web 构建', workspaceMcp: true }
       ];
       for (const specialized of specializedPresets) {
         const installedDir = join(deployment.presetRoot, specialized.id);
@@ -196,15 +202,17 @@ describe('RPG Maker MCP deployment', () => {
         expect(installedComposition).not.toContain('generic Code persona');
         expect(installedComposition).not.toContain('dsh-mcp-client');
         expect(installedComposition).not.toContain('timeout-policy');
+        expect(installedComposition.includes('workspace-mcp-agent')).toBe(specialized.workspaceMcp);
         expect(installedComposition).not.toContain('@deepseek-ai/dsh-tool-call-timeout-policy');
       }
       expect(composition).not.toContain('DEEPSEEK_API_KEY');
       expect(deployment.presetRoot).toContain('.agent-presets');
+      expect(await readFile(join(deployment.presetRoot, 'game-design', 'skills', 'game-design', 'SKILL.md'), 'utf8')).toContain('Constraint-to-design loop');
       expect(JSON.parse(await readFile(join(deployment.presetDir, '.dsh-rpgmaker-owned.json'), 'utf8')).owner).toBe('dsh-rpgmaker-mv');
 
       const priorDuplicateComposition = composition.replace(
-        '\n\n- patch:',
-        "\n    - id: timeout-policy\n      name: '@deepseek-ai/dsh-tool-call-timeout-policy'\n\n- patch:"
+        '\n\n- id: agent-presets',
+        "\n- insert:\n    - id: timeout-policy\n      name: '@deepseek-ai/dsh-tool-call-timeout-policy'\n\n- id: agent-presets"
       );
       expect(priorDuplicateComposition).not.toBe(composition);
       await writeFile(deployment.compositionPath, priorDuplicateComposition);
@@ -241,6 +249,22 @@ describe('RPG Maker MCP deployment', () => {
       expect(debugComposition).not.toContain('timeout-policy');
       expect(debugComposition).not.toContain('@deepseek-ai/dsh-tool-call-timeout-policy');
       expect(JSON.parse(await readFile(join(debug.presetDir, '.dsh-rpgmaker-owned.json'), 'utf8')).presetId).toBe('playtest-debug');
+      const planner = await prepareRpgMakerDeployment({
+        platform: 'win32',
+        dshHome,
+        runtimeDir: runtime,
+        projectPath: project,
+        sourceRoot,
+        agentPreset: 'game-design',
+        commandRunner,
+        jsExecutable: join(root, 'bun.exe'),
+        schemaProbe
+      });
+      expect(planner.agentPreset).toBe('game-design');
+      expect(planner.presetDir).toBe(join(dshHome, '.agent-presets', 'game-design'));
+      const plannerComposition = await readFile(planner.compositionPath, 'utf8');
+      expect(plannerComposition).toContain('default: game-design');
+      expect(JSON.parse(await readFile(join(planner.presetDir, '.dsh-rpgmaker-owned.json'), 'utf8')).presetId).toBe('game-design');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

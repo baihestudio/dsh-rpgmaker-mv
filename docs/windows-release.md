@@ -12,9 +12,24 @@
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
    - 7-Zip (`7zip.7zip`; extracts the pinned ImageMagick `.7z` archive)
-4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, extracts the pinned portable ImageMagick with the verified 7-Zip, stages the pinned DSH `0.1.0-rc.8` runtime with Bun (npm integrity `sha512-VQU5NlomrKLRgcXuOf+sxWFvqxPA8q9vMhrKPlPPXiOJEhGlGlAdiyxZvZxkCVI+v0zbhe21cY3/luLyxpSzzA==`), installs the exact RPG Maker MCP, build packager, and app-owned image tool plugin (scoped to 游戏图片素材助手), then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, four presets, and neutral composition as needed.
+4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, extracts the pinned portable ImageMagick with the verified 7-Zip, stages the pinned DSH `0.1.0-rc.8` runtime with Bun (npm integrity `sha512-VQU5NlomrKLRgcXuOf+sxWFvqxPA8q9vMhrKPlPPXiOJEhGlGlAdiyxZvZxkCVI+v0zbhe21cY3/luLyxpSzzA==`), installs the exact RPG Maker MCP, build packager, app-owned image tool plugin (scoped to 🎨 P图仔), and `@tta-lab/dsh-web@3.0.0-beta.1` through DSH's normal `web` profile plugin command, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, five presets, and neutral composition as needed.
+
+The Web package belongs to DSH-managed profile state. If its plugin command fails after initializing that state, the installer reports failure and restores its program tree/shortcut; rerun `Install.cmd` to complete the profile setup. Profile-state rollback is intentionally not part of the installer.
 
 No Git clone, npm install, or manual package command is needed for this path. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported repair path; a previous runtime is retained by the staged runtime swap for recovery. If post-swap bootstrap, metadata, or shortcut creation fails, the prior program tree is restored and the failed new tree is retained as a named diagnostic/recovery directory.
+
+## Local WSL update helper
+
+For a routine update of the existing local Windows installation from a WSL checkout, first build a fresh ZIP, then invoke the development helper through the local direct PowerShell wrapper:
+
+```bash
+bun run release:zip -- /mnt/c/Users/<windows-user>/AppData/Local/Temp/DSH-RPGMaker-MV-current.zip
+nuc-powershell dev/update-local-windows.ps1 \
+  -ReleaseZip /mnt/c/Users/<windows-user>/AppData/Local/Temp/DSH-RPGMaker-MV-current.zip \
+  -Yes -StopRunningDsh
+```
+
+The helper is development-only. `-StopRunningDsh` explicitly stops DSH processes that hold the installed program tree before the atomic update; without it, the helper refuses to interrupt an active session. It extracts the ZIP into a unique local Windows Temp directory, invokes its normal `install.ps1`, and removes the extracted copy after a successful update. Pass `-KeepExtractedRelease` only when retaining diagnostics is useful.
 
 ## Installed locations
 
@@ -38,7 +53,7 @@ project list, writes no app-owned project-selection state, and rejects
 installation copies it to the stable app-owned program tree. Before spawning
 DSH, launch verifies or repairs the exact-pinned app-owned pnpm 10.15.1,
 MCPorter 0.12.3, and Xerolo RPG Maker MCP 0.1.0 runtimes, links the local
-workspace bundle into the `web` profile, installs the four presets, and verifies
+workspace bundle into the `web` profile, installs the five presets, and verifies
 the effective composition from the neutral landing directory. The bundle's
 profile patch inserts only the Host service entry point; each shipped preset
 composition mounts the `/agent` entry point in Agent scope. The generated
@@ -46,15 +61,23 @@ RPG Maker Host patch selects the Agent preset but does not insert a timeout
 policy: pinned DSH rc.8's `web` profile owns the official Host row
 `id: timeout-policy` / `@deepseek-ai/dsh-tool-call-timeout-policy`. Launch
 preparation and Doctor validate the effective `web --dump-config` composition
-and require exactly one official row across all four custom presets; the
-preset compositions remain policy-free. Re-running preparation rewrites the
+and require exactly one official row across all five custom presets; the
+preset compositions remain policy-free. The Web package's patch selects
+Organon for stock PTC/Code batched search, registers `web_fetch`, `web_docs`,
+and `web_sgraph`, and keeps DSH's root URL-only `tool-web` disabled. Re-running preparation rewrites the
 app-owned patch, repairing older generated patches that inserted a duplicate.
 The access layer shares Host state through the root-context WeakMap and does
 not publish a service into the ROOT realm or filter preset ids itself. The
 profile link is made during this pre-launch preparation, never while an install
-tree swap is in progress. Omit `--preset` to use `rpgmaker`, or pass `--preset
-playtest-debug`, `asset-workshop`, or `build-release` as the default Agent
-preset.
+tree swap is in progress. Omit `--preset` to use `rpgmaker`, or pass `--preset game-design`,
+`playtest-debug`, `asset-workshop`, or `build-release` as the default Agent
+preset. The visible names are `🐒 程序猿`, `🐶 策划汪`, `🐱 调试喵`, `🎨 P图仔`,
+and `🐭 打包鼠`. New Agents across all five presets default to
+`deepseek-v4-flash-vision-exp`; the normal DSH Web model selection remains a
+user override, and existing sessions retain their logged model choice.
+User-attached PNG, JPEG, WebP, and GIF images may be read as image input only;
+no image generation, remote URL ingestion, or automated gameplay capture is
+added.
 
 Choose a game folder in DSH Web. The workspace must contain `Game.rpgproject`,
 `data`, and `js` directly beneath its root; parents and workspace-authored
@@ -159,14 +182,15 @@ Purge is not automatic and still does not delete projects outside the app-data r
 
 ## Presets and truthful limits
 
-Four selectable presets use one shared DSH host/MCP composition and stable Agent-scoped `rpgmaker_*` tools:
+Five selectable presets share the DSH Web profile; four use the shared MCP composition and stable Agent-scoped `rpgmaker_*` tools:
 
 - `rpgmaker` — default database, event, dialogue, map metadata, and plugin work;
+- `game-design` — Code-derived Markdown design workspace, without the RPG Maker MCP Agent row;
 - `playtest-debug` — MCP-owned static validation and NW.js launch/status/log/stop evidence;
 - `asset-workshop` — deterministic ImageMagick and atlas workflows;
 - `build-release` — pinned Windows/Web packaging and smoke checks.
 
-Only the `asset-workshop` preset exposes the seven deterministic local image tools. The other three presets do not mount image tools. No remote vision, OCR, or AI image-generation provider is installed or configured.
+Only the `asset-workshop` preset exposes the seven deterministic local image tools. The other four presets do not mount image tools. No remote vision, OCR, or AI image-generation provider is installed or configured.
 
 The Debug preset can truthfully report process launch, logs, MCP stop, and post-stop status. A launched process is not a gameplay or visual assertion. Actual RPG Maker MV/NW.js Windows launch, installed MV discovery, and behavior remain Windows hardware-gate observations. Automated `phase6:real` uses only a disposable fixture; the explicit opt-in `bun run phase6:windows-manual -- --rpgmaker-installation <path>` gate is required for an installed MV path. macOS substitutes are reported as non-blocking and never presented as Windows evidence. Photoshop, Aseprite, and TexturePacker are optional user-owned enhancements.
 
