@@ -169,8 +169,12 @@ describe('RPG Maker MCP deployment', () => {
       expect(composition).toContain("'--project', !!js process.cwd()");
       expect(composition).not.toContain('.cmd');
       expect(composition).not.toContain('cmd.exe');
-      expect(composition).toContain('- patch:\n    id: agent-presets');
+      expect(composition).toContain('- id: agent-presets');
       expect(composition).toContain('default: rpgmaker');
+      expect(composition).toContain('id: agent-default-model');
+      expect(composition).toContain('model: deepseek-v4-flash-vision-exp');
+      expect(composition).toContain('id: llm-deepseek');
+      expect(composition).toContain('inputModalities: [text, image]');
       expect((composition.match(/id: mcp-rpgmaker-mv/g) ?? [])).toHaveLength(1);
       expect((composition.match(/id: timeout-policy/g) ?? [])).toHaveLength(0);
       expect((composition.match(/@deepseek-ai\/dsh-tool-call-timeout-policy/g) ?? [])).toHaveLength(0);
@@ -207,8 +211,8 @@ describe('RPG Maker MCP deployment', () => {
       expect(JSON.parse(await readFile(join(deployment.presetDir, '.dsh-rpgmaker-owned.json'), 'utf8')).owner).toBe('dsh-rpgmaker-mv');
 
       const priorDuplicateComposition = composition.replace(
-        '\n\n- patch:',
-        "\n    - id: timeout-policy\n      name: '@deepseek-ai/dsh-tool-call-timeout-policy'\n\n- patch:"
+        '\n\n- id: agent-presets',
+        "\n- insert:\n    - id: timeout-policy\n      name: '@deepseek-ai/dsh-tool-call-timeout-policy'\n\n- id: agent-presets"
       );
       expect(priorDuplicateComposition).not.toBe(composition);
       await writeFile(deployment.compositionPath, priorDuplicateComposition);

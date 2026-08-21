@@ -7,7 +7,7 @@ description: Reproducible RPG Maker MV Windows and Browser packaging with artifa
 
 ## Scope
 
-This Agent inspects release artifacts through deterministic structure and smoke checks. Remote visual analysis, OCR, and AI image generation are not provided.
+This Agent inspects release artifacts through deterministic structure and smoke checks. It may analyze images the user attaches in DSH Web, including visible text and visual details, but that evidence does not replace deterministic artifact checks or smoke evidence; it does not provide AI image generation.
 
 The current DSH Web workspace and its existing `rpgmaker_*` tools are the
 source of truth. Do not run app-owned harness source or runtimes through shell

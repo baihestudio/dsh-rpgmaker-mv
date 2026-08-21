@@ -58,7 +58,12 @@ prepares and verifies the pinned DSH, pnpm 10.15.1, MCPorter 0.12.3, Xerolo
 0.1.0, the five presets, the effective composition, and the app-owned
 `dsh-workspace-mcp` profile link before starting official DSH. DSH starts in
 an app-owned neutral landing directory; choose and switch RPG Maker folders in
-DSH Web. `rpgmaker` is the default when `--preset` is omitted.
+DSH Web. `rpgmaker` is the default when `--preset` is omitted. New Agents across
+all five shipped presets default to `deepseek-v4-flash-vision-exp`; the normal
+DSH Web model selection remains a user override, and existing sessions retain
+their logged model choice. User-attached PNG, JPEG, WebP, and GIF images may be
+read as image input; this does not add image generation, remote URL ingestion,
+or automated gameplay capture.
 
 The workspace bundle validates `Game.rpgproject`, `data`, and `js` directly
 under the DSH Web workspace. Each Agent receives stable names such as

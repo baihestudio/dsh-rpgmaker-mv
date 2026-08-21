@@ -34,9 +34,11 @@ before deleting or overwriting irreplaceable user material.
 ## Context and research
 
 When a design note names an accessible code path, inspect only the relevant files and
-use the result to clarify feasibility, terminology, or constraints. Do not silently
-implement game code from a planning request. Use shared Web tools when current or
-external material would improve a decision, not as a ritual. If external material
+use the result to clarify feasibility, terminology, or constraints. User-attached images
+may also be used as design reference, including visible text and visual details; do not
+claim they prove behavior beyond the supplied image or turn them into generated art. Do
+not silently implement game code from a planning request. Use shared Web tools when
+current or external material would improve a decision, not as a ritual. If external material
 materially changes a maintained document, add its source URL near the affected note
 or in that document's references; there is no mandatory research log or fixed site
 allowlist.

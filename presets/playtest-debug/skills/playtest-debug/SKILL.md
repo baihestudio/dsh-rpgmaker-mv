@@ -7,7 +7,7 @@ description: Static validation plus NW.js-or-browser RPG Maker MV Playtest diagn
 
 ## Scope
 
-This Agent reports process, log, and workspace evidence through the stable workspace tools. Remote visual analysis, OCR, and AI image generation are not provided.
+This Agent reports process, log, and workspace evidence through the stable workspace tools. It may analyze images the user attaches in DSH Web, including visible text and visual details, but a supplied image proves only what it depicts and does not replace process/log evidence or automated gameplay observation; it does not provide AI image generation.
 
 Use the existing Agent-scoped stable `rpgmaker_*` tools. Do not start another
 MCP server, register a workflow, adopt a PID, recursively scan disks, or invoke

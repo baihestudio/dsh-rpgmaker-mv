@@ -72,7 +72,12 @@ profile link is made during this pre-launch preparation, never while an install
 tree swap is in progress. Omit `--preset` to use `rpgmaker`, or pass `--preset game-design`,
 `playtest-debug`, `asset-workshop`, or `build-release` as the default Agent
 preset. The visible names are `🐒 程序猿`, `🐶 策划汪`, `🐱 调试喵`, `🎨 P图仔`,
-and `🐭 打包鼠`.
+and `🐭 打包鼠`. New Agents across all five presets default to
+`deepseek-v4-flash-vision-exp`; the normal DSH Web model selection remains a
+user override, and existing sessions retain their logged model choice.
+User-attached PNG, JPEG, WebP, and GIF images may be read as image input only;
+no image generation, remote URL ingestion, or automated gameplay capture is
+added.
 
 Choose a game folder in DSH Web. The workspace must contain `Game.rpgproject`,
 `data`, and `js` directly beneath its root; parents and workspace-authored
