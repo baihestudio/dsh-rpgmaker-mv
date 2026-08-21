@@ -11,7 +11,7 @@ Core TypeScript lives in `src/`. Windows entrypoints are the root PowerShell and
 - `bun run check`: run TypeScript checking without emitting files.
 - `bun run release:zip -- <path>`: build a Windows Release ZIP without overwriting an existing archive.
 - `bun run doctor`: inspect the configured local installation.
-- `nuc-powershell <script.ps1>`: on the configured host, run native Windows automation through `ssh nuc` with the real PowerShell 7 executable; prefer it to inline SSH quoting.
+- `nuc-powershell <script.ps1>`: from this WSL host, run native local Windows automation directly with PowerShell 7; prefer it to inline PowerShell or SSH quoting.
 
 ## Coding Style & Naming Conventions
 

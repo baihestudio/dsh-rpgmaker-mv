@@ -55,7 +55,7 @@ recent projects, writes app-owned project-selection state, or accepts
 `launch --project`. The Release ZIP carries the prebuilt
 `bundle/dsh-workspace-mcp` package and generated Xerolo manifest. Launch
 prepares and verifies the pinned DSH, pnpm 10.15.1, MCPorter 0.12.3, Xerolo
-0.1.0, the four presets, the effective composition, and the app-owned
+0.1.0, the five presets, the effective composition, and the app-owned
 `dsh-workspace-mcp` profile link before starting official DSH. DSH starts in
 an app-owned neutral landing directory; choose and switch RPG Maker folders in
 DSH Web. `rpgmaker` is the default when `--preset` is omitted.
@@ -96,17 +96,26 @@ Tests use disposable runtime, DSH home, credential, and MV project directories. 
 ## Phase 2: RPG Maker Agent and MCP editing loop
 
 `launch.ps1` prepares the exact-pinned app-owned MCPorter and Xerolo runtimes,
-the local `dsh-workspace-mcp` Host bundle, all four Chinese-named specialist
-presets (`rpgmaker`, `playtest-debug`, `asset-workshop`, and `build-release`),
-and a project-neutral `web --dump-config` composition before launch. The
-fresh-state default is RPG Maker MV 开发助手; `--preset` selects the default
-Agent preset without selecting a project. The bundle's profile layer owns only
-the Host service; each of the four shipped preset compositions mounts the
-Agent access row in its own scope. The access layer supplies stable
+the local `dsh-workspace-mcp` Host bundle, five Chinese-named specialist
+presets (`rpgmaker`, `game-design`, `playtest-debug`, `asset-workshop`, and
+`build-release`), and a project-neutral `web --dump-config` composition before
+launch. The picker displays `🐒 程序猿`, `🐶 策划汪`, `🐱 调试喵`, `🎨 P图仔`, and
+`🐭 打包鼠` in that order; `rpgmaker` remains the default. `game-design` is a
+Code-derived document-workspace preset without the RPG Maker Agent row; the
+other four presets retain their scoped MCP/image boundaries. The access layer supplies stable
 `rpgmaker_<raw Xerolo name>` tools synchronously and validates the live
 workspace connection before the first request. It contains no preset filter:
 presets that do not mount the row receive no RPG Maker tools. Invalid
 workspaces fail before a server starts.
+
+The RPG Maker preset treats the MCP/agent as the sole writer. Its mounted
+`mv-reference.md` is a compact, locally authored map of MV core/runtime layers,
+`DataManager`, `$data*` records including `$dataSkills`, `Game_Interpreter`,
+manager/game-object/UI layers, and official MV Help, Plugin Specifications, and
+Output Formats links. Plugin work verifies the actual project's `js/rpg_*.js`
+API and data first, uses ES5 and MV-supported `fs` rather than `node:fs`, and
+makes only the smallest necessary change without speculative compatibility
+layers, broad refactors, extra interfaces, or reviewer/second-model workflows.
 
 The RPG Maker preset treats the MCP/agent as the sole writer. Database,
 event/dialogue, map-metadata, plugin, and restore mutations use stable
@@ -121,17 +130,26 @@ installed runtime and is not edited. Neither app-owned Host patch inserts the
 timeout policy: the pinned DSH `web` profile owns the official
 `id: timeout-policy` / `@deepseek-ai/dsh-tool-call-timeout-policy` row at Host
 scope. Launch preparation and Doctor validate `web --dump-config` and require
-exactly one effective official row across all four custom Agent presets; the
+exactly one effective official row across all five custom Agent presets; the
 preset compositions never contain it. Re-running preparation rewrites the
 app-owned patch, repairing older generated patches that inserted a duplicate.
 
-## Phase 3: 游戏测试与调试助手
+## Phase 3: 🐶 策划汪
+
+Select `--preset game-design` for a Code-derived assistant that maintains Markdown
+design material in the selected document workspace. It follows workspace
+`AGENTS.md` guidance, may inspect reachable paths named by the documents, and uses
+shared Web research when useful. It keeps an adaptive index, decisions, open
+questions, and material references without imposing a fixed archive tree or deleting
+existing documents automatically.
+
+## Phase 4: 🐱 调试喵
 
 Select `--preset playtest-debug` when creating a session. The Debug skill directly sequences the stable `rpgmaker_*` tools: static validation, idle status preflight, bounded Steam App ID `363890` discovery, NW.js launch when `nwjs-win\Game.exe` exists, browser-mode fallback otherwise, bounded status/log observation, MCP stop, and post-stop status. It never recursively scans disks, refuses an already-running Playtest, never adopts a PID or invokes OS process controls, and reports cleanup as unverified when MCP status cannot confirm it. Browser fallback returns a playable URL but cannot capture browser DevTools console output through `rpgmaker_playtest_log`.
 
 Reports distinguish static validation, process launch, crash/log evidence, cleanup confirmation, and behavior/visual gameplay verification. A launched process and clean log are not behavior verification. Harness-owned process-tree cleanup belongs to the separate automated-playtest capability; screenshot/input/gameplay automation is out of scope here.
 
-## Phase 4: 游戏图片素材助手
+## Phase 5: 🎨 P图仔
 
 Select the deterministic image preset when creating a DSH Web Agent:
 
@@ -140,7 +158,7 @@ Select the deterministic image preset when creating a DSH Web Agent:
 # For an explicit image operation override, also pass --image-magick-sha256 <64-hex-digest>
 ```
 
-`Install.cmd` provisions the complete app-owned image toolchain for every agent: ImageMagick `7.1.2-29`, `free-tex-packer-core@0.3.9`, and `oxipng@10.2.0`. Downloads are staged, checked against the pinned archive and executable hashes, verified by version, and installed atomically. Re-running the installer or launcher verifies and reuses a valid installation instead of downloading it again. Every launched session receives the resolved image workflow environment, so selecting 游戏图片素材助手 in the Web UI does not depend on which preset originally started DSH. Explicit overrides must still supply their expected SHA-256 and PATH aliases or `convert` are never accepted. `oxipng` is installed for readiness but is invoked only by an explicit `optimize-png` operation with a distinct output path.
+`Install.cmd` provisions the complete app-owned image toolchain for every agent: ImageMagick `7.1.2-29`, `free-tex-packer-core@0.3.9`, and `oxipng@10.2.0`. Downloads are staged, checked against the pinned archive and executable hashes, verified by version, and installed atomically. Re-running the installer or launcher verifies and reuses a valid installation instead of downloading it again. Every launched session receives the resolved image workflow environment, so selecting 🎨 P图仔 in the Web UI does not depend on which preset originally started DSH. Explicit overrides must still supply their expected SHA-256 and PATH aliases or `convert` are never accepted. `oxipng` is installed for readiness but is invoked only by an explicit `optimize-png` operation with a distinct output path.
 
 Python 3.13 remains a verified WinGet-managed general Agent utility and is checked independently by Doctor. Image work is local and deterministic: the Asset Workshop Agent exposes seven structured tools backed by the pinned ImageMagick, free-tex-packer-core, and oxipng toolchain. No remote vision, OCR, or AI image-generation provider is installed or configured.
 
@@ -164,17 +182,17 @@ bun src/cli.ts image sheet-slice --input sheet.png --output-dir frames --cell-wi
 bun src/cli.ts image atlas-pack --inputs-json '["a.png","b.png"]' --output atlas-output --max-size 2048
 ```
 
-## Phase 5: DSH runtime foundation
+## Phase 6: DSH runtime foundation
 
 All launcher, preset, Windows shell, MCP, image, and Playtest contracts are mounted and checked against the official `@deepseek-ai/dsh@0.1.0-rc.8` runtime. The staged runtime verifies Bun installation/trust, the exact top-level package version and npm integrity, the DSH executable, and `koffi` before an atomic swap. Post-swap verification restores the prior runtime on failure and preserves the unverified tree for inspection; no live runtime is mutated in place.
 
-The Xerolo MCP lock check is deliberately limited to its stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata and unrelated Bun lock internals are not pinned. The production editing contract is the mounted RPG Maker skill plus stable `rpgmaker_*` tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, schema rejection, and the `rpgmaker`, `playtest-debug`, and asset-only preset boundaries.
+The Xerolo MCP lock check is deliberately limited to its stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata and unrelated Bun lock internals are not pinned. The production editing contract is the mounted RPG Maker skill plus stable `rpgmaker_*` tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, schema rejection, and the `rpgmaker`, `game-design`, `playtest-debug`, and asset-only preset boundaries.
 
 ## Editing model
 
 In the first release, the agent is the sole writer while an RPG Maker MV workspace is under agent control; do not have multiple Agents write to it simultaneously. The editor may remain open only for read-only reference: users must not save from it, and must reopen the project before inspecting agent changes.
 
-## Phase 6: 游戏构建与发布助手
+## Phase 7: 🐭 打包鼠
 
 Select `--preset build-release` for a packaging session, or run the explicitly
 project-scoped harness workflow directly after the current DSH Web workspace has
@@ -215,7 +233,7 @@ bun run phase6:real
 bun run phase6:windows-manual -- --rpgmaker-installation 'C:\Program Files\RPG Maker MV'
 ```
 
-## Phase 7: Windows release gate
+## Phase 8: Windows release gate
 
 Build and inspect a real Release ZIP without overwriting an existing archive:
 

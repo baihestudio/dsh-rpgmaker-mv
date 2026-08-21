@@ -13,6 +13,7 @@ import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, WINDOWS_GATE
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
 import { PNPM_VERSION } from '../src/profile';
+import { DSH_WEB_PACKAGE, DSH_WEB_VERSION } from '../src/dsh-web';
 import { findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
@@ -235,6 +236,11 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
     }
     if (args[0] === 'pm') return { exitCode: 0, stdout: '', stderr: '' };
     if (args[0] === 'plugin') {
+      const packageSpec = args.at(-1);
+      if (packageSpec === `${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`) {
+        await writeProfilePlugin(context.dshHome, DSH_WEB_PACKAGE, DSH_WEB_VERSION, '');
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
       const local = args.find((value) => value.startsWith('file:'))?.slice('file:'.length);
       if (!local) throw new Error(`unexpected plugin fixture args: ${args.join(' ')}`);
       const localManifest = JSON.parse(await readFile(join(local, 'package.json'), 'utf8')) as { name?: string; version?: string };
@@ -1145,6 +1151,7 @@ describe('Windows release gate foundations', () => {
       expect(await Bun.file(join(state, 'cache', 'dsh-vision-toolkit')).exists()).toBe(false);
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
       expect(calls.some((call) => call.args.includes(`${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`))).toBe(true);
+      expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'pnpm', 'node_modules', 'pnpm', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'node_modules', MCPORTER_PACKAGE, 'dist', 'index.js')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'node_modules', ...RPGMAKER_MCP_PACKAGE.split('/'), 'dist', 'index.js')).exists()).toBe(true);

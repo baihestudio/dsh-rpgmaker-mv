@@ -420,7 +420,7 @@ describe('build-release preset mount', () => {
       });
       expect(deployment.agentPreset).toBe('build-release');
       expect(dumpCalls).toBe(1);
-      expect(await readFile(join(deployment.presetDir, 'preset.yml'), 'utf8')).toContain('游戏构建与发布助手');
+      expect(await readFile(join(deployment.presetDir, 'preset.yml'), 'utf8')).toContain('🐭 打包鼠');
       const composition = await readFile(deployment.compositionPath, 'utf8');
       expect(composition).toContain('default: build-release');
       expect((composition.match(/id: mcp-rpgmaker-mv/g) ?? [])).toHaveLength(1);
