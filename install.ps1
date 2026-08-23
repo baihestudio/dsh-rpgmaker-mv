@@ -44,10 +44,16 @@ if (-not $bun) {
   if (-not $winget) { throw 'WinGet was not found. Install Microsoft App Installer, then run Install.cmd again.' }
   Write-Host 'Installing Bun so the harness CLI can run...'
   & $winget.Source install --id Oven-sh.Bun --exact --accept-source-agreements --accept-package-agreements
-  if ($LASTEXITCODE -ne 0) { throw "WinGet could not install Bun (exit code $LASTEXITCODE)." }
+  $wingetCode = $LASTEXITCODE
+  # WinGet exits nonzero for benign outcomes such as "already installed, no
+  # newer version"; the authoritative check is Bun resolution after the PATH
+  # refresh below.
   Refresh-Path
   $bun = Get-Command bun.exe -ErrorAction SilentlyContinue
-  if (-not $bun) { throw 'Bun was not found after prerequisite installation. Open a new terminal and retry Install.cmd.' }
+  if (-not $bun) {
+    $detail = if ($wingetCode -ne 0) { "WinGet could not install Bun (exit code $wingetCode)." } else { 'Bun was not found after prerequisite installation. Open a new terminal and retry Install.cmd.' }
+    throw $detail
+  }
 }
 
 $cli = Join-Path $root 'src\cli.ts'
