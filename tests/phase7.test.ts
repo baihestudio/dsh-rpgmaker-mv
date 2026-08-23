@@ -17,7 +17,6 @@ import { DSH_WEB_PACKAGE, DSH_WEB_VERSION } from '../src/dsh-web';
 import { findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
-import { RPGMPACKER_NPM_INTEGRITY, RPGMPACKER_PACKAGE, RPGMPACKER_SCRIPT, RPGMPACKER_VERSION } from '../src/release';
 import { JS_RUNNER_ENV, XEROLO_RUNTIME_ENV, verifyWorkspaceMcpBundle, WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
 import { installWindowsPrerequisites, PrerequisiteConsentError, verifyWindowsPrerequisites } from '../src/prerequisites';
 import { addFixedWebBinding, launchProject } from '../src/launcher';
@@ -220,10 +219,6 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
     }
     if (args[0] === 'add' && packageSpec === `${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`) {
       await writePinnedPackageRuntime(cwd!, RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==', { version: RPGMAKER_MCP_VERSION, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } });
-      return { exitCode: 0, stdout: '', stderr: '' };
-    }
-    if (args[0] === 'add' && packageSpec === `${RPGMPACKER_PACKAGE}@${RPGMPACKER_VERSION}`) {
-      await writePinnedPackageRuntime(cwd!, RPGMPACKER_PACKAGE, RPGMPACKER_VERSION, RPGMPACKER_NPM_INTEGRITY, { version: RPGMPACKER_VERSION, bin: { rpgmpacket: RPGMPACKER_SCRIPT } }, { bin: { rpgmpacket: RPGMPACKER_SCRIPT } });
       return { exitCode: 0, stdout: '', stderr: '' };
     }
     if (args[0] === 'add' && packageSpec === `free-tex-packer-core@${FREE_TEX_PACKER_VERSION}`) {
@@ -913,8 +908,7 @@ describe('Windows release gate foundations', () => {
         platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, commandRunner: prerequisiteRunner(),
         verifyAgentDependencies: async () => ({
           mcp: { id: 'rpgmaker-mcp', label: 'RPG Maker MV MCP runtime', ok: true, detail: 'fixture MCP verified' },
-          image: { id: 'image-toolchain', label: 'Image asset toolchain', ok: true, detail: 'fixture image tools verified' },
-          packager: { id: 'rpgmpacker', label: 'RPG Maker build packager', ok: true, detail: 'fixture packager verified' }
+          image: { id: 'image-toolchain', label: 'Image asset toolchain', ok: true, detail: 'fixture image tools verified' }
         }),
         verifyImageWorkshopPlugin: async () => ({
           valid: true,

@@ -2,7 +2,6 @@ import { bootstrapRuntime, BootstrapError } from './bootstrap';
 import { runDoctor, renderDoctorReport } from './doctor';
 import { launchProject, SINGLE_WRITER_NOTICE, LauncherError } from './launcher';
 import { launchRpgmakerProject } from './rpgmaker';
-import { buildRelease, releaseSummary, type ReleaseTarget } from './release';
 import {
   createImageWorkshop,
   prepareImageToolchain,
@@ -108,12 +107,9 @@ function helpText(): string {
     '  uninstall   Remove program files/cache (use --purge for state/credentials)',
     '  release-zip Build and inspect a distributable Release ZIP',
     '  launch      Start project-neutral DSH Web; choose workspaces in its UI',
-    '  build-release  Package and smoke-test Windows and Browser artifacts',
-    '  image       Run a deterministic Asset Workshop image operation',
+      '  image       Run a deterministic Asset Workshop image operation',
     '',
     'Options:',
-    '  --project <path>          Explicit project for build-release only; launch is project-neutral',
-    '  --output <path>           Fresh release output directory (build-release)',
     '  --release-root <path>     Extracted Release ZIP root (install)',
     '  --zip <path>              Release ZIP path (release-zip)',
     '  --program-root <path>     Per-user installed program root override',
@@ -122,7 +118,7 @@ function helpText(): string {
     '  --dsh-home <path>         Override DSH_HOME for this invocation',
     '  --runtime-dir <path>      Override the app-owned runtime tree',
     '  --dsh-executable <path>   Use an explicit DSH executable',
-    '  --preset <id>              Agent preset (rpgmaker, game-design, playtest-debug, asset-workshop, or build-release)',
+    '  --preset <id>              Agent preset (rpgmaker, game-design, playtest-debug, or asset-workshop)',
     '  --image-magick <path>     Use the resolved pinned ImageMagick executable (requires SHA-256)',
     '  --image-magick-sha256 <hex> Expected SHA-256 for an explicit ImageMagick override',
     '  --image-magick-url <url>  Exact pinned ImageMagick release URL',
@@ -133,12 +129,9 @@ function helpText(): string {
     '  --oxipng-sha256 <hex>     Expected SHA-256 for an explicit oxipng override',
     '  --oxipng-url <url>        Exact pinned oxipng release URL',
     '  --bun-executable <path>   Use an explicit Bun executable',
-    '  --js-executable <path>    Use an explicit Bun or Node executable for packaging/MCP',
-    '  --release-runtime-dir <path>  Use the app-owned rpgmpacker runtime',
-    '  --rpgmaker-installation <path>  Explicit RPG Maker MV installation folder',
+    '  --js-executable <path>    Use an explicit Bun or Node executable for MCP',
     '  --mcp-runtime-dir <path>  Use the app-owned RPG Maker MCP runtime',
     '  --source-root <path>      Preset source root override',
-    '  --platforms <list>        Comma-separated Windows and/or Browser targets',
     '  --pwsh-executable <path>  Use an explicit PowerShell executable',
     '  --node-executable <path>  Use an explicit Node.js executable',
     '  --npm-executable <path>   Use an explicit npm executable',
@@ -228,14 +221,6 @@ function validateCliFixedBinding(argv: string[]): void {
     const expected = argument === '--host' ? WINDOWS_DSH_HOST : String(WINDOWS_DSH_PORT);
     if (value !== expected) throw new Error(`The DSH web binding is fixed at ${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}; caller-supplied ${argument}=${value} is not allowed.`);
   }
-}
-
-function releaseTargets(parsed: ParsedArgs): ReleaseTarget[] | undefined {
-  const encoded = option(parsed.values, 'platforms');
-  if (encoded === undefined) return undefined;
-  const values = encoded.split(',').map((value) => value.trim()).filter(Boolean);
-  if (values.some((value) => value !== 'Windows' && value !== 'Browser')) throw new Error('--platforms must contain only Windows and Browser.');
-  return values as ReleaseTarget[];
 }
 
 function inputList(parsed: ParsedArgs): string[] {
@@ -440,29 +425,6 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
       const inspection = await inspectReleaseZip({ zipPath: archive, platform: dependencies.platform, env: dependencies.env, commandRunner: dependencies.commandRunner });
       if (!inspection.valid) throw new Error(`Release ZIP is missing required entries: ${inspection.missing.join(', ')}`);
       io.stdout.write(`Release ZIP: ${archive}\n${inspection.entries.length} entries inspected.\n`);
-      return 0;
-    }
-
-    if (parsed.command === 'build-release') {
-      const result = await buildRelease({
-        platform: dependencies.platform,
-        env: dependencies.env,
-        dshHome: option(parsed.values, 'dsh-home'),
-        runtimeDir: option(parsed.values, 'runtime-dir'),
-        projectPath: requiredOption(parsed, 'project'),
-        outputRoot: requiredOption(parsed, 'output'),
-        targets: releaseTargets(parsed),
-        rpgmakerInstallationPath: option(parsed.values, 'rpgmaker-installation'),
-        releaseRuntimeDir: option(parsed.values, 'release-runtime-dir'),
-        bunExecutable: option(parsed.values, 'bun-executable'),
-        jsExecutable: option(parsed.values, 'js-executable'),
-        dshExecutable: option(parsed.values, 'dsh-executable'),
-        mcpRuntimeDir: option(parsed.values, 'mcp-runtime-dir'),
-        sourceRoot: option(parsed.values, 'source-root'),
-        commandRunner: dependencies.commandRunner
-      });
-      io.stdout.write(`${releaseSummary(result)}\n`);
-      if (parsed.flags.has('json')) io.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return 0;
     }
 

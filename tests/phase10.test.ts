@@ -1097,9 +1097,9 @@ describe('real DSH Agent seam', () => {
           const hostCtx = new HarnessScope('host-isolation');
           hostBundle.apply(hostCtx);
           try {
-            // The four MCP-capable shipped preset compositions mount the Agent access
+            // The three MCP-capable shipped preset compositions mount the Agent access
             // row; they intentionally share the same canonical workspace server.
-            const shippedPresetIds = ['rpgmaker', 'playtest-debug', 'asset-workshop', 'build-release'] as const;
+            const shippedPresetIds = ['rpgmaker', 'playtest-debug', 'asset-workshop'] as const;
             const agentsA = shippedPresetIds.map((agentPreset, index) => createComposedAgent(agentBundle, `workspace-a-${index}`, {
               cwd: projectA,
               agentPreset
@@ -1132,7 +1132,7 @@ describe('real DSH Agent seam', () => {
             expect(recordsB).toEqual([]);
 
             await executeAgentTool(agentsA[2], 'rpgmaker_update_system', { data: { gameTitle: 'Workspace A changed' } });
-            const infoA = await executeAgentTool(agentsA[3], 'rpgmaker_get_project_info', {}) as { gameTitle: string };
+            const infoA = await executeAgentTool(agentsA[2], 'rpgmaker_get_project_info', {}) as { gameTitle: string };
             const infoB = await executeAgentTool(agentB, 'rpgmaker_get_project_info', {}) as { gameTitle: string };
             expect(infoA.gameTitle).toBe('Workspace A changed');
             expect(infoB.gameTitle).toBe('Workspace B');

@@ -5,7 +5,7 @@ import { strict as assert } from 'node:assert';
 
 import { bootstrapRuntime, findDshExecutable } from '../src/bootstrap';
 import { DSH_VERSION } from '../src/config';
-import { findCodeComposition, installPreset, prepareRpgMakerDeployment, renderPresetOnlyPatch } from '../src/rpgmaker';
+import { findCodeComposition, installPreset, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { runCommand } from '../src/process';
 
 const DATABASE_TYPES = ['Actors', 'Classes', 'Skills', 'Items', 'Weapons', 'Armors', 'Enemies', 'Troops', 'States', 'Animations', 'Tilesets', 'CommonEvents'];
@@ -59,24 +59,15 @@ try {
   assert.ok(dsh, 'real DSH executable not found after pinned install');
   const dshLib = join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib');
   const environmentModule = join(runtime, 'node_modules', '@deepseek-ai', 'dsh-launch-environment', 'lib', 'index.js');
-  const mounted: Record<string, unknown>[] = [];
-  for (const preset of ['rpgmaker', 'playtest-debug', 'build-release']) {
-    const deployment = await prepareRpgMakerDeployment({
-      platform: process.platform,
-      dshHome,
-      mutableRoot: root,
-      programRoot: join(root, 'program'),
-      runtimeDir: runtime,
-      mcpRuntimeDir: mcpRuntime,
-      env: safeEnv,
-      projectPath: project,
-      sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'),
-      agentPreset: preset
-    });
-    mounted.push(await mount(deployment.compositionPath, preset, true, dshLib, environmentModule));
-  }
-
   const codePreset = await findCodeComposition(runtime);
+  const mounted: Record<string, unknown>[] = [];
+  for (const preset of ['rpgmaker', 'playtest-debug']) {
+    const installed = await installPreset(join(process.cwd(), 'presets', preset), dshHome, codePreset, preset);
+    const compositionPath = join(dshHome, 'rpgmaker-mv', preset === 'rpgmaker' ? 'cordis.patch.yml' : 'real-playtest.patch.yml');
+    await mkdir(join(dshHome, 'rpgmaker-mv'), { recursive: true });
+    await writeFile(compositionPath, renderPresetOnlyPatch(installed.presetRoot, preset));
+    mounted.push(await mount(compositionPath, preset, true, dshLib, environmentModule));
+  }
   const asset = await installPreset(join(process.cwd(), 'presets', 'asset-workshop'), dshHome, codePreset, 'asset-workshop');
   const assetPatch = join(dshHome, 'asset-only.patch.yml');
   await writeFile(assetPatch, renderPresetOnlyPatch(asset.presetRoot, 'asset-workshop'));
