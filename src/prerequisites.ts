@@ -334,20 +334,28 @@ async function refreshWindowsEnvironment(runner: CommandRunner, env: Record<stri
   return withEnvironmentPath(env, [...new Set(paths.filter(Boolean).flatMap((value) => value.split(';')))].join(';'), 'win32');
 }
 
+/**
+ * Run one WinGet install for a missing prerequisite and return a redacted
+ * failure detail, or undefined when WinGet succeeded. WinGet exits nonzero for
+ * benign outcomes such as "already installed, no newer version"; the
+ * authoritative pass/fail is the post-install verification, so a nonzero exit
+ * here only surfaces if that verification still fails.
+ */
 async function installOne(
   runner: CommandRunner,
   winget: string,
   prerequisite: WindowsPrerequisiteCheck,
   env: Record<string, string | undefined>
-): Promise<void> {
+): Promise<string | undefined> {
   const args = ['install', '--id', prerequisite.wingetId, '--exact', '--accept-source-agreements', '--accept-package-agreements'];
   let result;
   try {
     result = await runner(winget, args, { env: withoutCredentials(env), platform: 'win32', timeoutMs: 15 * 60_000 });
   } catch (error) {
-    throw new Error(`WinGet could not install ${prerequisite.label}: ${redactSensitive(error instanceof Error ? error.message : String(error), env)}`);
+    return `WinGet could not install ${prerequisite.label}: ${redactSensitive(error instanceof Error ? error.message : String(error), env)}`;
   }
-  if (result.exitCode !== 0) throw commandFailure(winget, args, result, env);
+  if (result.exitCode !== 0) return commandFailure(winget, args, result, env).message;
+  return undefined;
 }
 
 export async function installWindowsPrerequisites(options: InstallWindowsPrerequisitesOptions = {}): Promise<WindowsPrerequisiteReport> {
@@ -363,10 +371,17 @@ export async function installWindowsPrerequisites(options: InstallWindowsPrerequ
   if (consent !== true) throw new PrerequisiteConsentError(report);
   const winget = options.wingetExecutable ?? env.WINGET_EXECUTABLE ?? await resolveExecutable('winget', { platform: 'win32', env });
   if (!winget) throw new Error('WinGet was not found. Install App Installer from Microsoft, then run Install.cmd again.');
-  for (const prerequisite of missing) await installOne(runner, winget, prerequisite, env);
+  const wingetFailures: string[] = [];
+  for (const prerequisite of missing) {
+    const failure = await installOne(runner, winget, prerequisite, env);
+    if (failure) wingetFailures.push(failure);
+  }
   const refreshedEnv = await refreshWindowsEnvironment(runner, env);
   report = await verifyWindowsPrerequisites({ ...options, env: refreshedEnv });
-  if (!report.ok) throw new Error(`Prerequisite installation completed but verification still fails: ${report.missing.join(', ')}.`);
+  if (!report.ok) {
+    const detail = wingetFailures.length > 0 ? ` WinGet reported: ${wingetFailures.join('; ')}.` : '';
+    throw new Error(`Prerequisite installation completed but verification still fails: ${report.missing.join(', ')}.${detail}`);
+  }
   return report;
 }
 

@@ -6,12 +6,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$programRoot = Join-Path $env:LOCALAPPDATA 'Programs\BaiheStudio\DSH-RPGMaker-MV'
-$mutableRoot = Join-Path $env:LOCALAPPDATA 'BaiheStudio\DSH-RPGMaker-MV'
-$env:DSH_RPGMAKER_PROGRAM_ROOT = $programRoot
-$env:DSH_RPGMAKER_DATA_ROOT = $mutableRoot
-$env:DSH_HOME = Join-Path $mutableRoot 'state'
-$env:DSH_RPGMAKER_RUNTIME = Join-Path $programRoot 'runtime\dsh'
+# Respect pre-set roots (e.g. a deliberate D: install) and default to the
+# LOCALAPPDATA layout only when the caller did not choose a location.
+if (-not $env:DSH_RPGMAKER_PROGRAM_ROOT) { $env:DSH_RPGMAKER_PROGRAM_ROOT = Join-Path $env:LOCALAPPDATA 'Programs\BaiheStudio\DSH-RPGMaker-MV' }
+if (-not $env:DSH_RPGMAKER_DATA_ROOT) { $env:DSH_RPGMAKER_DATA_ROOT = Join-Path $env:LOCALAPPDATA 'BaiheStudio\DSH-RPGMaker-MV' }
+if (-not $env:DSH_HOME) { $env:DSH_HOME = Join-Path $env:DSH_RPGMAKER_DATA_ROOT 'state' }
+if (-not $env:DSH_RPGMAKER_RUNTIME) { $env:DSH_RPGMAKER_RUNTIME = Join-Path $env:DSH_RPGMAKER_PROGRAM_ROOT 'runtime\dsh' }
 
 function Refresh-Path {
   $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
@@ -44,10 +44,16 @@ if (-not $bun) {
   if (-not $winget) { throw 'WinGet was not found. Install Microsoft App Installer, then run Install.cmd again.' }
   Write-Host 'Installing Bun so the harness CLI can run...'
   & $winget.Source install --id Oven-sh.Bun --exact --accept-source-agreements --accept-package-agreements
-  if ($LASTEXITCODE -ne 0) { throw "WinGet could not install Bun (exit code $LASTEXITCODE)." }
+  $wingetCode = $LASTEXITCODE
+  # WinGet exits nonzero for benign outcomes such as "already installed, no
+  # newer version"; the authoritative check is Bun resolution after the PATH
+  # refresh below.
   Refresh-Path
   $bun = Get-Command bun.exe -ErrorAction SilentlyContinue
-  if (-not $bun) { throw 'Bun was not found after prerequisite installation. Open a new terminal and retry Install.cmd.' }
+  if (-not $bun) {
+    $detail = if ($wingetCode -ne 0) { "WinGet could not install Bun (exit code $wingetCode)." } else { 'Bun was not found after prerequisite installation. Open a new terminal and retry Install.cmd.' }
+    throw $detail
+  }
 }
 
 $cli = Join-Path $root 'src\cli.ts'

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { cp, mkdir, mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { bootstrapRuntime, type BootstrapResult } from './bootstrap';
@@ -88,9 +88,27 @@ export class ReleaseGateError extends Error {
   }
 }
 
-function within(parent: string, child: string): boolean {
-  const rest = relative(resolve(parent), resolve(child));
-  return rest === '' || (!rest.startsWith(`..${sep}`) && rest !== '..');
+export interface PathApi {
+  resolve(path: string): string;
+  relative(from: string, to: string): string;
+  parse(path: string): { root: string };
+  sep: string;
+}
+
+const NATIVE_PATH: PathApi = { resolve, relative, parse, sep };
+
+function within(parent: string, child: string, paths: PathApi = NATIVE_PATH): boolean {
+  const parentResolved = paths.resolve(parent);
+  const childResolved = paths.resolve(child);
+  // On Windows, relative() returns an absolute path when the roots differ
+  // (e.g. different drive letters); that must not read as "inside".
+  if (paths.parse(parentResolved).root.toLowerCase() !== paths.parse(childResolved).root.toLowerCase()) return false;
+  const rest = paths.relative(parentResolved, childResolved);
+  return rest === '' || (!rest.startsWith(`..${paths.sep}`) && rest !== '..');
+}
+
+export function pathsNest(first: string, second: string, paths: PathApi = NATIVE_PATH): boolean {
+  return within(first, second, paths) || within(second, first, paths);
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -188,7 +206,7 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
   const env = options.env ?? process.env;
   const paths = resolveHarnessPaths(options);
   const releaseRoot = resolve(options.releaseRoot);
-  if (within(releaseRoot, paths.programRoot) || within(paths.programRoot, releaseRoot)) {
+  if (pathsNest(releaseRoot, paths.programRoot)) {
     throw new ReleaseGateError('The extracted Release ZIP must be separate from the installed program root.');
   }
   const prerequisites = await installWindowsPrerequisites({
@@ -391,7 +409,7 @@ export async function buildReleaseZip(options: ReleaseZipOptions): Promise<strin
   const sourceRoot = resolve(options.sourceRoot);
   const outputZip = resolve(options.outputZip);
   if (await exists(outputZip)) throw new ReleaseGateError(`Release ZIP already exists; refusing to overwrite ${outputZip}.`);
-  if (within(sourceRoot, outputZip) || within(outputZip, sourceRoot)) throw new ReleaseGateError('Release ZIP output must be outside the source tree.');
+  if (pathsNest(sourceRoot, outputZip)) throw new ReleaseGateError('Release ZIP output must be outside the source tree.');
   await mkdir(dirname(outputZip), { recursive: true });
   const staging = await mkdtemp(join(dirname(outputZip), `.dsh-release-${randomUUID()}-`));
   try {

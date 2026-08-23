@@ -2,14 +2,14 @@ import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
-import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
+import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
 import { PNPM_VERSION } from '../src/profile';
@@ -753,6 +753,67 @@ describe('Windows release gate foundations', () => {
     }
   });
 
+  test('continues when WinGet reports an already-installed package and the refreshed environment then verifies', async () => {
+    const root = await temp('phase7-prerequisites-winget-ok');
+    try {
+      const { bin, env } = await prerequisiteBin(root);
+      const baseRunner = prerequisiteRunner();
+      let wingetCalls = 0;
+      const runner = async (command: string, args: string[], options: { cwd?: string }) => {
+        if (args[0] === 'install') {
+          wingetCalls += 1;
+          return { exitCode: 43, stdout: '找到已安装的现有包。正在尝试升级已安装的包...\n找不到可用的升级。', stderr: '' };
+        }
+        if (basename(command).toLowerCase() === 'reg.exe' && args[0] === 'query') {
+          if (/Environment/i.test(args[1] ?? '')) return { exitCode: 0, stdout: `Path    REG_EXPAND_SZ    ${bin}`, stderr: '' };
+          return { exitCode: 1, stdout: '', stderr: 'ERROR: The system was unable to find the specified registry key or value.' };
+        }
+        return baseRunner(command, args, options);
+      };
+      const report = await installWindowsPrerequisites({
+        platform: 'win32',
+        env: { ...env, PATH: join(root, 'missing') },
+        consent: true,
+        wingetExecutable: 'winget.exe',
+        commandRunner: runner
+      });
+      expect(report.ok).toBe(true);
+      expect(wingetCalls).toBe(7);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('launch derives the mutable root from install.json so a non-default install uses its own state', async () => {
+    if (process.platform !== 'win32') return;
+    const root = await temp('phase7-launch-env');
+    const pwsh = await resolveWindowsPwsh({ platform: 'win32', env: process.env });
+    expect(pwsh).toBeDefined();
+    try {
+      const programRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const mutableRoot = join(root, 'D drive data');
+      await mkdir(join(programRoot, 'src'), { recursive: true });
+      await writeFile(join(programRoot, 'install.json'), JSON.stringify({ owner: PROGRAM_OWNER, programRoot, mutableRoot, dshHome: join(mutableRoot, 'state') }));
+      await cp(join(REPOSITORY_ROOT, 'launch.ps1'), join(programRoot, 'launch.ps1'));
+      // The real host Bun runs this fixture instead of a stub executable, so the
+      // Windows-only launch path is exercised with genuine process spawning.
+      await writeFile(join(programRoot, 'src', 'cli.ts'), [
+        "console.log('STUB_DATA_ROOT=' + (process.env.DSH_RPGMAKER_DATA_ROOT ?? ''));",
+        "console.log('STUB_DSH_HOME=' + (process.env.DSH_HOME ?? ''));",
+        "console.log('STUB_PROGRAM_ROOT=' + (process.env.DSH_RPGMAKER_PROGRAM_ROOT ?? ''));",
+        'process.exit(0);',
+        ''
+      ].join('\n'));
+      const result = await runCommand(pwsh!, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(programRoot, 'launch.ps1')], { platform: 'win32', env: process.env, timeoutMs: 60_000 });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain(`STUB_DATA_ROOT=${mutableRoot}`);
+      expect(result.stdout).toContain(`STUB_DSH_HOME=${join(mutableRoot, 'state')}`);
+      expect(result.stdout).toContain(`STUB_PROGRAM_ROOT=${programRoot}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('resolves find/grep from the verified Microsoft Coreutils root even when System32 precedes it on PATH', async () => {
     const root = await temp('phase7-coreutils-shadow');
     try {
@@ -1047,6 +1108,17 @@ describe('Windows release gate foundations', () => {
       await unlink(junction).catch(() => undefined);
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test('release roots on a different drive are not nested with the program root', () => {
+    const releaseRoot = 'D:\\qq\\DSH-RPGMaker-MV-Windows';
+    const programRoot = 'C:\\Users\\白鹤\\AppData\\Local\\Programs\\BaiheStudio\\DSH-RPGMaker-MV';
+    expect(pathsNest(releaseRoot, programRoot, win32)).toBe(false);
+    expect(pathsNest(programRoot, releaseRoot, win32)).toBe(false);
+    const nested = 'C:\\Users\\白鹤\\AppData\\Local\\Programs\\BaiheStudio\\DSH-RPGMaker-MV\\runtime\\dsh';
+    expect(pathsNest(programRoot, nested, win32)).toBe(true);
+    expect(pathsNest('C:\\Users\\白鹤\\a', 'C:\\Users\\白鹤\\b', win32)).toBe(false);
+    expect(pathsNest('C:\\root', 'c:\\root', win32)).toBe(true);
   });
 
   test('installs from release source into program files, creates mutable state and shortcut, and keeps credentials out of metadata', async () => {
