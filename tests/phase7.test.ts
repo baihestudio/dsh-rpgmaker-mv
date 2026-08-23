@@ -753,6 +753,37 @@ describe('Windows release gate foundations', () => {
     }
   });
 
+  test('continues when WinGet reports an already-installed package and the refreshed environment then verifies', async () => {
+    const root = await temp('phase7-prerequisites-winget-ok');
+    try {
+      const { bin, env } = await prerequisiteBin(root);
+      const baseRunner = prerequisiteRunner();
+      let wingetCalls = 0;
+      const runner = async (command: string, args: string[], options: { cwd?: string }) => {
+        if (args[0] === 'install') {
+          wingetCalls += 1;
+          return { exitCode: 43, stdout: '找到已安装的现有包。正在尝试升级已安装的包...\n找不到可用的升级。', stderr: '' };
+        }
+        if (basename(command).toLowerCase() === 'reg.exe' && args[0] === 'query') {
+          if (/Environment/i.test(args[1] ?? '')) return { exitCode: 0, stdout: `Path    REG_EXPAND_SZ    ${bin}`, stderr: '' };
+          return { exitCode: 1, stdout: '', stderr: 'ERROR: The system was unable to find the specified registry key or value.' };
+        }
+        return baseRunner(command, args, options);
+      };
+      const report = await installWindowsPrerequisites({
+        platform: 'win32',
+        env: { ...env, PATH: join(root, 'missing') },
+        consent: true,
+        wingetExecutable: 'winget.exe',
+        commandRunner: runner
+      });
+      expect(report.ok).toBe(true);
+      expect(wingetCalls).toBe(7);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('resolves find/grep from the verified Microsoft Coreutils root even when System32 precedes it on PATH', async () => {
     const root = await temp('phase7-coreutils-shadow');
     try {
