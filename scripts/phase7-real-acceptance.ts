@@ -61,9 +61,9 @@ try {
   const environmentModule = join(runtime, 'node_modules', '@deepseek-ai', 'dsh-launch-environment', 'lib', 'index.js');
   const codePreset = await findCodeComposition(runtime);
   const mounted: Record<string, unknown>[] = [];
-  for (const preset of ['rpgmaker', 'playtest-debug']) {
+  for (const preset of ['rpgmaker']) {
     const installed = await installPreset(join(process.cwd(), 'presets', preset), dshHome, codePreset, preset);
-    const compositionPath = join(dshHome, 'rpgmaker-mv', preset === 'rpgmaker' ? 'cordis.patch.yml' : 'real-playtest.patch.yml');
+    const compositionPath = join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
     await mkdir(join(dshHome, 'rpgmaker-mv'), { recursive: true });
     await writeFile(compositionPath, renderPresetOnlyPatch(installed.presetRoot, preset));
     mounted.push(await mount(compositionPath, preset, true, dshLib, environmentModule));

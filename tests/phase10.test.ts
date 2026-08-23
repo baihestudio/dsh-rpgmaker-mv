@@ -1097,9 +1097,9 @@ describe('real DSH Agent seam', () => {
           const hostCtx = new HarnessScope('host-isolation');
           hostBundle.apply(hostCtx);
           try {
-            // The three MCP-capable shipped preset compositions mount the Agent access
+            // The two MCP-capable shipped preset compositions mount the Agent access
             // row; they intentionally share the same canonical workspace server.
-            const shippedPresetIds = ['rpgmaker', 'playtest-debug', 'asset-workshop'] as const;
+            const shippedPresetIds = ['rpgmaker', 'asset-workshop'] as const;
             const agentsA = shippedPresetIds.map((agentPreset, index) => createComposedAgent(agentBundle, `workspace-a-${index}`, {
               cwd: projectA,
               agentPreset
@@ -1131,8 +1131,8 @@ describe('real DSH Agent seam', () => {
             expect(recordsA.some((record) => record.name === 'Hero A')).toBe(true);
             expect(recordsB).toEqual([]);
 
-            await executeAgentTool(agentsA[2], 'rpgmaker_update_system', { data: { gameTitle: 'Workspace A changed' } });
-            const infoA = await executeAgentTool(agentsA[2], 'rpgmaker_get_project_info', {}) as { gameTitle: string };
+            await executeAgentTool(agentsA[1], 'rpgmaker_update_system', { data: { gameTitle: 'Workspace A changed' } });
+            const infoA = await executeAgentTool(agentsA[1], 'rpgmaker_get_project_info', {}) as { gameTitle: string };
             const infoB = await executeAgentTool(agentB, 'rpgmaker_get_project_info', {}) as { gameTitle: string };
             expect(infoA.gameTitle).toBe('Workspace A changed');
             expect(infoB.gameTitle).toBe('Workspace B');
@@ -1198,7 +1198,7 @@ describe('real DSH Agent seam', () => {
           hostBundle.apply(hostCtx);
           try {
             const failedAgent = createComposedAgent(agentBundle, 'failed-agent', { cwd: failedProject, agentPreset: 'rpgmaker' }, hostCtx.root);
-            const healthyAgent = createComposedAgent(agentBundle, 'healthy-agent', { cwd: healthyProject, agentPreset: 'playtest-debug' }, hostCtx.root);
+            const healthyAgent = createComposedAgent(agentBundle, 'healthy-agent', { cwd: healthyProject, agentPreset: 'asset-workshop' }, hostCtx.root);
 
             // Manifest tools remain synchronously present for the failed Agent,
             // but its first request fails closed when the live server drifts.

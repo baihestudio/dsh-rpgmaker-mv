@@ -39,7 +39,7 @@ Source inspected at commit [`89ee591`](https://github.com/tigermkiiiddd/senior-g
 - It is broad across monetization, live-service categories, psychology, and many genres. Those sections should not become unsupported RPG Maker MV assumptions. Its neurochemical explanations and genre matrices are heuristics, not engine or player-research authority.
 - Its references and templates are source material, not a license to copy. Reimplement the small workflow in the repository's voice and cite the upstream project if materially influenced.
 
-There is no repository file or preset named `grill`/`grilling` (repository search found no match). The closest existing pattern is the evidence discipline in [`presets/playtest-debug/skills/playtest-debug/SKILL.md`](../../presets/playtest-debug/skills/playtest-debug/SKILL.md): bounded checks, refusal to guess, and explicit separation of evidence classes. Reuse that stance for design critique, but do not import the senior skill's rigid full-lifecycle output contract.
+There is no repository file or preset named `grill`/`grilling` (repository search found no match). The closest existing pattern is the evidence discipline in [`presets/rpgmaker/skills/playtest-debug/SKILL.md`](../../presets/rpgmaker/skills/playtest-debug/SKILL.md): bounded checks, refusal to guess, and explicit separation of evidence classes. Reuse that stance for design critique, but do not import the senior skill's rigid full-lifecycle output contract.
 
 ## 3. Minimal safe source set
 

@@ -118,7 +118,7 @@ function helpText(): string {
     '  --dsh-home <path>         Override DSH_HOME for this invocation',
     '  --runtime-dir <path>      Override the app-owned runtime tree',
     '  --dsh-executable <path>   Use an explicit DSH executable',
-    '  --preset <id>              Agent preset (rpgmaker, game-design, playtest-debug, or asset-workshop)',
+    '  --preset <id>              Agent preset (rpgmaker, game-design, or asset-workshop)',
     '  --image-magick <path>     Use the resolved pinned ImageMagick executable (requires SHA-256)',
     '  --image-magick-sha256 <hex> Expected SHA-256 for an explicit ImageMagick override',
     '  --image-magick-url <url>  Exact pinned ImageMagick release URL',

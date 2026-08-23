@@ -26,7 +26,7 @@ Run this bounded sequence:
    start. Never adopt a PID. Require `running: false` with no PID before
    continuing.
 3. Run the harness-owned locator at
-   `$env:DSH_HOME\.agent-presets\playtest-debug\skills\playtest-debug\find-rpgmaker-mv-runtime.ps1`
+   `$env:DSH_HOME\.agent-presets\rpgmaker\skills\playtest-debug\find-rpgmaker-mv-runtime.ps1`
    once with the `pwsh` tool and parse its single JSON result. It checks Steam
    App ID `363890`, configured Steam libraries, and the exact `nwjs-win\Game.exe`
    path without scanning whole drives.

@@ -28,13 +28,12 @@ import {
 export const RPGMAKER_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
 export const RPGMAKER_MCP_VERSION = '0.1.0';
 export const RPGMAKER_PRESET_ID = 'rpgmaker';
-export const PLAYTEST_DEBUG_PRESET_ID = 'playtest-debug';
 export const GAME_DESIGN_PRESET_ID = 'game-design';
 export const RPGMAKER_DSH_PROFILE = 'web';
 export const DEEPSEEK_VISION_MODEL = 'deepseek-v4-flash-vision-exp';
 export const DSH_TOOL_TIMEOUT_POLICY_PACKAGE = '@deepseek-ai/dsh-tool-call-timeout-policy';
 export const DSH_TOOL_TIMEOUT_POLICY_ROW_ID = 'timeout-policy';
-export const CUSTOM_AGENT_PRESET_IDS = [RPGMAKER_PRESET_ID, GAME_DESIGN_PRESET_ID, PLAYTEST_DEBUG_PRESET_ID, ASSET_WORKSHOP_PRESET_ID] as const;
+export const CUSTOM_AGENT_PRESET_IDS = [RPGMAKER_PRESET_ID, GAME_DESIGN_PRESET_ID, ASSET_WORKSHOP_PRESET_ID] as const;
 const PRESET_OWNERSHIP_FILE = '.dsh-rpgmaker-owned.json';
 const MCP_LOCK_INTEGRITY = 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==';
 const MCP_LOCK_BIN = 'dist/index.js';
@@ -482,6 +481,15 @@ export async function installPreset(sourceRoot: string, dshHome: string, codePre
   return { presetRoot, presetDir };
 }
 
+/** Remove an app-owned preset directory that this release no longer ships. */
+async function removeOwnedPreset(presetRoot: string, presetId: string): Promise<void> {
+  const presetDir = join(presetRoot, presetId);
+  if (!(await pathExists(presetDir))) return;
+  const ownership = await readJson(join(presetDir, PRESET_OWNERSHIP_FILE));
+  if (ownership?.owner !== 'dsh-rpgmaker-mv' || ownership.presetId !== presetId) return;
+  await rm(presetDir, { recursive: true, force: true });
+}
+
 export async function resolveMcpRunner(options: { jsExecutable?: string; bunExecutable?: string; projectPath?: string }, platform: string, env: Record<string, string | undefined>): Promise<string> {
   const candidate = options.jsExecutable ?? options.bunExecutable ?? env.BUN_EXECUTABLE;
   const direct = candidate ? await resolveExecutable(candidate, { platform, env }) : undefined;
@@ -696,9 +704,9 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   await mkdir(paths.neutralLandingDir, { recursive: true });
   return withOwnedRpgMakerProfileRepair(paths.dshHome, async () => {
     const installed = await installPreset(sourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
-    await installPreset(join(shippedPresetRoot, PLAYTEST_DEBUG_PRESET_ID), paths.dshHome, codePresetPath, PLAYTEST_DEBUG_PRESET_ID);
     await installPreset(join(shippedPresetRoot, ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
     await installPreset(join(shippedPresetRoot, GAME_DESIGN_PRESET_ID), paths.dshHome, codePresetPath, GAME_DESIGN_PRESET_ID);
+    await removeOwnedPreset(join(paths.dshHome, '.agent-presets'), 'playtest-debug');
 
     const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
     await mkdir(dirname(compositionPath), { recursive: true });

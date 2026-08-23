@@ -45,7 +45,7 @@ On Windows, program-owned DSH/MCP/tool runtimes default under `%LOCALAPPDATA%\\P
 ```powershell
 ./launch.ps1
 # optionally choose the default Agent preset:
-./launch.ps1 --preset playtest-debug
+./launch.ps1 --preset asset-workshop
 ```
 
 The Windows launcher is project-neutral: it never opens a folder picker, reads
@@ -99,13 +99,13 @@ Tests use disposable runtime, DSH home, credential, and MV project directories. 
 ## Phase 2: RPG Maker Agent and MCP editing loop
 
 `launch.ps1` prepares the exact-pinned app-owned MCPorter and Xerolo runtimes,
-the local `dsh-workspace-mcp` Host bundle, four Chinese-named specialist
-presets (`rpgmaker`, `game-design`, `playtest-debug`, and `asset-workshop`),
+the local `dsh-workspace-mcp` Host bundle, three Chinese-named specialist
+presets (`rpgmaker`, `game-design`, and `asset-workshop`),
 and a project-neutral `web --dump-config` composition before
-launch. The picker displays `🐒 程序猿`, `🐶 策划汪`, `🐱 调试喵`, and `🎨 P图仔`
+launch. The picker displays `🐒 程序猿`, `🐶 策划汪`, and `🎨 P图仔`
 in that order; `rpgmaker` remains the default. `game-design` is a
 Code-derived document-workspace preset without the RPG Maker Agent row; the
-other three presets retain their scoped MCP/image boundaries. The access layer supplies stable
+other two presets retain their scoped MCP/image boundaries. The access layer supplies stable
 `rpgmaker_<raw Xerolo name>` tools synchronously and validates the live
 workspace connection before the first request. It contains no preset filter:
 presets that do not mount the row receive no RPG Maker tools. Invalid
@@ -133,7 +133,7 @@ installed runtime and is not edited. Neither app-owned Host patch inserts the
 timeout policy: the pinned DSH `web` profile owns the official
 `id: timeout-policy` / `@deepseek-ai/dsh-tool-call-timeout-policy` row at Host
 scope. Launch preparation and Doctor validate `web --dump-config` and require
-exactly one effective official row across all four custom Agent presets; the
+exactly one effective official row across all three custom Agent presets; the
 preset compositions never contain it. Re-running preparation rewrites the
 app-owned patch, repairing older generated patches that inserted a duplicate.
 
@@ -146,11 +146,11 @@ shared Web research when useful. It keeps an adaptive index, decisions, open
 questions, and material references without imposing a fixed archive tree or deleting
 existing documents automatically.
 
-## Phase 4: 🐱 调试喵
+## Phase 4: Playtest 调试
 
-Select `--preset playtest-debug` when creating a session. The Debug skill directly sequences the stable `rpgmaker_*` tools: static validation, idle status preflight, bounded Steam App ID `363890` discovery, NW.js launch when `nwjs-win\Game.exe` exists, browser-mode fallback otherwise, bounded status/log observation, MCP stop, and post-stop status. It never recursively scans disks, refuses an already-running Playtest, never adopts a PID or invokes OS process controls, and reports cleanup as unverified when MCP status cannot confirm it. Browser fallback returns a playable URL but cannot capture browser DevTools console output through `rpgmaker_playtest_log`.
+`🐒 程序猿` 直接完成真实 Playtest 与日志诊断。发起调试时，它先通过 Skill 工具读取并遵循 `presets/rpgmaker/skills/playtest-debug/` Skill，按有界序列编排稳定的 `rpgmaker_*` 工具：静态验证、空闲预检、有界 Steam App ID `363890` 发现、存在 `nwjs-win\Game.exe` 时 NW.js 启动、否则浏览器模式回退、有界状态/日志观察、MCP stop 与停止后状态确认。它绝不递归扫描磁盘，拒绝已运行的 Playtest，不认领 PID 也不调用 OS 进程控制，MCP 状态无法确认清理时如实报告 unverified。浏览器回退返回可玩 URL，但 `rpgmaker_playtest_log` 无法捕获浏览器 DevTools 控制台输出。
 
-Reports distinguish static validation, process launch, crash/log evidence, cleanup confirmation, and behavior/visual gameplay verification. A launched process and clean log are not behavior verification. Harness-owned process-tree cleanup belongs to the separate automated-playtest capability; screenshot/input/gameplay automation is out of scope here.
+报告区分静态验证、进程启动、崩溃/日志证据、清理确认与行为/视觉验证。进程启动和干净日志不是行为验证。Harness 拥有的进程树清理属于独立的 automated-playtest 能力；截图/输入/gameplay 自动化不在本仓库范围。
 
 ## Phase 5: 🎨 P图仔
 
@@ -189,7 +189,7 @@ bun src/cli.ts image atlas-pack --inputs-json '["a.png","b.png"]' --output atlas
 
 All launcher, preset, Windows shell, MCP, image, and Playtest contracts are mounted and checked against the official `@deepseek-ai/dsh@0.1.0-rc.8` runtime. The staged runtime verifies Bun installation/trust, the exact top-level package version and npm integrity, the DSH executable, and `koffi` before an atomic swap. Post-swap verification restores the prior runtime on failure and preserves the unverified tree for inspection; no live runtime is mutated in place.
 
-The Xerolo MCP lock check is deliberately limited to its stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata and unrelated Bun lock internals are not pinned. The production editing contract is the mounted RPG Maker skill plus stable `rpgmaker_*` tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, schema rejection, and the `rpgmaker`, `game-design`, `playtest-debug`, and asset-only preset boundaries.
+The Xerolo MCP lock check is deliberately limited to its stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata and unrelated Bun lock internals are not pinned. The production editing contract is the mounted RPG Maker skill plus stable `rpgmaker_*` tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, schema rejection, and the `rpgmaker`, `game-design`, and asset-only preset boundaries.
 
 ## Editing model
 

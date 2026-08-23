@@ -448,7 +448,6 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'src/profile.ts',
     'presets/rpgmaker/preset.yml',
     'presets/game-design/preset.yml',
-    'presets/playtest-debug/preset.yml',
     'presets/asset-workshop/preset.yml',
     'src/dsh-web.ts',
     `${IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
