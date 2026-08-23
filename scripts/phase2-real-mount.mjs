@@ -63,7 +63,7 @@ try {
   const presets = mounted.ctx.get('agentPresets')
   if (!presets) throw new Error('official DSH agent preset service did not mount')
   const presetIds = (await presets.list()).map((entry) => entry.id)
-  for (const id of ['rpgmaker', 'playtest-debug', 'asset-workshop', 'build-release']) {
+  for (const id of ['rpgmaker', 'playtest-debug', 'asset-workshop']) {
     if (!presetIds.includes(id)) throw new Error(`shipped preset ${id} was not available in the neutral Host`)
   }
 

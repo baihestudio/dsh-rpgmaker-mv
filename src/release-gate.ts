@@ -11,7 +11,6 @@ import { withoutCredentials, runCommand, type CommandRunner } from './process';
 import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
 import { prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { prepareMcporterRuntime } from './mcport';
-import { prepareRpgmPackerRuntime } from './release';
 import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE, IMAGE_WORKSHOP_BUNDLE_RELATIVE } from './image-plugin';
 import { prepareDshWebPlugin } from './dsh-web';
 import { preparePnpmRuntime } from './profile';
@@ -162,7 +161,7 @@ function installMetadata(paths: HarnessPaths, prerequisites: WindowsPrerequisite
 }
 
 async function carryForwardVerifiedDependencies(previousProgramRoot: string, nextProgramRoot: string): Promise<void> {
-  for (const relativePath of [join('tools', 'image-workshop', 'native-tools'), join('runtime', 'mcp'), join('runtime', 'rpgmpacker-runtime'), join('runtime', 'pnpm')]) {
+  for (const relativePath of [join('tools', 'image-workshop', 'native-tools'), join('runtime', 'mcp'), join('runtime', 'pnpm')]) {
     const source = join(previousProgramRoot, relativePath);
     const destination = join(nextProgramRoot, relativePath);
     if (await exists(source) && !(await exists(destination))) {
@@ -298,16 +297,6 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           installOxipng: true,
           sevenZipExecutable: prerequisites.checks.find((check) => check.id === '7zip')?.executable
         });
-        await prepareRpgmPackerRuntime({
-          platform,
-          env: context.env,
-          dshHome: context.paths.dshHome,
-          runtimeDir: context.paths.runtimeDir,
-          programRoot: context.paths.programRoot,
-          mutableRoot: context.paths.mutableRoot,
-          bunExecutable: context.bunExecutable,
-          commandRunner: context.commandRunner
-        }, platform, context.env);
         await prepareImageWorkshopPlugin({
           platform,
           env: context.env,
@@ -461,7 +450,6 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'presets/game-design/preset.yml',
     'presets/playtest-debug/preset.yml',
     'presets/asset-workshop/preset.yml',
-    'presets/build-release/preset.yml',
     'src/dsh-web.ts',
     `${IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,

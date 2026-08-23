@@ -17,7 +17,6 @@ import {
   type ImageToolchain
 } from '../src/image-workshop';
 import { DSH_VERSION } from '../src/config';
-import { prepareRpgMakerDeployment } from '../src/rpgmaker';
 import type { ImageReleasePin } from '../src/image-releases';
 import type { CommandOptions, CommandResult } from '../src/process';
 
@@ -917,41 +916,4 @@ describe('Asset Workshop CLI and real preset preparation seam', () => {
     }
   });
 
-  test('mount preparation installs asset-workshop without duplicating MCP rows', async () => {
-    const root = await temp('phase4-preset');
-    try {
-      const project = join(root, '选择 project with spaces');
-      await mkdir(join(project, 'data'), { recursive: true });
-      await mkdir(join(project, 'js'), { recursive: true });
-      await writeFile(join(project, 'Game.rpgproject'), '{}\n');
-      const dshRuntime = join(root, 'dsh-runtime');
-      await mkdir(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code'), { recursive: true });
-      await mkdir(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'bin'), { recursive: true });
-      await writeFile(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ version: DSH_VERSION, bin: { dsh: 'lib/bin.js' } }));
-      await mkdir(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true });
-      await writeFile(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'fixture');
-      await writeFile(join(dshRuntime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml'), "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: >-\n      generic Code persona\n- id: code-tool\n  name: fake\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n");
-      const bun = join(root, 'bun.exe');
-      const dsh = join(root, 'dsh.exe');
-      const magick = join(root, 'tools with spaces', 'magick.exe');
-      const oxipng = join(root, 'tools with spaces', 'oxipng.exe');
-      await writeFile(bun, 'fixture');
-      await writeFile(dsh, 'fixture');
-      await mkdir(dirname(magick), { recursive: true });
-      await writeFile(magick, 'fixture');
-      await writeFile(oxipng, 'fixture oxipng');
-      const fake = new FakeImageTools();
-      const deployment = await prepareRpgMakerDeployment({ platform: 'win32', dshHome: join(root, 'dsh-home'), runtimeDir: dshRuntime, projectPath: project, agentPreset: 'asset-workshop', imageMagickExecutable: magick, imageMagickSha256: hash('fixture'), oxipngExecutable: oxipng, oxipngSha256: hash('fixture oxipng'), sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'), jsExecutable: bun, dshExecutable: dsh, commandRunner: fake.run.bind(fake), schemaProbe: async () => ({ tools: ['get_project_info', 'list_records', 'get_record', 'update_record', 'create_record', 'create_event', 'get_event', 'update_event', 'add_dialogue', 'update_map', 'get_map', 'configure_plugin', 'list_plugins', 'validate_project', 'list_backups', 'restore_backup', 'playtest_start', 'playtest_status', 'playtest_log', 'playtest_stop'].map((name) => ({ name, inputSchema: { type: 'object' } })) }) });
-      expect(deployment.agentPreset).toBe('asset-workshop');
-      expect(deployment.imageToolchain?.imageMagickVersion).toBe('7.1.2-29');
-      expect(deployment.imageToolchain?.oxipngVersion).toBe('10.2.0');
-      expect(await readFile(join(deployment.presetDir, 'skills', 'asset-workshop', 'SKILL.md'), 'utf8')).toContain('image_resize_pixel');
-      const composition = await readFile(deployment.compositionPath, 'utf8');
-      expect(composition).toContain('default: asset-workshop');
-      expect((composition.match(/id: mcp-rpgmaker-mv/g) ?? [])).toHaveLength(1);
-      expect(await readFile(deployment.imageToolchain!.manifestPath, 'utf8')).toContain('"format": 2');
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
 });

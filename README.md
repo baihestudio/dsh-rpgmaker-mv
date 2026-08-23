@@ -32,9 +32,7 @@ bun run phase7:windows-installed -- --installed-root (Get-Location).Path
 It launches the supported installed `Launch.cmd`, observes the real fixed-port
 Web readiness and project-neutral process arguments, repairs a deliberately
 broken local profile link, runs the installed-tree Agent probe, and cleans up
-all disposable state/processes. The separate
-`bun run phase6:windows-manual -- --rpgmaker-installation '<path>'` command
-remains the complementary native MV packaging gate.
+all disposable state/processes.
 
 ### Install and repair
 
@@ -101,13 +99,13 @@ Tests use disposable runtime, DSH home, credential, and MV project directories. 
 ## Phase 2: RPG Maker Agent and MCP editing loop
 
 `launch.ps1` prepares the exact-pinned app-owned MCPorter and Xerolo runtimes,
-the local `dsh-workspace-mcp` Host bundle, five Chinese-named specialist
-presets (`rpgmaker`, `game-design`, `playtest-debug`, `asset-workshop`, and
-`build-release`), and a project-neutral `web --dump-config` composition before
-launch. The picker displays `🐒 程序猿`, `🐶 策划汪`, `🐱 调试喵`, `🎨 P图仔`, and
-`🐭 打包鼠` in that order; `rpgmaker` remains the default. `game-design` is a
+the local `dsh-workspace-mcp` Host bundle, four Chinese-named specialist
+presets (`rpgmaker`, `game-design`, `playtest-debug`, and `asset-workshop`),
+and a project-neutral `web --dump-config` composition before
+launch. The picker displays `🐒 程序猿`, `🐶 策划汪`, `🐱 调试喵`, and `🎨 P图仔`
+in that order; `rpgmaker` remains the default. `game-design` is a
 Code-derived document-workspace preset without the RPG Maker Agent row; the
-other four presets retain their scoped MCP/image boundaries. The access layer supplies stable
+other three presets retain their scoped MCP/image boundaries. The access layer supplies stable
 `rpgmaker_<raw Xerolo name>` tools synchronously and validates the live
 workspace connection before the first request. It contains no preset filter:
 presets that do not mount the row receive no RPG Maker tools. Invalid
@@ -135,7 +133,7 @@ installed runtime and is not edited. Neither app-owned Host patch inserts the
 timeout policy: the pinned DSH `web` profile owns the official
 `id: timeout-policy` / `@deepseek-ai/dsh-tool-call-timeout-policy` row at Host
 scope. Launch preparation and Doctor validate `web --dump-config` and require
-exactly one effective official row across all five custom Agent presets; the
+exactly one effective official row across all four custom Agent presets; the
 preset compositions never contain it. Re-running preparation rewrites the
 app-owned patch, repairing older generated patches that inserted a duplicate.
 
@@ -197,48 +195,7 @@ The Xerolo MCP lock check is deliberately limited to its stable release facts: e
 
 In the first release, the agent is the sole writer while an RPG Maker MV workspace is under agent control; do not have multiple Agents write to it simultaneously. The editor may remain open only for read-only reference: users must not save from it, and must reopen the project before inspecting agent changes.
 
-## Phase 7: 🐭 打包鼠
-
-Select `--preset build-release` for a packaging session, or run the explicitly
-project-scoped harness workflow directly after the current DSH Web workspace has
-been validated with `rpgmaker_validate_project`:
-
-```powershell
-bun "$env:DSH_RPGMAKER_RELEASE_CLI" build-release `
-  --project 'C:\Games\My RPG 游戏' `
-  --output 'C:\Games\releases\my-game-2026-08-17' `
-  --rpgmaker-installation 'C:\Program Files\RPG Maker MV'
-```
-
-The workflow installs and verifies exact `rpgmpacker@2.0.5` in an app-owned
-runtime and invokes its resolved `dist/index.js` through direct Bun/Node argv.
-It requires the detected RPG Maker MV installation and its `nwjs-win` template.
-Asset exclusion, hardlinks, and encryption remain off. Output is staged in a
-fresh sibling directory, inspected, smoke-tested, and atomically committed; an
-existing output or a source-overlapping output is rejected, and the source tree
-is checked for mutation.
-
-Windows output must contain the game executable and `www/index.html`,
-`www/data`, and `www/js`. On Windows the smoke owns and cleans up only its
-launched process tree. An MV Browser output contains `www/index.html`,
-`www/data`, and `www/js`; its smoke serves that web root over loopback HTTP and
-shuts the server down. On macOS and
-other non-Windows hosts, Windows launch smoke is explicitly reported as
-unsupported hardware evidence while Browser smoke remains advisory and
-runnable. Store uploads, signing, generated-game installers, and cross-platform
-Windows guarantees are not part of this phase.
-
-Run the disposable real acceptance (it installs pinned DSH, Xerolo MCP, and
-rpgmpacker into a temporary directory, validates through the MCP, and removes
-all state afterward):
-
-```powershell
-bun run phase6:real
-# Explicit Windows hardware gate only; never part of normal acceptance:
-bun run phase6:windows-manual -- --rpgmaker-installation 'C:\Program Files\RPG Maker MV'
-```
-
-## Phase 8: Windows release gate
+## Phase 7: Windows release gate
 
 Build and inspect a real Release ZIP without overwriting an existing archive:
 
@@ -253,9 +210,6 @@ bun test
 bun run check
 bun run phase2:real
 bun run phase4:real
-bun run phase6:real
-# On Windows, after the disposable real gates:
-bun run phase6:windows-manual -- --rpgmaker-installation 'C:\Program Files\RPG Maker MV'
 ```
 
-The automated `phase6:real` acceptance always uses a disposable fixture-owned RPG Maker installation, including on Windows; it never reads a user-installed path. The explicit `phase6:windows-manual` gate is the only path that accepts an installed RPG Maker MV path and requires that opt-in argument. Non-Windows real acceptances truthfully mark Windows NW.js and Windows artifact launch as unsupported hardware evidence; they do not substitute macOS or a fake process for the Windows gate. The foundation stops before automated gameplay/CDP supervision, which remains on its separate draft/hold marker.
+The foundation stops before automated gameplay/CDP supervision, which remains on its separate draft/hold marker.

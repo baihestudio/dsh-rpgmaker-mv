@@ -22,7 +22,6 @@ import {
   verifyMcpRuntime,
   verifyTimeoutPolicyComposition
 } from './rpgmaker';
-import { verifyRpgmPackerRuntime } from './release';
 import { verifyImageWorkshopPlugin, imageWorkshopPluginSummary, type ImageWorkshopPluginVerification } from './image-plugin';
 
 export interface DoctorOptions extends PathOptions {
@@ -35,7 +34,7 @@ export interface DoctorOptions extends PathOptions {
   npmExecutable?: string;
   pythonExecutable?: string;
   sevenZipExecutable?: string;
-  verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; image: DoctorCheck; packager: DoctorCheck }>;
+  verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; image: DoctorCheck }>;
   verifyImageWorkshopPlugin?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<ImageWorkshopPluginVerification>;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
@@ -348,16 +347,13 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
       const mcp = await verifyMcpRuntime(mcpRuntime, context.platform);
       const imageMetadata = await verifyImageToolchainMetadata(join(context.paths.programRoot, 'tools', 'image-workshop'));
       const image = check('image-toolchain', 'Image asset toolchain', imageMetadata.valid, imageMetadata.detail, imageMetadata.path);
-      const packagerRuntime = join(context.paths.programRoot, 'runtime', 'rpgmpacker-runtime');
-      const packager = await verifyRpgmPackerRuntime(packagerRuntime);
       return {
         mcp: check('rpgmaker-mcp', 'RPG Maker MV MCP runtime', mcp.valid, mcp.valid ? `Pinned RPG Maker MV MCP ${mcp.packageVersion} is verified` : mcp.errors.join('; '), mcp.executable ?? mcpRuntime),
-        image,
-        packager: check('rpgmpacker', 'RPG Maker build packager', packager.valid, packager.valid ? `Pinned rpgmpacker ${packager.version} is verified` : packager.errors.join('; '), packager.script ?? packagerRuntime)
+        image
       };
     });
     const agentDependencies = await verifyAgentDependencies({ platform, env: commandEnv, paths, commandRunner: runner });
-    checks.push(agentDependencies.mcp, agentDependencies.image, agentDependencies.packager);
+    checks.push(agentDependencies.mcp, agentDependencies.image);
 
     const imagePlugin = await (options.verifyImageWorkshopPlugin ?? (context => verifyImageWorkshopPlugin({
       platform: context.platform,
