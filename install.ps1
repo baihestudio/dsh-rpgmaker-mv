@@ -6,12 +6,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$programRoot = Join-Path $env:LOCALAPPDATA 'Programs\BaiheStudio\DSH-RPGMaker-MV'
-$mutableRoot = Join-Path $env:LOCALAPPDATA 'BaiheStudio\DSH-RPGMaker-MV'
-$env:DSH_RPGMAKER_PROGRAM_ROOT = $programRoot
-$env:DSH_RPGMAKER_DATA_ROOT = $mutableRoot
-$env:DSH_HOME = Join-Path $mutableRoot 'state'
-$env:DSH_RPGMAKER_RUNTIME = Join-Path $programRoot 'runtime\dsh'
+# Respect pre-set roots (e.g. a deliberate D: install) and default to the
+# LOCALAPPDATA layout only when the caller did not choose a location.
+if (-not $env:DSH_RPGMAKER_PROGRAM_ROOT) { $env:DSH_RPGMAKER_PROGRAM_ROOT = Join-Path $env:LOCALAPPDATA 'Programs\BaiheStudio\DSH-RPGMaker-MV' }
+if (-not $env:DSH_RPGMAKER_DATA_ROOT) { $env:DSH_RPGMAKER_DATA_ROOT = Join-Path $env:LOCALAPPDATA 'BaiheStudio\DSH-RPGMaker-MV' }
+if (-not $env:DSH_HOME) { $env:DSH_HOME = Join-Path $env:DSH_RPGMAKER_DATA_ROOT 'state' }
+if (-not $env:DSH_RPGMAKER_RUNTIME) { $env:DSH_RPGMAKER_RUNTIME = Join-Path $env:DSH_RPGMAKER_PROGRAM_ROOT 'runtime\dsh' }
 
 function Refresh-Path {
   $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
