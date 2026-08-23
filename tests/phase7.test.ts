@@ -2,14 +2,14 @@ import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
-import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
+import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
 import { PNPM_VERSION } from '../src/profile';
@@ -1047,6 +1047,17 @@ describe('Windows release gate foundations', () => {
       await unlink(junction).catch(() => undefined);
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test('release roots on a different drive are not nested with the program root', () => {
+    const releaseRoot = 'D:\\qq\\DSH-RPGMaker-MV-Windows';
+    const programRoot = 'C:\\Users\\白鹤\\AppData\\Local\\Programs\\BaiheStudio\\DSH-RPGMaker-MV';
+    expect(pathsNest(releaseRoot, programRoot, win32)).toBe(false);
+    expect(pathsNest(programRoot, releaseRoot, win32)).toBe(false);
+    const nested = 'C:\\Users\\白鹤\\AppData\\Local\\Programs\\BaiheStudio\\DSH-RPGMaker-MV\\runtime\\dsh';
+    expect(pathsNest(programRoot, nested, win32)).toBe(true);
+    expect(pathsNest('C:\\Users\\白鹤\\a', 'C:\\Users\\白鹤\\b', win32)).toBe(false);
+    expect(pathsNest('C:\\root', 'c:\\root', win32)).toBe(true);
   });
 
   test('installs from release source into program files, creates mutable state and shortcut, and keeps credentials out of metadata', async () => {
