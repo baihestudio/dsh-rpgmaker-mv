@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { basename, dirname, join, resolve, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -792,14 +792,19 @@ describe('Windows release gate foundations', () => {
     try {
       const programRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
       const mutableRoot = join(root, 'D drive data');
-      await mkdir(programRoot, { recursive: true });
+      await mkdir(join(programRoot, 'src'), { recursive: true });
       await writeFile(join(programRoot, 'install.json'), JSON.stringify({ owner: PROGRAM_OWNER, programRoot, mutableRoot, dshHome: join(mutableRoot, 'state') }));
       await cp(join(REPOSITORY_ROOT, 'launch.ps1'), join(programRoot, 'launch.ps1'));
-      const stubDir = join(root, 'stub-bin');
-      await mkdir(stubDir, { recursive: true });
-      await writeFile(join(stubDir, 'bun.exe'), '#!/bin/sh\necho "STUB_DATA_ROOT=$DSH_RPGMAKER_DATA_ROOT"\necho "STUB_DSH_HOME=$DSH_HOME"\necho "STUB_PROGRAM_ROOT=$DSH_RPGMAKER_PROGRAM_ROOT"\n');
-      await chmod(join(stubDir, 'bun.exe'), 0o755);
-      const result = await runCommand(pwsh!, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(programRoot, 'launch.ps1')], { platform: 'win32', env: { ...process.env, PATH: join(stubDir) }, timeoutMs: 30_000 });
+      // The real host Bun runs this fixture instead of a stub executable, so the
+      // Windows-only launch path is exercised with genuine process spawning.
+      await writeFile(join(programRoot, 'src', 'cli.ts'), [
+        "console.log('STUB_DATA_ROOT=' + (process.env.DSH_RPGMAKER_DATA_ROOT ?? ''));",
+        "console.log('STUB_DSH_HOME=' + (process.env.DSH_HOME ?? ''));",
+        "console.log('STUB_PROGRAM_ROOT=' + (process.env.DSH_RPGMAKER_PROGRAM_ROOT ?? ''));",
+        'process.exit(0);',
+        ''
+      ].join('\n'));
+      const result = await runCommand(pwsh!, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(programRoot, 'launch.ps1')], { platform: 'win32', env: process.env, timeoutMs: 60_000 });
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain(`STUB_DATA_ROOT=${mutableRoot}`);
       expect(result.stdout).toContain(`STUB_DSH_HOME=${join(mutableRoot, 'state')}`);
