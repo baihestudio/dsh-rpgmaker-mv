@@ -102,7 +102,7 @@ function helpText(): string {
     '',
     'Commands:',
     '  bootstrap   Install or repair the pinned DSH runtime using Bun',
-    '  doctor      Check Windows prerequisites and DSH metadata',
+    '  doctor      Check Windows prerequisites, DSH metadata, and an explicit workspace',
     '  install     Install a Release ZIP into the per-user Windows roots',
     '  uninstall   Remove program files/cache (use --purge for state/credentials)',
     '  release-zip Build and inspect a distributable Release ZIP',
@@ -118,6 +118,8 @@ function helpText(): string {
     '  --dsh-home <path>         Override DSH_HOME for this invocation',
     '  --runtime-dir <path>      Override the app-owned runtime tree',
     '  --dsh-executable <path>   Use an explicit DSH executable',
+    '  --workspace <path>        Inspect one explicit Windows workspace with Doctor',
+    '  --sandbox-probe            Run the pinned DSH workspace-write runner after workspace checks pass',
     '  --preset <id>              Agent preset (rpgmaker, game-design, or asset-workshop)',
     '  --image-magick <path>     Use the resolved pinned ImageMagick executable (requires SHA-256)',
     '  --image-magick-sha256 <hex> Expected SHA-256 for an explicit ImageMagick override',
@@ -429,8 +431,12 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
     }
 
     if (parsed.command === 'doctor') {
+      const workspace = option(parsed.values, 'workspace');
+      if (parsed.flags.has('sandbox-probe') && !workspace) throw new Error('--sandbox-probe requires --workspace <path>.');
       const report = await runDoctor({
         ...baseOptions(parsed, dependencies),
+        workspace,
+        sandboxProbe: parsed.flags.has('sandbox-probe'),
         bunExecutable: option(parsed.values, 'bun-executable'),
         pwshExecutable: option(parsed.values, 'pwsh-executable'),
         nodeExecutable: option(parsed.values, 'node-executable'),

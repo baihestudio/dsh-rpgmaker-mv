@@ -23,8 +23,11 @@ import {
   verifyTimeoutPolicyComposition
 } from './rpgmaker';
 import { verifyImageWorkshopPlugin, imageWorkshopPluginSummary, type ImageWorkshopPluginVerification } from './image-plugin';
+import { inspectWorkspaceSandbox } from './workspace-sandbox';
 
 export interface DoctorOptions extends PathOptions {
+  workspace?: string;
+  sandboxProbe?: boolean;
   commandRunner?: CommandRunner;
   bunExecutable?: string;
   pwshExecutable?: string;
@@ -412,6 +415,20 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
       layoutOk ? `Program files use ${paths.programRoot}; mutable state uses ${paths.mutableRoot} with DSH_HOME at ${paths.dshHome}` : `Mutable state layout is incomplete under ${paths.mutableRoot}; run Install.cmd or repair the installation`,
       paths.mutableRoot
     ));
+
+  }
+
+  if (options.workspace) {
+    checks.push(...await inspectWorkspaceSandbox({
+      workspace: options.workspace,
+      sandboxProbe: options.sandboxProbe,
+      platform,
+      env: commandEnv,
+      runtimeDir: paths.runtimeDir,
+      pwshExecutable: pwsh,
+      nodeExecutable: node,
+      commandRunner: runner
+    }));
   }
 
   return {

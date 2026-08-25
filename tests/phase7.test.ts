@@ -23,6 +23,7 @@ import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
 import { runDoctor } from '../src/doctor';
 import { runCommand } from '../src/process';
+import { inspectWorkspaceSandbox } from '../src/workspace-sandbox';
 import { run as runProcessObservation } from '../scripts/process-observation.mjs';
 import { cleanupInstalledGateWorkspace, resolveInstalledNode, runInstalledMount } from '../scripts/phase7-windows-installed-gate';
 import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion } from '../src/executable';
@@ -66,6 +67,13 @@ async function dshRuntime(runtime: string): Promise<void> {
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh-launch-environment', 'lib', 'index.js'), 'fixture');
   await writeFile(join(runtime, 'node_modules', '.bin', 'dsh.cmd'), '@echo off\r\n');
   await writeFile(join(runtime, 'node_modules', 'koffi', 'package.json'), JSON.stringify({ version: '2.12.0' }));
+}
+
+async function dshSandboxRunner(runtime: string): Promise<string> {
+  const runner = join(runtime, 'node_modules', '@deepseek-ai', 'dsh-sandbox-windows-acl', 'lib', 'runner.js');
+  await mkdir(dirname(runner), { recursive: true });
+  await writeFile(runner, 'fixture runner\n');
+  return runner;
 }
 
 function child(): EventEmitter & { exitCode: number | null; signalCode: string | null } {
@@ -936,6 +944,174 @@ describe('Windows release gate foundations', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test('workspace Doctor probe uses the pinned runner only for a normal owned NTFS workspace', async () => {
+    const root = await temp('phase7-workspace-doctor');
+    try {
+      const workspace = await project(root);
+      const runtime = join(root, 'runtime');
+      const runnerPath = await dshSandboxRunner(runtime);
+      const tempRoot = join(root, 'temp');
+      await mkdir(tempRoot, { recursive: true });
+      const pwsh = join(root, 'bin', 'pwsh.exe');
+      const node = join(root, 'bin', 'node.exe');
+      const calls: Array<{ command: string; args: string[] }> = [];
+
+      const checks = await inspectWorkspaceSandbox({
+        workspace,
+        sandboxProbe: true,
+        platform: 'win32',
+        env: { TEMP: tempRoot },
+        runtimeDir: runtime,
+        pwshExecutable: pwsh,
+        nodeExecutable: node,
+        commandRunner: async (command, args) => {
+          calls.push({ command, args });
+          if (command === pwsh) {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                workspace,
+                user: 'DESKTOP\\player',
+                owner: 'DESKTOP\\player',
+                ownerMatchesUser: true,
+                integrity: 'medium',
+                elevated: false,
+                fileSystem: 'NTFS',
+                driveType: 3,
+                isReparsePoint: false
+              }),
+              stderr: ''
+            };
+          }
+          if (command === node) {
+            return { exitCode: 0, stdout: JSON.stringify({ success: true, content: 'alpha-beta', sha256: 'a'.repeat(64) }), stderr: '' };
+          }
+          throw new Error(`Unexpected command: ${command}`);
+        }
+      });
+
+      expect(checks.every((item) => item.ok)).toBe(true);
+      expect(checks.map((item) => item.id)).toEqual([
+        'workspace-path',
+        'workspace-token',
+        'workspace-owner',
+        'workspace-volume',
+        'workspace-sandbox-probe'
+      ]);
+      expect(calls).toHaveLength(2);
+      expect(calls[1].command).toBe(node);
+      expect(calls[1].args).toEqual(expect.arrayContaining([
+        runnerPath,
+        '--workspace', workspace,
+        '--temp', tempRoot,
+        '--mode', 'workspace-write',
+        '--',
+        pwsh
+      ]));
+      expect(checks.find((item) => item.id === 'workspace-sandbox-probe')?.detail).toContain('removed its probe directory');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('workspace Doctor refuses an elevated token before the sandbox probe', async () => {
+    const root = await temp('phase7-workspace-doctor-elevated');
+    try {
+      const workspace = await project(root);
+      const calls: string[] = [];
+      const checks = await inspectWorkspaceSandbox({
+        workspace,
+        sandboxProbe: true,
+        platform: 'win32',
+        env: { TEMP: join(root, 'temp') },
+        runtimeDir: join(root, 'runtime'),
+        pwshExecutable: 'pwsh.exe',
+        nodeExecutable: 'node.exe',
+        commandRunner: async (command) => {
+          calls.push(command);
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              workspace,
+              user: 'DESKTOP\\player',
+              owner: 'DESKTOP\\player',
+              ownerMatchesUser: true,
+              integrity: 'high',
+              elevated: true,
+              fileSystem: 'NTFS',
+              driveType: 3,
+              isReparsePoint: false
+            }),
+            stderr: ''
+          };
+        }
+      });
+
+      expect(calls).toEqual(['pwsh.exe']);
+      expect(checks.find((item) => item.id === 'workspace-token')).toMatchObject({ ok: false });
+      expect(checks.find((item) => item.id === 'workspace-sandbox-probe')).toMatchObject({ ok: false });
+      expect(checks.find((item) => item.id === 'workspace-sandbox-probe')?.detail).toContain('skipped');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('workspace Doctor prints a root-only owner repair command', async () => {
+    const root = await temp('phase7-workspace-doctor-owner');
+    try {
+      const workspace = await project(root);
+      const calls: string[] = [];
+      const checks = await inspectWorkspaceSandbox({
+        workspace,
+        platform: 'win32',
+        env: {},
+        runtimeDir: join(root, 'runtime'),
+        pwshExecutable: 'pwsh.exe',
+        nodeExecutable: 'node.exe',
+        commandRunner: async (command) => {
+          calls.push(command);
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              workspace,
+              user: 'DESKTOP\\player',
+              owner: 'BUILTIN\\Administrators',
+              ownerMatchesUser: false,
+              integrity: 'medium',
+              elevated: false,
+              fileSystem: 'NTFS',
+              driveType: 3,
+              isReparsePoint: false
+            }),
+            stderr: ''
+          };
+        }
+      });
+
+      expect(calls).toEqual(['pwsh.exe']);
+      const owner = checks.find((item) => item.id === 'workspace-owner');
+      expect(owner).toMatchObject({ ok: false });
+      expect(owner?.detail).toContain(`icacls '${workspace}' /setowner 'DESKTOP\\player'`);
+      expect(owner?.detail).not.toMatch(/\s\/T(?:\s|$)/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('doctor requires an explicit workspace before accepting a sandbox probe', async () => {
+    const output: string[] = [];
+    const errors: string[] = [];
+    const exitCode = await runCli(['doctor', '--sandbox-probe'], {
+      io: {
+        stdout: { write: (text) => output.push(String(text)) },
+        stderr: { write: (text) => errors.push(String(text)) }
+      }
+    });
+    expect(exitCode).toBe(1);
+    expect(output).toEqual([]);
+    expect(errors.join('')).toContain('--sandbox-probe requires --workspace <path>.');
   });
 
   test('development NUC cleanup uses the native no-listener path, resets only generated roots, and is idempotent', async () => {
