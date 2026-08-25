@@ -16,7 +16,7 @@ import {
   prepareImageWorkshopPlugin,
   verifyImageWorkshopPlugin
 } from '../src/image-plugin';
-import { CUSTOM_AGENT_PRESET_IDS, installPreset, renderPresetOnlyPatch, validatePresetComposition, verifyTimeoutPolicyComposition } from '../src/rpgmaker';
+import { CUSTOM_AGENT_PRESET_IDS, FORGEJO_MCP_CLIENT_ROW_ID, installPreset, renderPresetOnlyPatch, validatePresetComposition, verifyTimeoutPolicyComposition } from '../src/rpgmaker';
 import { WORKSPACE_MCP_AGENT_ROW_ID, WORKSPACE_MCP_PACKAGE } from '../src/workspace-mcp';
 import { buildReleaseZip, inspectReleaseZip } from '../src/release-gate';
 import { validateRelativePath, resolveWorkspacePath } from '../bundle/dsh-image-workshop/lib/workspace.js';
@@ -1154,7 +1154,10 @@ describe('asset-workshop preset composition', () => {
 
   async function sourceWith(root: string, overlay: string): Promise<string> {
     const source = join(root, 'preset-source');
+    const sharedSkill = join(root, 'shared', 'skills', 'forgejo-issue-report', 'SKILL.md');
     await mkdir(join(source, 'skills', 'asset-workshop'), { recursive: true });
+    await mkdir(dirname(sharedSkill), { recursive: true });
+    await writeFile(sharedSkill, '---\nname: forgejo-issue-report\ndescription: fixture\n---\n');
     await writeFile(join(source, 'preset.yml'), 'name: 游戏图片素材助手\ndescription: 测试\norder: 2\n');
     await writeFile(join(source, 'agent.cordis.yml'), overlay);
     return source;
@@ -1173,6 +1176,12 @@ describe('asset-workshop preset composition', () => {
         const composed = await readFile(join(presetDir, 'agent.cordis.yml'), 'utf8');
         expect(composed).not.toContain('@anionex/dsh-vision-toolkit');
         expect(composed).not.toMatch(/vision_[a-z_]+/);
+        expect(composed).toContain(`id: ${FORGEJO_MCP_CLIENT_ROW_ID}`);
+        expect(composed).toContain("name: '@deepseek-ai/dsh-mcp-client'");
+        expect(composed).toContain('serverName: forgejo');
+        expect(composed).toContain('FORGEJO_URL: http://forgejo.localhost:17480');
+        expect(composed).toContain("FORGEJO_ACCESS_TOKEN: !!js \"process.env.DSH_FORGEJO_ACCESS_TOKEN || ''\"");
+        expect((await stat(join(presetDir, 'skills', 'forgejo-issue-report', 'SKILL.md'))).isFile()).toBe(true);
         if (presetId === 'asset-workshop') expect(composed).toContain(`id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}`);
         else expect(composed).not.toContain(`id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}`);
       }
@@ -1188,7 +1197,7 @@ describe('asset-workshop preset composition', () => {
       const code = join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml');
       await mkdir(dirname(code), { recursive: true });
       await writeFile(code, CODE);
-      const source = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: asset persona\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`);
+      const source = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: asset persona\n- id: ${FORGEJO_MCP_CLIENT_ROW_ID}\n  name: '@deepseek-ai/dsh-mcp-client'\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`);
       const dshHome = join(root, 'dsh-home');
       const { presetDir } = await installPreset(source, dshHome, code, 'asset-workshop');
       const composed = await readFile(join(presetDir, 'agent.cordis.yml'), 'utf8');
@@ -1210,14 +1219,14 @@ describe('asset-workshop preset composition', () => {
       await mkdir(dirname(code), { recursive: true });
       await writeFile(code, CODE);
       const dshHome = join(root, 'dsh-home');
-      const pluginOverlay = `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`;
+      const pluginOverlay = `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${FORGEJO_MCP_CLIENT_ROW_ID}\n  name: '@deepseek-ai/dsh-mcp-client'\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`;
       const rpgmakerSource = await sourceWith(root, pluginOverlay);
       await expect(installPreset(rpgmakerSource, dshHome, code, 'rpgmaker')).rejects.toThrow(/must not mount the image tool plugin/);
 
-      const duplicate = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`);
+      const duplicate = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${FORGEJO_MCP_CLIENT_ROW_ID}\n  name: '@deepseek-ai/dsh-mcp-client'\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`);
       await expect(installPreset(duplicate, dshHome, code, 'asset-workshop')).rejects.toThrow(/must not duplicate/);
 
-      const missingWorkspace = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n`);
+      const missingWorkspace = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${FORGEJO_MCP_CLIENT_ROW_ID}\n  name: '@deepseek-ai/dsh-mcp-client'\n`);
       await expect(installPreset(missingWorkspace, dshHome, code, 'rpgmaker')).rejects.toThrow(/exactly one workspace-mcp-agent row/);
     } finally {
       await rm(root, { recursive: true, force: true });

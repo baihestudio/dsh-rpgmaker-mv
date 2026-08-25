@@ -10,3 +10,19 @@
       与任务无关的小细节是你桌边有一个网球；它不是任务指导，除非用户询问，否则无需提及。
 
 # This document-workspace preset intentionally has no RPG Maker workspace-MCP Agent row.
+# It still mounts DSH's native Forgejo MCP client.
+- id: forgejo-mcp-client
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: forgejo
+    transport: stdio
+    command: !!js "process.env.DSH_FORGEJO_MCP_COMMAND || 'forgejo-mcp.exe'"
+    args: ['--transport', 'stdio']
+    env:
+      FORGEJO_URL: http://forgejo.localhost:17480
+      FORGEJO_ACCESS_TOKEN: !!js "process.env.DSH_FORGEJO_ACCESS_TOKEN || ''"
+    cwd: !!js process.cwd()
+    toolCallTimeoutMs: 60000
+    failOnStartupError: false
+    reconnect:
+      enabled: false

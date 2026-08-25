@@ -18,6 +18,23 @@
 - id: image-workshop-plugin
   name: '@baihestudio/dsh-image-workshop'
 
+# Every shipped Agent mounts DSH's native Forgejo MCP client.
+- id: forgejo-mcp-client
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: forgejo
+    transport: stdio
+    command: !!js "process.env.DSH_FORGEJO_MCP_COMMAND || 'forgejo-mcp.exe'"
+    args: ['--transport', 'stdio']
+    env:
+      FORGEJO_URL: http://forgejo.localhost:17480
+      FORGEJO_ACCESS_TOKEN: !!js "process.env.DSH_FORGEJO_ACCESS_TOKEN || ''"
+    cwd: !!js process.cwd()
+    toolCallTimeoutMs: 60000
+    failOnStartupError: false
+    reconnect:
+      enabled: false
+
 # The preset composition mounts workspace MCP access in this Agent scope.
 - id: workspace-mcp-agent
   name: '@baihestudio/dsh-workspace-mcp/agent'

@@ -97,6 +97,19 @@ The agent and its `rpgmaker_*` tools are the sole writers. If the RPG Maker
 editor is open, it is read-only: do not save from it, and reopen it before
 inspecting agent changes.
 
+### Forgejo issue reporting
+
+Every shipped preset also uses DSH's native `@deepseek-ai/dsh-mcp-client` to
+start `forgejo-mcp` over stdio. It publishes upstream tools under the
+`mcp__forgejo__*` namespace. Install the upstream executable separately, then
+set `DSH_FORGEJO_MCP_COMMAND` to its absolute path and restart DSH; set
+`DSH_FORGEJO_ACCESS_TOKEN` only in the launch environment. The shared
+`forgejo-issue-report` Skill uses `mcp__forgejo__list_repo_issues` and
+`mcp__forgejo__create_issue` only for
+`baihestudio/dsh-rpgmaker-mv`. Use a dedicated Forgejo credential restricted
+to that repository, because the native MCP client intentionally exposes the
+server's general API surface.
+
 The web session always binds to `http://127.0.0.1:3081`. If that port is occupied, the launcher offers to open the existing session or asks you to close it and retry. It never silently selects another port and never starts concurrent project sessions.
 
 ## Post-review acceptance sequence

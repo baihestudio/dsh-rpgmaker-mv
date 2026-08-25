@@ -701,7 +701,7 @@ describe('disposable MCPorter probe', () => {
         expect(callEvents.find((event) => event.name === affected.name)?.timeoutMs).toBe(workspace.MCPORTER_CALL_TIMEOUT_MS);
 
         await writeFile(closeGate, 'release\n');
-        await expect(call).rejects.toThrow(/^RPG Maker MCP call cancelled$/);
+        await expect(call).rejects.toThrow(/^MCP call cancelled$/);
         expect(settlements).toBe(1);
         expect(signal.addCalls).toBe(1);
         expect(signal.removeCalls).toBe(1);

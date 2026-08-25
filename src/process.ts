@@ -219,14 +219,16 @@ export function withoutCredentials(env: Record<string, string | undefined>): Rec
   const safe = { ...env };
   delete safe.DEEPSEEK_API_KEY;
   delete safe.DSH_API_KEY;
+  delete safe.DSH_FORGEJO_ACCESS_TOKEN;
+  delete safe.FORGEJO_ACCESS_TOKEN;
   return safe;
 }
 
 export function redactSensitive(text: string, env: Record<string, string | undefined> = process.env): string {
   let redacted = text;
-  const secrets = [env.DEEPSEEK_API_KEY, env.DSH_API_KEY].filter((value): value is string => Boolean(value));
+  const secrets = [env.DEEPSEEK_API_KEY, env.DSH_API_KEY, env.DSH_FORGEJO_ACCESS_TOKEN, env.FORGEJO_ACCESS_TOKEN].filter((value): value is string => Boolean(value));
   for (const secret of secrets) redacted = redacted.split(secret).join('[redacted]');
-  return redacted.replace(/(DEEPSEEK_API_KEY\s*[:=]\s*)[^\s,;}]+/gi, '$1[redacted]');
+  return redacted.replace(/((?:DEEPSEEK_API_KEY|DSH_FORGEJO_ACCESS_TOKEN|FORGEJO_ACCESS_TOKEN)\s*[:=]\s*)[^\s,;}]+/gi, '$1[redacted]');
 }
 
 export function commandFailure(command: string, args: string[], result: CommandResult, env?: Record<string, string | undefined>): Error {

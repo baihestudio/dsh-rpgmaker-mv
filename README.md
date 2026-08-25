@@ -111,6 +111,20 @@ workspace connection before the first request. It contains no preset filter:
 presets that do not mount the row receive no RPG Maker tools. Invalid
 workspaces fail before a server starts.
 
+Every shipped preset mounts the official DSH `@deepseek-ai/dsh-mcp-client`
+for the upstream Forgejo MCP server, so its full tool surface is published with
+names such as `mcp__forgejo__list_repo_issues` and
+`mcp__forgejo__create_issue`. It starts `forgejo-mcp.exe` against
+`http://forgejo.localhost:17480`; set `DSH_FORGEJO_MCP_COMMAND` to an absolute
+executable path when it is not on `PATH`, and set
+`DSH_FORGEJO_ACCESS_TOKEN` in the DSH launch environment to a Forgejo token.
+The native client passes that token only as `FORGEJO_ACCESS_TOKEN` to its child
+and never writes it to generated presets or unrelated setup processes. Use a
+dedicated Forgejo credential limited to this product repository: native MCP
+access is intentionally general, while the shared `forgejo-issue-report` Skill
+always reports only to `baihestudio/dsh-rpgmaker-mv` after verified, complete
+deduplication.
+
 The RPG Maker preset treats the MCP/agent as the sole writer. Its mounted
 `mv-reference.md` is a compact, locally authored map of MV core/runtime layers,
 `DataManager`, `$data*` records including `$dataSkills`, `Game_Interpreter`,
