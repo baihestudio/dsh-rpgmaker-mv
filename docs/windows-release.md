@@ -97,6 +97,29 @@ The agent and its `rpgmaker_*` tools are the sole writers. If the RPG Maker
 editor is open, it is read-only: do not save from it, and reopen it before
 inspecting agent changes.
 
+### Forgejo issue reporting
+
+Every shipped preset uses DSH's native `@deepseek-ai/dsh-mcp-client` to start
+the app-owned `tools/forgejo-mcp/forgejo-mcp.exe` over stdio. It publishes
+upstream tools under the `mcp__forgejo__*` namespace. The Release ZIP includes
+the executable, provenance manifest, and license; `Install.cmd` verifies its
+pinned SHA-256 and `--version` after the program-tree swap. The development
+local-update helper invokes the same transactional installer, so an update also
+adds or replaces this MCP automatically. Do not install Go or a separate MCP
+executable. `DSH_FORGEJO_MCP_COMMAND` is only an explicit override.
+
+The wrapper clears other Git credential helpers, selects Git Credential Manager,
+and reads only its already-stored password for
+`http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git` without
+interaction; it neither prompts for nor provisions a PAT. It supplies that
+Forgejo PAT only to `forgejo-mcp`. Two shared Skills use
+`mcp__forgejo__list_repo_issues` and `mcp__forgejo__create_issue` only for
+`baihestudio/dsh-rpgmaker-mv`: `forgejo-agent-issue-report` handles verified
+agent-observed product incidents, while `forgejo-user-feedback-report` asks
+only the product questions needed to record user feedback clearly before
+filing it. The native MCP client intentionally exposes the server's general
+API surface.
+
 The web session always binds to `http://127.0.0.1:3081`. If that port is occupied, the launcher offers to open the existing session or asks you to close it and retry. It never silently selects another port and never starts concurrent project sessions.
 
 ## Post-review acceptance sequence

@@ -14,6 +14,26 @@
       与任务无关的小细节是你桌边放着一根香蕉；它不是任务指导，除非用户询问，否则无需提及。
       你可以安全完成小型跨领域任务，但不要把成功启动、HTTP 200 或静态检查误报为游戏行为正确；不要声称拥有 AI 绘图、签名、商店上传或自动跨 Agent 委托能力。
 
+# Every shipped Agent mounts DSH's native Forgejo MCP client.
+- id: forgejo-mcp-client
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: forgejo
+    transport: stdio
+    command: !!js "process.execPath"
+    args:
+      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('forgejo-mcp-credential-wrapper.mjs', baseUrl))"
+      - --transport
+      - stdio
+    env:
+      FORGEJO_URL: http://forgejo.localhost:17480
+      FORGEJO_MCP_EXECUTABLE: !!js "process.env.DSH_FORGEJO_MCP_COMMAND || (process.env.DSH_RPGMAKER_PROGRAM_ROOT ? process.getBuiltinModule('node:path').join(process.env.DSH_RPGMAKER_PROGRAM_ROOT, 'tools', 'forgejo-mcp', 'forgejo-mcp.exe') : 'forgejo-mcp.exe')"
+    cwd: !!js process.cwd()
+    toolCallTimeoutMs: 60000
+    failOnStartupError: false
+    reconnect:
+      enabled: false
+
 # The preset composition mounts workspace MCP access in this Agent scope.
 - id: workspace-mcp-agent
   name: '@baihestudio/dsh-workspace-mcp/agent'

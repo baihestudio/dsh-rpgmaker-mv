@@ -215,18 +215,33 @@ export const spawnInteractive: InteractiveSpawner = (command, args, options) => 
   });
 };
 
+const SENSITIVE_ENVIRONMENT_KEYS = new Set([
+  'DEEPSEEK_API_KEY',
+  'DSH_API_KEY',
+  'DSH_FORGEJO_ACCESS_TOKEN',
+  'FORGEJO_ACCESS_TOKEN'
+]);
+
+function sensitiveEnvironmentKey(key: string): boolean {
+  return SENSITIVE_ENVIRONMENT_KEYS.has(key.toUpperCase());
+}
+
 export function withoutCredentials(env: Record<string, string | undefined>): Record<string, string | undefined> {
-  const safe = { ...env };
-  delete safe.DEEPSEEK_API_KEY;
-  delete safe.DSH_API_KEY;
+  const safe: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (!sensitiveEnvironmentKey(key)) safe[key] = value;
+  }
   return safe;
 }
 
 export function redactSensitive(text: string, env: Record<string, string | undefined> = process.env): string {
   let redacted = text;
-  const secrets = [env.DEEPSEEK_API_KEY, env.DSH_API_KEY].filter((value): value is string => Boolean(value));
-  for (const secret of secrets) redacted = redacted.split(secret).join('[redacted]');
-  return redacted.replace(/(DEEPSEEK_API_KEY\s*[:=]\s*)[^\s,;}]+/gi, '$1[redacted]');
+  const secrets: string[] = [];
+  for (const [key, value] of Object.entries(env)) {
+    if (sensitiveEnvironmentKey(key) && value) secrets.push(value);
+  }
+  for (const secret of new Set(secrets)) redacted = redacted.split(secret).join('[redacted]');
+  return redacted.replace(/((?:DEEPSEEK_API_KEY|DSH_API_KEY|DSH_FORGEJO_ACCESS_TOKEN|FORGEJO_ACCESS_TOKEN)\s*[:=]\s*)[^\s,;}]+/gi, '$1[redacted]');
 }
 
 export function commandFailure(command: string, args: string[], result: CommandResult, env?: Record<string, string | undefined>): Error {

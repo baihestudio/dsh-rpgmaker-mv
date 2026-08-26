@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "name": "forgejo-mcp",
+  "version": "2.34.1",
+  "executable": "forgejo-mcp.exe",
+  "sha256": "b41b377740e9722a1058a1cf878289089389e05053ece6102841f96ad44c61a1",
+  "license": "GPL-3.0-or-later",
+  "source": {
+    "repository": "https://git.b4mad.industries/agentic-forges/forgejo-mcp.git",
+    "tag": "v2.34.1",
+    "commit": "223874f344d34c8922a6b299c83ec368b902e1a0",
+    "url": "https://git.b4mad.industries/agentic-forges/forgejo-mcp/src/commit/223874f344d34c8922a6b299c83ec368b902e1a0"
+  },
+  "build": {
+    "goVersion": "go1.26.5",
+    "goos": "windows",
+    "goarch": "amd64",
+    "cgoEnabled": false,
+    "flags": [
+      "-trimpath",
+      "-ldflags=-s -w -X main.Version=2.34.1"
+    ]
+  }
+}

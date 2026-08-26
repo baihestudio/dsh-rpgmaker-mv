@@ -111,6 +111,28 @@ workspace connection before the first request. It contains no preset filter:
 presets that do not mount the row receive no RPG Maker tools. Invalid
 workspaces fail before a server starts.
 
+Every shipped preset mounts the official DSH `@deepseek-ai/dsh-mcp-client`
+for the upstream Forgejo MCP server, so its full tool surface is published with
+names such as `mcp__forgejo__list_repo_issues` and
+`mcp__forgejo__create_issue`. Every Release ZIP includes the app-owned
+`tools/forgejo-mcp/forgejo-mcp.exe`; both a fresh `Install.cmd` run and the
+transactional local update path verify its pinned SHA-256 and `--version`.
+Users do not install Go or supply an MCP executable. `DSH_FORGEJO_MCP_COMMAND`
+remains an explicit override only.
+
+The packaged wrapper clears other Git credential helpers, selects Git Credential
+Manager, and performs a non-interactive lookup for
+`http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git`. It uses only
+an already-stored Git Credential Manager password (the Forgejo PAT) and does
+not prompt for, create, or persist a PAT. The password reaches only the
+Forgejo MCP child as `FORGEJO_ACCESS_TOKEN`; it is never written to generated
+presets or Release ZIPs. Native MCP access is intentionally general, while two
+shared Skills constrain automatic reporting to `baihestudio/dsh-rpgmaker-mv`:
+`forgejo-agent-issue-report` files verified agent-observed defects, blockers,
+and tool/MCP failures; `forgejo-user-feedback-report` clarifies user-reported
+experience or capability feedback before filing it. Both use the same
+non-secret, complete deduplication protocol.
+
 The RPG Maker preset treats the MCP/agent as the sole writer. Its mounted
 `mv-reference.md` is a compact, locally authored map of MV core/runtime layers,
 `DataManager`, `$data*` records including `$dataSkills`, `Game_Interpreter`,

@@ -24,6 +24,7 @@ export const SECRET_MARKER = 'dsh-workspace-mcp:redacted'
 const CREDENTIAL_KEYS = [
   'DEEPSEEK_API_KEY',
   'DSH_API_KEY',
+  'FORGEJO_ACCESS_TOKEN',
   'NPM_TOKEN',
   'NODE_AUTH_TOKEN',
   'GITHUB_TOKEN',

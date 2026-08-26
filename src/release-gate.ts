@@ -3,13 +3,14 @@ import { cp, mkdir, mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promise
 import { basename, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { bootstrapRuntime, type BootstrapResult } from './bootstrap';
+import { bootstrapRuntime, findDshExecutable, type BootstrapResult } from './bootstrap';
 import { environmentPath, pathDelimiter, withEnvironmentPath, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
 import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { prepareImageToolchain } from './image-workshop';
+import { FORGEJO_MCP_EXECUTABLE_NAME, FORGEJO_MCP_LICENSE_NAME, FORGEJO_MCP_MANIFEST_NAME, FORGEJO_MCP_RUNTIME_RELATIVE, forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from './forgejo-mcp';
 import { withoutCredentials, runCommand, type CommandRunner } from './process';
 import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
-import { prepareRpgMakerMcpRuntime } from './rpgmaker';
+import { deployRpgMakerPresets, prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { prepareMcporterRuntime } from './mcport';
 import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE, IMAGE_WORKSHOP_BUNDLE_RELATIVE } from './image-plugin';
 import { prepareDshWebPlugin } from './dsh-web';
@@ -37,6 +38,7 @@ export const RELEASE_ENTRIES = [
   'src',
   'presets',
   'scripts',
+  FORGEJO_MCP_RUNTIME_RELATIVE,
   IMAGE_WORKSHOP_BUNDLE_RELATIVE,
   WORKSPACE_MCP_BUNDLE_RELATIVE
 ] as const;
@@ -138,7 +140,8 @@ function generatedEnvironment(env: Record<string, string | undefined>, paths: Ha
     DSH_HOME: paths.dshHome,
     DSH_RPGMAKER_PROGRAM_ROOT: paths.programRoot,
     DSH_RPGMAKER_DATA_ROOT: paths.mutableRoot,
-    DSH_RPGMAKER_RUNTIME: paths.runtimeDir
+    DSH_RPGMAKER_RUNTIME: paths.runtimeDir,
+    DSH_FORGEJO_MCP_COMMAND: forgejoMcpExecutablePath(paths.programRoot)
   };
 }
 
@@ -247,6 +250,8 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
     let bootstrap: BootstrapResult;
     let shortcutPath: string;
     try {
+      const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env, programRoot: paths.programRoot, commandRunner: options.commandRunner });
+      if (!forgejoMcp.valid) throw new Error(`App-owned Forgejo MCP is not usable: ${forgejoMcp.errors.join('; ')}`);
       if (oldMoved) await carryForwardVerifiedDependencies(rollbackRoot, paths.programRoot);
       bootstrap = await bootstrapRuntime({
         ...options,
@@ -325,6 +330,19 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         npmExecutable: options.npmExecutable ?? await resolveExecutable('npm', { platform, env: installedEnv }),
         commandRunner: options.commandRunner
       });
+      const dshExecutable = bootstrap.verification.dshExecutable ?? await findDshExecutable(paths.runtimeDir, platform);
+      if (!dshExecutable) throw new Error('Pinned DSH executable was not found after bootstrap.');
+      await deployRpgMakerPresets({
+        platform,
+        env: installedEnv,
+        dshHome: paths.dshHome,
+        programRoot: paths.programRoot,
+        mutableRoot: paths.mutableRoot,
+        runtimeDir: paths.runtimeDir,
+        dshExecutable,
+        sourceRoot: join(paths.programRoot, 'presets', 'rpgmaker'),
+        commandRunner: options.commandRunner
+      });
       const metadataPath = join(paths.programRoot, 'install.json');
       const metadataWriter = options.writeInstallMetadata ?? ((path: string, content: string) => writeFile(path, content, 'utf8'));
       await metadataWriter(metadataPath, installMetadata(paths, prerequisites, options.now ?? (() => new Date())));
@@ -395,10 +413,13 @@ async function archiveWithPowerShell(options: ReleaseZipOptions, staging: string
 
 export async function buildReleaseZip(options: ReleaseZipOptions): Promise<string> {
   const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
   const sourceRoot = resolve(options.sourceRoot);
   const outputZip = resolve(options.outputZip);
   if (await exists(outputZip)) throw new ReleaseGateError(`Release ZIP already exists; refusing to overwrite ${outputZip}.`);
   if (pathsNest(sourceRoot, outputZip)) throw new ReleaseGateError('Release ZIP output must be outside the source tree.');
+  const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env, programRoot: sourceRoot, probeVersion: false });
+  if (!forgejoMcp.valid) throw new ReleaseGateError(`Release source Forgejo MCP is not usable: ${forgejoMcp.errors.join('; ')}`);
   await mkdir(dirname(outputZip), { recursive: true });
   const staging = await mkdtemp(join(dirname(outputZip), `.dsh-release-${randomUUID()}-`));
   try {
@@ -450,6 +471,9 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'presets/game-design/preset.yml',
     'presets/asset-workshop/preset.yml',
     'src/dsh-web.ts',
+    `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_EXECUTABLE_NAME}`,
+    `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_MANIFEST_NAME}`,
+    `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_LICENSE_NAME}`,
     `${IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/cordis.patch.yml`,

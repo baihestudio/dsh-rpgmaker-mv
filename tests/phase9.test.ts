@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -16,9 +17,10 @@ import {
   prepareImageWorkshopPlugin,
   verifyImageWorkshopPlugin
 } from '../src/image-plugin';
-import { CUSTOM_AGENT_PRESET_IDS, installPreset, renderPresetOnlyPatch, validatePresetComposition, verifyTimeoutPolicyComposition } from '../src/rpgmaker';
+import { CUSTOM_AGENT_PRESET_IDS, FORGEJO_MCP_CLIENT_ROW_ID, installPreset, renderPresetOnlyPatch, validatePresetComposition, verifyTimeoutPolicyComposition } from '../src/rpgmaker';
 import { WORKSPACE_MCP_AGENT_ROW_ID, WORKSPACE_MCP_PACKAGE } from '../src/workspace-mcp';
 import { buildReleaseZip, inspectReleaseZip } from '../src/release-gate';
+import { verifyForgejoMcpRuntime } from '../src/forgejo-mcp';
 import { validateRelativePath, resolveWorkspacePath } from '../bundle/dsh-image-workshop/lib/workspace.js';
 import { createImageInspectTool, createImageResizePixelTool, createImageTrimPadTool, createImageSheetSliceTool, createImageSheetAssembleTool, createImageAtlasPackTool, createImageOptimizePngTool, IMAGE_INSPECT_TIMEOUT_MS, IMAGE_MUTATION_TIMEOUT_MS } from '../bundle/dsh-image-workshop/lib/tools.js';
 import * as imageWorkshopPlugin from '../bundle/dsh-image-workshop/lib/index.js';
@@ -26,6 +28,25 @@ import { clearChildSpawner, clearTerminationCommandSpawner, clearTreeTerminator,
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
+}
+
+function runWrapper(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    if (!child.stdin || !child.stdout || !child.stderr) {
+      reject(new Error('Forgejo wrapper test child does not expose piped stdio.'));
+      return;
+    }
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
+    child.stdin.end();
+  });
 }
 
 const BUNDLE_SOURCE = join(process.cwd(), 'bundle', 'dsh-image-workshop');
@@ -1149,12 +1170,60 @@ describe('app-owned image tool plugin installation', () => {
   });
 });
 
+describe('Forgejo Git credential wrapper', () => {
+  test('passes the Git credential password only to forgejo-mcp while preserving stdio', async () => {
+    if (process.platform === 'win32') return;
+    const root = await temp('forgejo-credential-wrapper');
+    try {
+      const git = join(root, 'git');
+      const forgejoMcp = join(root, 'fake-forgejo-mcp');
+      const credentialRequestPath = join(root, 'credential-request.txt');
+      const credentialEnvironmentPath = join(root, 'credential-environment.json');
+      const credentialArgumentsPath = join(root, 'credential-arguments.json');
+      const resultPath = join(root, 'result.json');
+      const wrapper = join(process.cwd(), 'presets', 'shared', 'forgejo-mcp-credential-wrapper.mjs');
+      await writeFile(git, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nlet request = '';\nprocess.stdin.setEncoding('utf8');\nprocess.stdin.on('data', (chunk) => { request += chunk; });\nprocess.stdin.on('end', () => {\n  writeFileSync(process.env.FAKE_CREDENTIAL_REQUEST, request);\n  writeFileSync(process.env.FAKE_CREDENTIAL_ENVIRONMENT, JSON.stringify({ gcmInteractive: process.env.GCM_INTERACTIVE, terminalPrompt: process.env.GIT_TERMINAL_PROMPT }));\n  writeFileSync(process.env.FAKE_CREDENTIAL_ARGUMENTS, JSON.stringify(process.argv.slice(2)));\n  process.stdout.write('username=fixture\\npassword=fixture-pat\\n');\n});\n`);
+      await writeFile(forgejoMcp, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.FAKE_FORGEJO_RESULT, JSON.stringify({ receivedPat: process.env.FORGEJO_ACCESS_TOKEN === 'fixture-pat', args: process.argv.slice(2) }));\nprocess.stdout.write('server-stdio\\n');\n`);
+      await Promise.all([chmod(git, 0o755), chmod(forgejoMcp, 0o755)]);
+      const result = await runWrapper(process.execPath, [wrapper, '--transport', 'stdio'], {
+        FAKE_CREDENTIAL_REQUEST: credentialRequestPath,
+        FAKE_CREDENTIAL_ENVIRONMENT: credentialEnvironmentPath,
+        FAKE_CREDENTIAL_ARGUMENTS: credentialArgumentsPath,
+        FAKE_FORGEJO_RESULT: resultPath,
+        FORGEJO_GIT_CREDENTIAL_URL: 'http://untrusted.invalid/other/repository.git',
+        FORGEJO_GIT_EXECUTABLE: join(root, 'untrusted-git'),
+        FORGEJO_MCP_EXECUTABLE: forgejoMcp,
+        PATH: root
+      });
+      expect(result).toMatchObject({ exitCode: 0, stdout: 'server-stdio\n', stderr: '' });
+      expect(result.stdout).not.toContain('fixture-pat');
+      expect(result.stderr).not.toContain('fixture-pat');
+      expect(await readFile(credentialRequestPath, 'utf8')).toBe('protocol=http\nhost=forgejo.localhost:17480\npath=baihestudio/dsh-rpgmaker-mv.git\n\n');
+      expect(JSON.parse(await readFile(credentialEnvironmentPath, 'utf8'))).toEqual({ gcmInteractive: 'Never', terminalPrompt: '0' });
+      expect(JSON.parse(await readFile(credentialArgumentsPath, 'utf8'))).toEqual(['-c', 'credential.helper=', '-c', 'credential.helper=manager', '-c', 'credential.interactive=false', 'credential', 'fill']);
+      expect(JSON.parse(await readFile(resultPath, 'utf8'))).toEqual({ receivedPat: true, args: ['--transport', 'stdio'] });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 describe('asset-workshop preset composition', () => {
   const CODE = "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: generic Code persona\n- id: code-tool\n  name: fake-code-tool\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n";
 
   async function sourceWith(root: string, overlay: string): Promise<string> {
     const source = join(root, 'preset-source');
+    const sharedSkillsRoot = join(root, 'shared', 'skills');
     await mkdir(join(source, 'skills', 'asset-workshop'), { recursive: true });
+    await Promise.all([
+      mkdir(join(sharedSkillsRoot, 'forgejo-agent-issue-report'), { recursive: true }),
+      mkdir(join(sharedSkillsRoot, 'forgejo-user-feedback-report'), { recursive: true })
+    ]);
+    await Promise.all([
+      writeFile(join(sharedSkillsRoot, 'forgejo-agent-issue-report', 'SKILL.md'), '---\nname: forgejo-agent-issue-report\ndescription: fixture\n---\n'),
+      writeFile(join(sharedSkillsRoot, 'forgejo-user-feedback-report', 'SKILL.md'), '---\nname: forgejo-user-feedback-report\ndescription: fixture\n---\n'),
+      writeFile(join(sharedSkillsRoot, 'forgejo-issue-reporting-protocol.md'), '# fixture\n'),
+      writeFile(join(root, 'shared', 'forgejo-mcp-credential-wrapper.mjs'), 'fixture\n')
+    ]);
     await writeFile(join(source, 'preset.yml'), 'name: 游戏图片素材助手\ndescription: 测试\norder: 2\n');
     await writeFile(join(source, 'agent.cordis.yml'), overlay);
     return source;
@@ -1173,6 +1242,17 @@ describe('asset-workshop preset composition', () => {
         const composed = await readFile(join(presetDir, 'agent.cordis.yml'), 'utf8');
         expect(composed).not.toContain('@anionex/dsh-vision-toolkit');
         expect(composed).not.toMatch(/vision_[a-z_]+/);
+        expect(composed).toContain(`id: ${FORGEJO_MCP_CLIENT_ROW_ID}`);
+        expect(composed).toContain("name: '@deepseek-ai/dsh-mcp-client'");
+        expect(composed).toContain('serverName: forgejo');
+        expect(composed).toContain('FORGEJO_URL: http://forgejo.localhost:17480');
+        expect(composed).toContain('command: !!js "process.execPath"');
+        expect(composed).toContain('forgejo-mcp-credential-wrapper.mjs');
+        expect(composed).toContain("FORGEJO_MCP_EXECUTABLE: !!js \"process.env.DSH_FORGEJO_MCP_COMMAND || (process.env.DSH_RPGMAKER_PROGRAM_ROOT ? process.getBuiltinModule('node:path').join(process.env.DSH_RPGMAKER_PROGRAM_ROOT, 'tools', 'forgejo-mcp', 'forgejo-mcp.exe') : 'forgejo-mcp.exe')\"");
+        expect((await stat(join(presetDir, 'forgejo-mcp-credential-wrapper.mjs'))).isFile()).toBe(true);
+        expect((await stat(join(presetDir, 'skills', 'forgejo-agent-issue-report', 'SKILL.md'))).isFile()).toBe(true);
+        expect((await stat(join(presetDir, 'skills', 'forgejo-user-feedback-report', 'SKILL.md'))).isFile()).toBe(true);
+        expect((await stat(join(presetDir, 'skills', 'forgejo-issue-reporting-protocol.md'))).isFile()).toBe(true);
         if (presetId === 'asset-workshop') expect(composed).toContain(`id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}`);
         else expect(composed).not.toContain(`id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}`);
       }
@@ -1188,7 +1268,7 @@ describe('asset-workshop preset composition', () => {
       const code = join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml');
       await mkdir(dirname(code), { recursive: true });
       await writeFile(code, CODE);
-      const source = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: asset persona\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`);
+      const source = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: asset persona\n- id: ${FORGEJO_MCP_CLIENT_ROW_ID}\n  name: '@deepseek-ai/dsh-mcp-client'\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`);
       const dshHome = join(root, 'dsh-home');
       const { presetDir } = await installPreset(source, dshHome, code, 'asset-workshop');
       const composed = await readFile(join(presetDir, 'agent.cordis.yml'), 'utf8');
@@ -1210,14 +1290,14 @@ describe('asset-workshop preset composition', () => {
       await mkdir(dirname(code), { recursive: true });
       await writeFile(code, CODE);
       const dshHome = join(root, 'dsh-home');
-      const pluginOverlay = `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`;
+      const pluginOverlay = `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${FORGEJO_MCP_CLIENT_ROW_ID}\n  name: '@deepseek-ai/dsh-mcp-client'\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`;
       const rpgmakerSource = await sourceWith(root, pluginOverlay);
       await expect(installPreset(rpgmakerSource, dshHome, code, 'rpgmaker')).rejects.toThrow(/must not mount the image tool plugin/);
 
-      const duplicate = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`);
+      const duplicate = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${FORGEJO_MCP_CLIENT_ROW_ID}\n  name: '@deepseek-ai/dsh-mcp-client'\n- id: ${WORKSPACE_MCP_AGENT_ROW_ID}\n  name: '${WORKSPACE_MCP_PACKAGE}/agent'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n- id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}\n  name: '${IMAGE_WORKSHOP_PLUGIN_PACKAGE}'\n`);
       await expect(installPreset(duplicate, dshHome, code, 'asset-workshop')).rejects.toThrow(/must not duplicate/);
 
-      const missingWorkspace = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n`);
+      const missingWorkspace = await sourceWith(root, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: x\n- id: ${FORGEJO_MCP_CLIENT_ROW_ID}\n  name: '@deepseek-ai/dsh-mcp-client'\n`);
       await expect(installPreset(missingWorkspace, dshHome, code, 'rpgmaker')).rejects.toThrow(/exactly one workspace-mcp-agent row/);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -1235,6 +1315,10 @@ describe('release bundle', () => {
       expect(inspection.valid).toBe(true);
       expect(inspection.entries).toContain('bundle/dsh-image-workshop/package.json');
       expect(inspection.entries).toContain('bundle/dsh-image-workshop/lib/index.js');
+      expect(inspection.entries).toContain('tools/forgejo-mcp/forgejo-mcp.exe');
+      expect(inspection.entries).toContain('tools/forgejo-mcp/forgejo-mcp.manifest.json');
+      expect(inspection.entries).toContain('tools/forgejo-mcp/LICENSE');
+      expect((await verifyForgejoMcpRuntime({ programRoot: process.cwd(), probeVersion: false })).valid).toBe(true);
       expect(await imageWorkshopBundleDigest(BUNDLE_SOURCE)).toBe(IMAGE_WORKSHOP_PLUGIN_SHA256);
     } finally {
       await rm(root, { recursive: true, force: true });

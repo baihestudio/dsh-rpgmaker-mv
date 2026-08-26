@@ -204,8 +204,8 @@ export function callServerTool(host, paths, serverName, toolName, args, options 
       if (cancelling || settled) return
       cancelling = true
       void closeServerForCancellation(host, paths, serverName).then(
-        () => settle(reject, new Error('RPG Maker MCP call cancelled')),
-        (error) => settle(reject, new Error(`RPG Maker MCP call cancellation cleanup-unconfirmed for workspace server ${serverName}: ${error instanceof Error ? error.message : String(error)}`))
+        () => settle(reject, new Error('MCP call cancelled')),
+        (error) => settle(reject, new Error(`MCP call cancellation cleanup-unconfirmed for server ${serverName}: ${error instanceof Error ? error.message : String(error)}`))
       )
     }
     const onAbort = () => beginCancellation()

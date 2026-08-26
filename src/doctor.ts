@@ -3,6 +3,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { lstat, readFile, stat } from 'node:fs/promises';
 
 import { resolveHarnessPaths, type PathOptions } from './config';
+import { verifyForgejoMcpRuntime } from './forgejo-mcp';
 import { ownedCoreutilsCommands } from './prerequisites';
 import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
@@ -354,6 +355,16 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     });
     const agentDependencies = await verifyAgentDependencies({ platform, env: commandEnv, paths, commandRunner: runner });
     checks.push(agentDependencies.mcp, agentDependencies.image);
+
+    const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env: commandEnv, programRoot: paths.programRoot, commandRunner: runner });
+    executablePaths.forgejoMcp = forgejoMcp.executablePath;
+    checks.push(check(
+      'forgejo-mcp',
+      'App-owned Forgejo MCP',
+      forgejoMcp.valid,
+      forgejoMcp.valid ? 'Pinned Forgejo MCP 2.34.1 is verified' : forgejoMcp.errors.join('; '),
+      forgejoMcp.executablePath
+    ));
 
     const imagePlugin = await (options.verifyImageWorkshopPlugin ?? (context => verifyImageWorkshopPlugin({
       platform: context.platform,

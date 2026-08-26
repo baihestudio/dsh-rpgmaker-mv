@@ -31,5 +31,6 @@ if (-not $env:DSH_RPGMAKER_DATA_ROOT) {
 }
 if (-not $env:DSH_HOME) { $env:DSH_HOME = Join-Path $env:DSH_RPGMAKER_DATA_ROOT 'state' }
 if (-not $env:DSH_RPGMAKER_RUNTIME) { $env:DSH_RPGMAKER_RUNTIME = Join-Path $root 'runtime\dsh' }
+if (-not $env:DSH_FORGEJO_MCP_COMMAND) { $env:DSH_FORGEJO_MCP_COMMAND = Join-Path $root 'tools\forgejo-mcp\forgejo-mcp.exe' }
 & $bun.Source run (Join-Path $root 'src\cli.ts') launch @RemainingArgs
 exit $LASTEXITCODE
