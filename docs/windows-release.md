@@ -181,6 +181,34 @@ From the installed program root:
 
 Doctor reports the resolved Node/npm, Python, Bun, PowerShell, Git, Coreutils, DSH runtime, RPG Maker MCP runtime, complete image toolchain, credential metadata, and mutable-layout facts without reading credential values. Python is verified independently as a general Agent utility; no managed image runtime is prepared. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
 
+### Diagnose a selected workspace sandbox
+
+When DSH asks repeatedly for a wider sandbox mode or reports a Windows ACL sandbox failure, run Doctor from a normal, non-administrator PowerShell with the exact workspace selected by the user:
+
+```powershell
+./doctor.ps1 --workspace 'D:\baihestudio\yinghuidemo'
+```
+
+This default check is read-only. It does not discover workspaces, change project files, or repair ACLs. It verifies that the current token is medium-integrity and non-elevated, that the named directory is directly on a local NTFS volume, and that its owner is the same user who is running DSH. These are the conditions the Windows ACL runner needs before it can add its workspace write grant.
+
+If the owner check fails, Doctor prints the exact command to review and run from an administrator PowerShell. It changes only the selected workspace root; do not add `/T` or apply it to a shared or managed directory:
+
+```powershell
+icacls 'D:\baihestudio\yinghuidemo' /setowner 'DESKTOP\your-user'
+```
+
+Choose a normal user-owned local NTFS workspace instead when the directory is shared, managed by another account, or subject to organization policy. Do not use an elevated DSH terminal or `danger-full-access` as a workaround.
+
+To exercise the installed DSH Windows ACL runner after the read-only checks pass, opt in explicitly:
+
+```powershell
+./doctor.ps1 --workspace 'D:\baihestudio\yinghuidemo' --sandbox-probe
+```
+
+The probe creates a uniquely named, self-cleaning directory under that workspace; it writes, appends, renames, hashes, and removes a test file through `workspace-write`. As with the first normal DSH workspace-write call, the runner leaves its deterministic workspace ACL grant on the directory as a standing reuse cache. The probe therefore is not read-only, but it never changes project files and should be run only for the explicitly named workspace.
+
+`Install.cmd` intentionally does not inspect or repair user project ACLs: installation runs before a user chooses a workspace and must not take ownership of arbitrary directories.
+
 ## Uninstall
 
 Double-click `Uninstall.cmd` in the installed program root. Default uninstall validates the harness ownership marker and install metadata before removing program files, app-owned runtimes, cache, and the BaiheStudio Start Menu shortcut. It preserves rollback/recovery trees, DSH state, credentials, logs, and all projects (projects are never discovered or deleted by the uninstaller). Unowned or malformed program trees are refused.
