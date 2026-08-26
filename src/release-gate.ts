@@ -246,13 +246,12 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
     await rename(staging, paths.programRoot);
     stagingActive = false;
 
-    const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env, programRoot: paths.programRoot, commandRunner: options.commandRunner });
-    if (!forgejoMcp.valid) throw new Error(`App-owned Forgejo MCP is not usable: ${forgejoMcp.errors.join('; ')}`);
-
     const installedEnv = generatedEnvironment(env, paths, prerequisites);
     let bootstrap: BootstrapResult;
     let shortcutPath: string;
     try {
+      const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env, programRoot: paths.programRoot, commandRunner: options.commandRunner });
+      if (!forgejoMcp.valid) throw new Error(`App-owned Forgejo MCP is not usable: ${forgejoMcp.errors.join('; ')}`);
       if (oldMoved) await carryForwardVerifiedDependencies(rollbackRoot, paths.programRoot);
       bootstrap = await bootstrapRuntime({
         ...options,

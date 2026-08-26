@@ -108,10 +108,11 @@ local-update helper invokes the same transactional installer, so an update also
 adds or replaces this MCP automatically. Do not install Go or a separate MCP
 executable. `DSH_FORGEJO_MCP_COMMAND` is only an explicit override.
 
-The wrapper reads only an already-stored Git Credential Manager password for
-`http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git` via
-non-interactive `git credential fill`; it neither prompts for nor provisions a
-PAT. It supplies that Forgejo PAT only to `forgejo-mcp`. Two shared Skills use
+The wrapper clears other Git credential helpers, selects Git Credential Manager,
+and reads only its already-stored password for
+`http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git` without
+interaction; it neither prompts for nor provisions a PAT. It supplies that
+Forgejo PAT only to `forgejo-mcp`. Two shared Skills use
 `mcp__forgejo__list_repo_issues` and `mcp__forgejo__create_issue` only for
 `baihestudio/dsh-rpgmaker-mv`: `forgejo-agent-issue-report` handles verified
 agent-observed product incidents, while `forgejo-user-feedback-report` asks

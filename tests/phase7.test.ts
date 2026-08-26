@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
 import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgejo-mcp';
-import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
+import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, RELEASE_ENTRIES, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
 import { PNPM_VERSION } from '../src/profile';
@@ -1300,6 +1300,41 @@ describe('Windows release gate foundations', () => {
       })).resolves.toBe(1);
     }
     expect(stderr).toMatch(/fixed at 127\.0\.0\.1:3081/i);
+  });
+
+  test('restores the old tree when a copied Forgejo MCP fails post-swap verification', async () => {
+    const root = await temp('phase7-forgejo-post-swap');
+    try {
+      const releaseRoot = join(root, 'release');
+      await mkdir(releaseRoot, { recursive: true });
+      for (const entry of RELEASE_ENTRIES) {
+        await cp(join(REPOSITORY_ROOT, entry), join(releaseRoot, entry), { recursive: true });
+      }
+      await writeFile(join(releaseRoot, 'tools', 'forgejo-mcp', 'forgejo-mcp.exe'), 'tampered release artifact');
+      const { env } = await prerequisiteBin(root);
+      const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const mutable = join(root, 'mutable');
+      await mkdir(program, { recursive: true });
+      await writeFile(join(program, 'old-tree.txt'), 'prior Forgejo runtime\n');
+
+      await expect(installWindowsRelease({
+        platform: 'win32',
+        env,
+        releaseRoot,
+        programRoot: program,
+        mutableRoot: mutable,
+        dshHome: join(mutable, 'state'),
+        commandRunner: prerequisiteRunner(),
+        consent: true,
+        prepareAgentDependencies
+      })).rejects.toThrow(/prior program tree was restored/i);
+      expect(await readFile(join(program, 'old-tree.txt'), 'utf8')).toBe('prior Forgejo runtime\n');
+      const failed = (await readdir(dirname(program))).find((entry) => entry.startsWith(`${basename(program)}.failed-`));
+      expect(failed).toBeDefined();
+      expect(await Bun.file(join(dirname(program), failed!, 'tools', 'forgejo-mcp', 'forgejo-mcp.exe')).exists()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test('post-swap bootstrap, metadata, and shortcut failures restore the old tree and retain the failed tree', async () => {

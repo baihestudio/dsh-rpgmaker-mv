@@ -17,7 +17,25 @@ import {
   verifyWorkspaceMcpBundle
 } from '../src/workspace-mcp';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
+import { redactSensitive, withoutCredentials } from '../src/process';
 import { HarnessScope, createHarnessAgent, type HarnessAgent } from './fixtures/dsh-agent-harness';
+
+describe('credential environment scrubbing', () => {
+  test('filters and redacts credential keys case-insensitively', () => {
+    const env = {
+      forgejo_access_token: 'synthetic-forgejo-secret',
+      DsH_FoRgEjO_AcCeSs_ToKeN: 'synthetic-dsh-forgejo-secret',
+      dsh_api_key: 'synthetic-dsh-secret',
+      SAFE_VALUE: 'safe'
+    };
+    expect(withoutCredentials(env)).toEqual({ SAFE_VALUE: 'safe' });
+    const redacted = redactSensitive('forgejo_access_token=synthetic-forgejo-secret DSH_API_KEY: synthetic-dsh-secret', env);
+    expect(redacted).not.toContain('synthetic-forgejo-secret');
+    expect(redacted).not.toContain('synthetic-dsh-secret');
+    expect(redacted).toContain('forgejo_access_token=[redacted]');
+    expect(redacted).toContain('DSH_API_KEY: [redacted]');
+  });
+});
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));

@@ -120,10 +120,11 @@ transactional local update path verify its pinned SHA-256 and `--version`.
 Users do not install Go or supply an MCP executable. `DSH_FORGEJO_MCP_COMMAND`
 remains an explicit override only.
 
-The packaged wrapper performs a non-interactive `git credential fill` lookup
-for `http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git` and uses
-only an already-stored Git Credential Manager password (the Forgejo PAT). It
-does not prompt for, create, or persist a PAT. The password reaches only the
+The packaged wrapper clears other Git credential helpers, selects Git Credential
+Manager, and performs a non-interactive lookup for
+`http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git`. It uses only
+an already-stored Git Credential Manager password (the Forgejo PAT) and does
+not prompt for, create, or persist a PAT. The password reaches only the
 Forgejo MCP child as `FORGEJO_ACCESS_TOKEN`; it is never written to generated
 presets or Release ZIPs. Native MCP access is intentionally general, while two
 shared Skills constrain automatic reporting to `baihestudio/dsh-rpgmaker-mv`:

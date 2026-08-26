@@ -1,10 +1,13 @@
 import { spawn } from 'node:child_process';
 
 const MAX_CREDENTIAL_BYTES = 64 * 1024;
+const FORGEJO_GIT_CREDENTIAL_URL = 'http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git';
+const GIT_CREDENTIAL_MANAGER_ARGS = ['-c', 'credential.helper=', '-c', 'credential.helper=manager', '-c', 'credential.interactive=false', 'credential', 'fill'];
 
 class CredentialWrapperError extends Error {}
 
-function credentialRequest(rawUrl) {
+function credentialRequest() {
+  const rawUrl = FORGEJO_GIT_CREDENTIAL_URL;
   let endpoint;
   try {
     endpoint = new URL(rawUrl);
@@ -31,7 +34,7 @@ function readGitCredential(command, request) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(command, ['credential', 'fill'], {
+      child = spawn(command, GIT_CREDENTIAL_MANAGER_ARGS, {
         env: { ...process.env, GCM_INTERACTIVE: 'Never', GIT_TERMINAL_PROMPT: '0' },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true
@@ -114,11 +117,9 @@ function startForgejoMcp(command, args, token) {
 }
 
 async function main() {
-  const credentialUrl = process.env.FORGEJO_GIT_CREDENTIAL_URL;
   const forgejoMcp = process.env.FORGEJO_MCP_EXECUTABLE;
-  if (!credentialUrl) throw new CredentialWrapperError('FORGEJO_GIT_CREDENTIAL_URL is not configured.');
   if (!forgejoMcp) throw new CredentialWrapperError('FORGEJO_MCP_EXECUTABLE is not configured.');
-  const credential = await readGitCredential(process.env.FORGEJO_GIT_EXECUTABLE || 'git', credentialRequest(credentialUrl));
+  const credential = await readGitCredential('git', credentialRequest());
   return startForgejoMcp(forgejoMcp, process.argv.slice(2), credentialPassword(credential));
 }
 

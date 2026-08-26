@@ -1175,28 +1175,32 @@ describe('Forgejo Git credential wrapper', () => {
     if (process.platform === 'win32') return;
     const root = await temp('forgejo-credential-wrapper');
     try {
-      const git = join(root, 'fake-git');
+      const git = join(root, 'git');
       const forgejoMcp = join(root, 'fake-forgejo-mcp');
       const credentialRequestPath = join(root, 'credential-request.txt');
       const credentialEnvironmentPath = join(root, 'credential-environment.json');
+      const credentialArgumentsPath = join(root, 'credential-arguments.json');
       const resultPath = join(root, 'result.json');
       const wrapper = join(process.cwd(), 'presets', 'shared', 'forgejo-mcp-credential-wrapper.mjs');
-      await writeFile(git, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nlet request = '';\nprocess.stdin.setEncoding('utf8');\nprocess.stdin.on('data', (chunk) => { request += chunk; });\nprocess.stdin.on('end', () => {\n  writeFileSync(process.env.FAKE_CREDENTIAL_REQUEST, request);\n  writeFileSync(process.env.FAKE_CREDENTIAL_ENVIRONMENT, JSON.stringify({ gcmInteractive: process.env.GCM_INTERACTIVE, terminalPrompt: process.env.GIT_TERMINAL_PROMPT }));\n  process.stdout.write('username=fixture\\npassword=fixture-pat\\n');\n});\n`);
+      await writeFile(git, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nlet request = '';\nprocess.stdin.setEncoding('utf8');\nprocess.stdin.on('data', (chunk) => { request += chunk; });\nprocess.stdin.on('end', () => {\n  writeFileSync(process.env.FAKE_CREDENTIAL_REQUEST, request);\n  writeFileSync(process.env.FAKE_CREDENTIAL_ENVIRONMENT, JSON.stringify({ gcmInteractive: process.env.GCM_INTERACTIVE, terminalPrompt: process.env.GIT_TERMINAL_PROMPT }));\n  writeFileSync(process.env.FAKE_CREDENTIAL_ARGUMENTS, JSON.stringify(process.argv.slice(2)));\n  process.stdout.write('username=fixture\\npassword=fixture-pat\\n');\n});\n`);
       await writeFile(forgejoMcp, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.FAKE_FORGEJO_RESULT, JSON.stringify({ receivedPat: process.env.FORGEJO_ACCESS_TOKEN === 'fixture-pat', args: process.argv.slice(2) }));\nprocess.stdout.write('server-stdio\\n');\n`);
       await Promise.all([chmod(git, 0o755), chmod(forgejoMcp, 0o755)]);
       const result = await runWrapper(process.execPath, [wrapper, '--transport', 'stdio'], {
         FAKE_CREDENTIAL_REQUEST: credentialRequestPath,
         FAKE_CREDENTIAL_ENVIRONMENT: credentialEnvironmentPath,
+        FAKE_CREDENTIAL_ARGUMENTS: credentialArgumentsPath,
         FAKE_FORGEJO_RESULT: resultPath,
-        FORGEJO_GIT_CREDENTIAL_URL: 'http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git',
-        FORGEJO_GIT_EXECUTABLE: git,
-        FORGEJO_MCP_EXECUTABLE: forgejoMcp
+        FORGEJO_GIT_CREDENTIAL_URL: 'http://untrusted.invalid/other/repository.git',
+        FORGEJO_GIT_EXECUTABLE: join(root, 'untrusted-git'),
+        FORGEJO_MCP_EXECUTABLE: forgejoMcp,
+        PATH: root
       });
       expect(result).toMatchObject({ exitCode: 0, stdout: 'server-stdio\n', stderr: '' });
       expect(result.stdout).not.toContain('fixture-pat');
       expect(result.stderr).not.toContain('fixture-pat');
       expect(await readFile(credentialRequestPath, 'utf8')).toBe('protocol=http\nhost=forgejo.localhost:17480\npath=baihestudio/dsh-rpgmaker-mv.git\n\n');
       expect(JSON.parse(await readFile(credentialEnvironmentPath, 'utf8'))).toEqual({ gcmInteractive: 'Never', terminalPrompt: '0' });
+      expect(JSON.parse(await readFile(credentialArgumentsPath, 'utf8'))).toEqual(['-c', 'credential.helper=', '-c', 'credential.helper=manager', '-c', 'credential.interactive=false', 'credential', 'fill']);
       expect(JSON.parse(await readFile(resultPath, 'utf8'))).toEqual({ receivedPat: true, args: ['--transport', 'stdio'] });
     } finally {
       await rm(root, { recursive: true, force: true });
