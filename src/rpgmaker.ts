@@ -83,6 +83,23 @@ export interface RpgMakerLaunchPreparation {
   workspaceMcpBundle: WorkspaceMcpBundleVerification;
 }
 
+export interface RpgMakerPresetDeploymentOptions extends PathOptions {
+  platform?: string;
+  env?: Record<string, string | undefined>;
+  dshExecutable: string;
+  sourceRoot?: string;
+  agentPreset?: string;
+  commandRunner?: CommandRunner;
+}
+
+export interface RpgMakerPresetDeployment {
+  presetRoot: string;
+  presetDir: string;
+  codePresetPath: string;
+  compositionPath: string;
+  agentPreset: string;
+}
+
 export interface McpVerification {
   valid: boolean;
   errors: string[];
@@ -652,6 +669,46 @@ async function validatePresetComposition(
   }
 }
 
+export async function deployRpgMakerPresets(options: RpgMakerPresetDeploymentOptions): Promise<RpgMakerPresetDeployment> {
+  const platform = options.platform ?? process.platform;
+  const ambientEnv = options.env ?? process.env;
+  const paths = resolveHarnessPaths({ ...options, platform, env: ambientEnv });
+  const env = { ...ambientEnv, DSH_HOME: paths.dshHome };
+  const agentPreset = options.agentPreset ?? RPGMAKER_PRESET_ID;
+  if (!CUSTOM_AGENT_PRESET_IDS.includes(agentPreset as typeof CUSTOM_AGENT_PRESET_IDS[number])) {
+    throw new RpgMakerStartupError(`Unknown RPG Maker agent preset: ${agentPreset}`);
+  }
+  if (!(await pathExists(options.dshExecutable))) {
+    throw new RpgMakerStartupError(`DSH executable does not exist: ${options.dshExecutable}. Run bootstrap, then retry.`);
+  }
+
+  const codePresetPath = await findCodeComposition(paths.runtimeDir);
+  const sourceRoot = options.sourceRoot ?? defaultSourceRoot(RPGMAKER_PRESET_ID);
+  const shippedPresetRoot = dirname(sourceRoot);
+  await mkdir(paths.neutralLandingDir, { recursive: true });
+  return withOwnedRpgMakerProfileRepair(paths.dshHome, async () => {
+    const installed = await installPreset(sourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
+    await installPreset(join(shippedPresetRoot, ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
+    await installPreset(join(shippedPresetRoot, GAME_DESIGN_PRESET_ID), paths.dshHome, codePresetPath, GAME_DESIGN_PRESET_ID);
+    await removeOwnedPreset(join(paths.dshHome, '.agent-presets'), 'playtest-debug');
+
+    const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
+    await mkdir(dirname(compositionPath), { recursive: true });
+    await writeFile(compositionPath, renderPresetOnlyPatch(installed.presetRoot, agentPreset));
+    const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome, installed.presetRoot);
+    if (!timeoutPolicy.valid) throw new RpgMakerStartupError(`DSH timeout policy composition is not usable: ${timeoutPolicy.errors.join('; ')}`);
+    await validatePresetComposition(options.dshExecutable, compositionPath, paths.neutralLandingDir, platform, env, options.commandRunner ?? runCommand);
+
+    return {
+      presetRoot: installed.presetRoot,
+      presetDir: join(installed.presetRoot, agentPreset),
+      codePresetPath,
+      compositionPath,
+      agentPreset
+    };
+  });
+}
+
 export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Promise<RpgMakerLaunchPreparation> {
   const platform = options.platform ?? process.platform;
   const ambientEnv = options.env ?? process.env;
@@ -680,7 +737,9 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   }
   const dshExecutable = options.dshExecutable ?? dshBootstrap.verification.dshExecutable ?? await findDshExecutable(paths.runtimeDir, platform);
   if (!dshExecutable) throw new RpgMakerStartupError('Pinned DSH executable was not found; refusing to launch an unverified project-neutral Host.');
-  if (!(await pathExists(dshExecutable))) throw new RpgMakerStartupError(`DSH executable does not exist: ${dshExecutable}. Run bootstrap, then retry.`);
+  if (!(await pathExists(dshExecutable))) {
+    throw new RpgMakerStartupError(`DSH executable does not exist: ${dshExecutable}. Run bootstrap, then retry.`);
+  }
 
   const mcporterRuntimeDir = resolve(options.mcporterRuntimeDir ?? mcporterRuntimeDirFor(paths));
   const prepareMcporter = options.mcporterRuntimePreparer ?? prepareMcporterRuntime;
@@ -725,37 +784,28 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   });
   if (!workspaceMcpBundle.valid) throw new RpgMakerStartupError(`App-owned workspace MCP bundle is not usable: ${workspaceMcpBundle.errors.join('; ')}`);
 
-  const codePresetPath = await findCodeComposition(paths.runtimeDir);
-  const sourceRoot = options.sourceRoot ?? defaultSourceRoot(RPGMAKER_PRESET_ID);
-  const shippedPresetRoot = dirname(sourceRoot);
-  await mkdir(paths.neutralLandingDir, { recursive: true });
-  return withOwnedRpgMakerProfileRepair(paths.dshHome, async () => {
-    const installed = await installPreset(sourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
-    await installPreset(join(shippedPresetRoot, ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
-    await installPreset(join(shippedPresetRoot, GAME_DESIGN_PRESET_ID), paths.dshHome, codePresetPath, GAME_DESIGN_PRESET_ID);
-    await removeOwnedPreset(join(paths.dshHome, '.agent-presets'), 'playtest-debug');
-
-    const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
-    await mkdir(dirname(compositionPath), { recursive: true });
-    await writeFile(compositionPath, renderPresetOnlyPatch(installed.presetRoot, agentPreset));
-    const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome, installed.presetRoot);
-    if (!timeoutPolicy.valid) throw new RpgMakerStartupError(`DSH timeout policy composition is not usable: ${timeoutPolicy.errors.join('; ')}`);
-    await validatePresetComposition(dshExecutable, compositionPath, paths.neutralLandingDir, platform, env, options.commandRunner ?? runCommand);
-
-    return {
-      dshExecutable,
-      mcporterRuntimeDir,
-      xeroloRuntimeDir,
-      xeroloScript: mcp.executable!,
-      jsRunner,
-      presetRoot: installed.presetRoot,
-      presetDir: join(installed.presetRoot, agentPreset),
-      codePresetPath,
-      compositionPath,
-      agentPreset,
-      workspaceMcpBundle
-    };
+  const presets = await deployRpgMakerPresets({
+    platform,
+    env,
+    dshHome: paths.dshHome,
+    programRoot: paths.programRoot,
+    mutableRoot: paths.mutableRoot,
+    runtimeDir: paths.runtimeDir,
+    dshExecutable,
+    sourceRoot: options.sourceRoot,
+    agentPreset,
+    commandRunner: options.commandRunner
   });
+
+  return {
+    dshExecutable,
+    mcporterRuntimeDir,
+    xeroloRuntimeDir,
+    xeroloScript: mcp.executable,
+    jsRunner,
+    ...presets,
+    workspaceMcpBundle
+  };
 }
 
 export interface RpgMakerLaunchResult extends LaunchResult {

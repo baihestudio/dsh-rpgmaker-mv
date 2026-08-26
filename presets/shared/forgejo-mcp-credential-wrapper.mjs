@@ -32,6 +32,7 @@ function readGitCredential(command, request) {
     let child;
     try {
       child = spawn(command, ['credential', 'fill'], {
+        env: { ...process.env, GCM_INTERACTIVE: 'Never', GIT_TERMINAL_PROMPT: '0' },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true
       });

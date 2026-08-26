@@ -24,7 +24,7 @@
     env:
       FORGEJO_URL: http://forgejo.localhost:17480
       FORGEJO_GIT_CREDENTIAL_URL: !!js "process.env.DSH_FORGEJO_GIT_CREDENTIAL_URL || 'http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git'"
-      FORGEJO_MCP_EXECUTABLE: !!js "process.env.DSH_FORGEJO_MCP_COMMAND || 'forgejo-mcp.exe'"
+      FORGEJO_MCP_EXECUTABLE: !!js "process.env.DSH_FORGEJO_MCP_COMMAND || (process.env.DSH_RPGMAKER_PROGRAM_ROOT ? process.getBuiltinModule('node:path').join(process.env.DSH_RPGMAKER_PROGRAM_ROOT, 'tools', 'forgejo-mcp', 'forgejo-mcp.exe') : 'forgejo-mcp.exe')"
     cwd: !!js process.cwd()
     toolCallTimeoutMs: 60000
     failOnStartupError: false

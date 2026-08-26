@@ -9,6 +9,7 @@ import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
+import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgejo-mcp';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
@@ -116,6 +117,7 @@ function prerequisiteRunner() {
     if (name === 'coreutils-manager.exe' && args[0] === '--help') return { exitCode: 0, stdout: 'Manage coreutils utilities and PowerShell profiles\n enable\n disable\n status\n', stderr: '' };
     if (name === 'coreutils-manager.exe' && args[0] === 'status') return { exitCode: 0, stdout: 'find enabled\ngrep enabled\n', stderr: '' };
     if (name === '7z.exe' && args[0] === 'i') return { exitCode: 0, stdout: '7-Zip 24.09 (x64) : Copyright (c) 1999-2025 Igor Pavlov\n', stderr: '' };
+    if (name === 'forgejo-mcp.exe' && args[0] === '--version') return { exitCode: 0, stdout: 'forgejo-mcp 2.34.1\n', stderr: '' };
     return { exitCode: 0, stdout: `${name} 0.1.0`, stderr: '' };
   };
 }
@@ -895,6 +897,7 @@ describe('Windows release gate foundations', () => {
       const programRoot = join(root, 'program');
       const runtime = join(programRoot, 'runtime', 'dsh');
       await dshRuntime(runtime);
+      await cp(join(REPOSITORY_ROOT, 'tools', 'forgejo-mcp'), join(programRoot, 'tools', 'forgejo-mcp'), { recursive: true });
       await ensureHarnessLayout({ platform: 'win32', env, mutableRoot, dshHome, programRoot, runtimeDir: runtime });
       await writeFile(join(dshHome, '.credentials.yaml'), 'provider: local\n');
       const presetRoot = join(dshHome, '.agent-presets');
@@ -926,7 +929,9 @@ describe('Windows release gate foundations', () => {
       expect(report.checks.map((check) => check.id)).toContain('node');
       expect(report.checks.map((check) => check.id)).toContain('python');
       expect(report.checks.map((check) => check.id)).toContain('image-tool-plugin');
+      expect(report.checks.map((check) => check.id)).toContain('forgejo-mcp');
       expect(report.executablePaths.python).toContain('python.exe');
+      expect(report.executablePaths.forgejoMcp).toContain(join('tools', 'forgejo-mcp', 'forgejo-mcp.exe'));
       expect(report.checks.map((check) => check.id)).toContain('app-layout');
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-profile');
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-provider');
@@ -1155,10 +1160,28 @@ describe('Windows release gate foundations', () => {
       expect(await Bun.file(join(program, 'runtime', 'dsh', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, WORKSPACE_MCP_BUNDLE_RELATIVE, 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, WORKSPACE_MCP_BUNDLE_RELATIVE, 'lib', 'xerolo-manifest.js')).exists()).toBe(true);
+      const forgejoMcp = await verifyForgejoMcpRuntime({ platform: 'win32', env, programRoot: program, commandRunner: prerequisiteRunner() });
+      expect(forgejoMcp.valid).toBe(true);
+      expect(forgejoMcp.executablePath).toBe(forgejoMcpExecutablePath(program));
       expect((await stat(join(mutable, 'logs'))).isDirectory()).toBe(true);
       expect((await stat(join(mutable, 'cache'))).isDirectory()).toBe(true);
       expect(await readFile(join(program, 'install.json'), 'utf8')).not.toContain('must-not-be-written');
       expect(await readFile(join(state, '.credentials.yaml'), 'utf8')).toContain('provider: local');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a modified bundled Forgejo MCP before it can be installed', async () => {
+    const root = await temp('phase7-forgejo-integrity');
+    try {
+      const programRoot = join(root, 'program');
+      await mkdir(join(programRoot, 'tools'), { recursive: true });
+      await cp(join(REPOSITORY_ROOT, 'tools', 'forgejo-mcp'), join(programRoot, 'tools', 'forgejo-mcp'), { recursive: true });
+      await writeFile(forgejoMcpExecutablePath(programRoot), 'tampered fixture');
+      const verification = await verifyForgejoMcpRuntime({ programRoot, probeVersion: false });
+      expect(verification.valid).toBe(false);
+      expect(verification.errors.join(' ')).toMatch(/checksum/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1210,6 +1233,9 @@ describe('Windows release gate foundations', () => {
       });
 
       await install();
+      const installedForgejoPreset = join(state, '.agent-presets', 'rpgmaker', 'agent.cordis.yml');
+      expect(await Bun.file(installedForgejoPreset).exists()).toBe(true);
+      expect(await readFile(installedForgejoPreset, 'utf8')).toContain('DSH_RPGMAKER_PROGRAM_ROOT');
       expect(calls.some((call) => call.args.includes(`pnpm@${PNPM_VERSION}`))).toBe(true);
       expect(calls.some((call) => basename(call.command).toLowerCase() === 'python.exe')).toBe(true);
       expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
@@ -1504,6 +1530,27 @@ describe('Windows release gate foundations', () => {
         }
       });
 
+      const forgejoMcpExecutable = forgejoMcpExecutablePath(program);
+      const installedForgejoPreset = join(state, '.agent-presets', 'rpgmaker', 'agent.cordis.yml');
+      expect((await verifyForgejoMcpRuntime({ platform: 'win32', env, programRoot: program, commandRunner: runner })).valid).toBe(true);
+      await writeFile(installedForgejoPreset, 'legacy Forgejo preset\n');
+      await rm(forgejoMcpExecutable);
+      await installWindowsRelease({
+        platform: 'win32',
+        env,
+        releaseRoot: extracted,
+        programRoot: program,
+        mutableRoot: mutable,
+        dshHome: state,
+        bunExecutable: bun,
+        npmExecutable: npm,
+        commandRunner: runner,
+        consent: true,
+        createShortcut: async () => shortcut
+      });
+      expect((await verifyForgejoMcpRuntime({ platform: 'win32', env, programRoot: program, commandRunner: runner })).valid).toBe(true);
+      expect(await readFile(installedForgejoPreset, 'utf8')).toContain('DSH_RPGMAKER_PROGRAM_ROOT');
+
       const dshExecutable = await findDshExecutable(join(program, 'runtime', 'dsh'), 'win32');
       expect(dshExecutable).toBeDefined();
       const launchRunner = async (command: string, args: string[], options: { cwd?: string; env?: Record<string, string | undefined>; platform?: string; timeoutMs?: number }) => {
@@ -1551,6 +1598,7 @@ describe('Windows release gate foundations', () => {
       await writeFile(dsh, 'fixture');
       const launched = child();
       let args: string[] = [];
+      let childEnv: Record<string, string | undefined> = {};
       let probes = 0;
       const opened: string[] = [];
       const result = await launchProject({
@@ -1564,11 +1612,12 @@ describe('Windows release gate foundations', () => {
         openExistingSession: async (url) => { opened.push(url); },
         dshArgs: ['--profile', 'web', '--patch', 'composition.yml'],
         env: {},
-        spawnInteractive: (_command, received) => { args = received; return launched; }
+        spawnInteractive: (_command, received, options) => { args = received; childEnv = options.env ?? {}; return launched; }
       });
       expect(args).toEqual(['--profile', 'web', '--patch', 'composition.yml', '--host', '127.0.0.1', '--port', '3081']);
       expect(opened).toEqual(['http://127.0.0.1:3081/']);
       expect(result.cwd).toBe(join(root, 'program', 'neutral'));
+      expect(childEnv.DSH_FORGEJO_MCP_COMMAND).toBe(forgejoMcpExecutablePath(join(root, 'program')));
       await expect(Bun.file(join(root, 'mutable', 'recent-projects.json')).exists()).resolves.toBe(false);
       launched.exitCode = 0;
       launched.emit('exit', 0);

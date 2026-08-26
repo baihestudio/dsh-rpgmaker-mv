@@ -4,6 +4,7 @@ import { stdin as processStdin, stdout as processStdout } from 'node:process';
 
 import { findDshExecutable } from './bootstrap';
 import { resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
+import { forgejoMcpExecutablePath } from './forgejo-mcp';
 import { inspectCredentialMetadata } from './credentials';
 import { childExitCode, runCommand, spawnInteractive, type CommandRunner, type InteractiveSpawner } from './process';
 import { pathExists } from './project';
@@ -268,6 +269,7 @@ async function launchProjectUnlocked(
     DSH_RPGMAKER_RUNTIME: paths.runtimeDir,
     DSH_RPGMAKER_LOG_DIR: paths.logsDir,
     DSH_RPGMAKER_CACHE_DIR: paths.cacheDir,
+    DSH_FORGEJO_MCP_COMMAND: env.DSH_FORGEJO_MCP_COMMAND ?? forgejoMcpExecutablePath(paths.programRoot),
     ...(options.extraEnv ?? {})
   };
   const rawArgs = [...(options.dshArgs ?? [])];

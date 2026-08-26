@@ -20,6 +20,7 @@ import {
 import { CUSTOM_AGENT_PRESET_IDS, FORGEJO_MCP_CLIENT_ROW_ID, installPreset, renderPresetOnlyPatch, validatePresetComposition, verifyTimeoutPolicyComposition } from '../src/rpgmaker';
 import { WORKSPACE_MCP_AGENT_ROW_ID, WORKSPACE_MCP_PACKAGE } from '../src/workspace-mcp';
 import { buildReleaseZip, inspectReleaseZip } from '../src/release-gate';
+import { verifyForgejoMcpRuntime } from '../src/forgejo-mcp';
 import { validateRelativePath, resolveWorkspacePath } from '../bundle/dsh-image-workshop/lib/workspace.js';
 import { createImageInspectTool, createImageResizePixelTool, createImageTrimPadTool, createImageSheetSliceTool, createImageSheetAssembleTool, createImageAtlasPackTool, createImageOptimizePngTool, IMAGE_INSPECT_TIMEOUT_MS, IMAGE_MUTATION_TIMEOUT_MS } from '../bundle/dsh-image-workshop/lib/tools.js';
 import * as imageWorkshopPlugin from '../bundle/dsh-image-workshop/lib/index.js';
@@ -1177,14 +1178,15 @@ describe('Forgejo Git credential wrapper', () => {
       const git = join(root, 'fake-git');
       const forgejoMcp = join(root, 'fake-forgejo-mcp');
       const credentialRequestPath = join(root, 'credential-request.txt');
+      const credentialEnvironmentPath = join(root, 'credential-environment.json');
       const resultPath = join(root, 'result.json');
       const wrapper = join(process.cwd(), 'presets', 'shared', 'forgejo-mcp-credential-wrapper.mjs');
-      await writeFile(git, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nlet request = '';\nprocess.stdin.setEncoding('utf8');\nprocess.stdin.on('data', (chunk) => { request += chunk; });\nprocess.stdin.on('end', () => {\n  writeFileSync(process.env.FAKE_CREDENTIAL_REQUEST, request);\n  process.stdout.write('username=fixture\\npassword=fixture-pat\\n');\n});\n`);
+      await writeFile(git, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nlet request = '';\nprocess.stdin.setEncoding('utf8');\nprocess.stdin.on('data', (chunk) => { request += chunk; });\nprocess.stdin.on('end', () => {\n  writeFileSync(process.env.FAKE_CREDENTIAL_REQUEST, request);\n  writeFileSync(process.env.FAKE_CREDENTIAL_ENVIRONMENT, JSON.stringify({ gcmInteractive: process.env.GCM_INTERACTIVE, terminalPrompt: process.env.GIT_TERMINAL_PROMPT }));\n  process.stdout.write('username=fixture\\npassword=fixture-pat\\n');\n});\n`);
       await writeFile(forgejoMcp, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.FAKE_FORGEJO_RESULT, JSON.stringify({ receivedPat: process.env.FORGEJO_ACCESS_TOKEN === 'fixture-pat', args: process.argv.slice(2) }));\nprocess.stdout.write('server-stdio\\n');\n`);
       await Promise.all([chmod(git, 0o755), chmod(forgejoMcp, 0o755)]);
       const result = await runWrapper(process.execPath, [wrapper, '--transport', 'stdio'], {
-        ...process.env,
         FAKE_CREDENTIAL_REQUEST: credentialRequestPath,
+        FAKE_CREDENTIAL_ENVIRONMENT: credentialEnvironmentPath,
         FAKE_FORGEJO_RESULT: resultPath,
         FORGEJO_GIT_CREDENTIAL_URL: 'http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git',
         FORGEJO_GIT_EXECUTABLE: git,
@@ -1194,6 +1196,7 @@ describe('Forgejo Git credential wrapper', () => {
       expect(result.stdout).not.toContain('fixture-pat');
       expect(result.stderr).not.toContain('fixture-pat');
       expect(await readFile(credentialRequestPath, 'utf8')).toBe('protocol=http\nhost=forgejo.localhost:17480\npath=baihestudio/dsh-rpgmaker-mv.git\n\n');
+      expect(JSON.parse(await readFile(credentialEnvironmentPath, 'utf8'))).toEqual({ gcmInteractive: 'Never', terminalPrompt: '0' });
       expect(JSON.parse(await readFile(resultPath, 'utf8'))).toEqual({ receivedPat: true, args: ['--transport', 'stdio'] });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -1241,7 +1244,7 @@ describe('asset-workshop preset composition', () => {
         expect(composed).toContain('FORGEJO_URL: http://forgejo.localhost:17480');
         expect(composed).toContain('command: !!js "process.execPath"');
         expect(composed).toContain('forgejo-mcp-credential-wrapper.mjs');
-        expect(composed).toContain("FORGEJO_MCP_EXECUTABLE: !!js \"process.env.DSH_FORGEJO_MCP_COMMAND || 'forgejo-mcp.exe'\"");
+        expect(composed).toContain("FORGEJO_MCP_EXECUTABLE: !!js \"process.env.DSH_FORGEJO_MCP_COMMAND || (process.env.DSH_RPGMAKER_PROGRAM_ROOT ? process.getBuiltinModule('node:path').join(process.env.DSH_RPGMAKER_PROGRAM_ROOT, 'tools', 'forgejo-mcp', 'forgejo-mcp.exe') : 'forgejo-mcp.exe')\"");
         expect((await stat(join(presetDir, 'forgejo-mcp-credential-wrapper.mjs'))).isFile()).toBe(true);
         expect((await stat(join(presetDir, 'skills', 'forgejo-agent-issue-report', 'SKILL.md'))).isFile()).toBe(true);
         expect((await stat(join(presetDir, 'skills', 'forgejo-user-feedback-report', 'SKILL.md'))).isFile()).toBe(true);
@@ -1308,6 +1311,10 @@ describe('release bundle', () => {
       expect(inspection.valid).toBe(true);
       expect(inspection.entries).toContain('bundle/dsh-image-workshop/package.json');
       expect(inspection.entries).toContain('bundle/dsh-image-workshop/lib/index.js');
+      expect(inspection.entries).toContain('tools/forgejo-mcp/forgejo-mcp.exe');
+      expect(inspection.entries).toContain('tools/forgejo-mcp/forgejo-mcp.manifest.json');
+      expect(inspection.entries).toContain('tools/forgejo-mcp/LICENSE');
+      expect((await verifyForgejoMcpRuntime({ programRoot: process.cwd(), probeVersion: false })).valid).toBe(true);
       expect(await imageWorkshopBundleDigest(BUNDLE_SOURCE)).toBe(IMAGE_WORKSHOP_PLUGIN_SHA256);
     } finally {
       await rm(root, { recursive: true, force: true });
