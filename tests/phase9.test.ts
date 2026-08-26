@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -26,6 +27,25 @@ import { clearChildSpawner, clearTerminationCommandSpawner, clearTreeTerminator,
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
+}
+
+function runWrapper(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    if (!child.stdin || !child.stdout || !child.stderr) {
+      reject(new Error('Forgejo wrapper test child does not expose piped stdio.'));
+      return;
+    }
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
+    child.stdin.end();
+  });
 }
 
 const BUNDLE_SOURCE = join(process.cwd(), 'bundle', 'dsh-image-workshop');
@@ -1149,6 +1169,37 @@ describe('app-owned image tool plugin installation', () => {
   });
 });
 
+describe('Forgejo Git credential wrapper', () => {
+  test('passes the Git credential password only to forgejo-mcp while preserving stdio', async () => {
+    if (process.platform === 'win32') return;
+    const root = await temp('forgejo-credential-wrapper');
+    try {
+      const git = join(root, 'fake-git');
+      const forgejoMcp = join(root, 'fake-forgejo-mcp');
+      const credentialRequestPath = join(root, 'credential-request.txt');
+      const resultPath = join(root, 'result.json');
+      const wrapper = join(process.cwd(), 'presets', 'shared', 'forgejo-mcp-credential-wrapper.mjs');
+      await writeFile(git, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nlet request = '';\nprocess.stdin.setEncoding('utf8');\nprocess.stdin.on('data', (chunk) => { request += chunk; });\nprocess.stdin.on('end', () => {\n  writeFileSync(process.env.FAKE_CREDENTIAL_REQUEST, request);\n  process.stdout.write('username=fixture\\npassword=fixture-pat\\n');\n});\n`);
+      await writeFile(forgejoMcp, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.FAKE_FORGEJO_RESULT, JSON.stringify({ receivedPat: process.env.FORGEJO_ACCESS_TOKEN === 'fixture-pat', args: process.argv.slice(2) }));\nprocess.stdout.write('server-stdio\\n');\n`);
+      await Promise.all([chmod(git, 0o755), chmod(forgejoMcp, 0o755)]);
+      const result = await runWrapper(process.execPath, [wrapper, '--transport', 'stdio'], {
+        ...process.env,
+        FAKE_CREDENTIAL_REQUEST: credentialRequestPath,
+        FAKE_FORGEJO_RESULT: resultPath,
+        FORGEJO_GIT_CREDENTIAL_URL: 'http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git',
+        FORGEJO_GIT_EXECUTABLE: git,
+        FORGEJO_MCP_EXECUTABLE: forgejoMcp
+      });
+      expect(result).toMatchObject({ exitCode: 0, stdout: 'server-stdio\n', stderr: '' });
+      expect(result.stdout).not.toContain('fixture-pat');
+      expect(result.stderr).not.toContain('fixture-pat');
+      expect(await readFile(credentialRequestPath, 'utf8')).toBe('protocol=http\nhost=forgejo.localhost:17480\npath=baihestudio/dsh-rpgmaker-mv.git\n\n');
+      expect(JSON.parse(await readFile(resultPath, 'utf8'))).toEqual({ receivedPat: true, args: ['--transport', 'stdio'] });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 describe('asset-workshop preset composition', () => {
   const CODE = "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: generic Code persona\n- id: code-tool\n  name: fake-code-tool\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n";
 
@@ -1163,7 +1214,8 @@ describe('asset-workshop preset composition', () => {
     await Promise.all([
       writeFile(join(sharedSkillsRoot, 'forgejo-agent-issue-report', 'SKILL.md'), '---\nname: forgejo-agent-issue-report\ndescription: fixture\n---\n'),
       writeFile(join(sharedSkillsRoot, 'forgejo-user-feedback-report', 'SKILL.md'), '---\nname: forgejo-user-feedback-report\ndescription: fixture\n---\n'),
-      writeFile(join(sharedSkillsRoot, 'forgejo-issue-reporting-protocol.md'), '# fixture\n')
+      writeFile(join(sharedSkillsRoot, 'forgejo-issue-reporting-protocol.md'), '# fixture\n'),
+      writeFile(join(root, 'shared', 'forgejo-mcp-credential-wrapper.mjs'), 'fixture\n')
     ]);
     await writeFile(join(source, 'preset.yml'), 'name: 游戏图片素材助手\ndescription: 测试\norder: 2\n');
     await writeFile(join(source, 'agent.cordis.yml'), overlay);
@@ -1187,7 +1239,10 @@ describe('asset-workshop preset composition', () => {
         expect(composed).toContain("name: '@deepseek-ai/dsh-mcp-client'");
         expect(composed).toContain('serverName: forgejo');
         expect(composed).toContain('FORGEJO_URL: http://forgejo.localhost:17480');
-        expect(composed).toContain("FORGEJO_ACCESS_TOKEN: !!js \"process.env.DSH_FORGEJO_ACCESS_TOKEN || ''\"");
+        expect(composed).toContain('command: !!js "process.execPath"');
+        expect(composed).toContain('forgejo-mcp-credential-wrapper.mjs');
+        expect(composed).toContain("FORGEJO_MCP_EXECUTABLE: !!js \"process.env.DSH_FORGEJO_MCP_COMMAND || 'forgejo-mcp.exe'\"");
+        expect((await stat(join(presetDir, 'forgejo-mcp-credential-wrapper.mjs'))).isFile()).toBe(true);
         expect((await stat(join(presetDir, 'skills', 'forgejo-agent-issue-report', 'SKILL.md'))).isFile()).toBe(true);
         expect((await stat(join(presetDir, 'skills', 'forgejo-user-feedback-report', 'SKILL.md'))).isFile()).toBe(true);
         expect((await stat(join(presetDir, 'skills', 'forgejo-issue-reporting-protocol.md'))).isFile()).toBe(true);

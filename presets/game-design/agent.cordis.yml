@@ -16,11 +16,15 @@
   config:
     serverName: forgejo
     transport: stdio
-    command: !!js "process.env.DSH_FORGEJO_MCP_COMMAND || 'forgejo-mcp.exe'"
-    args: ['--transport', 'stdio']
+    command: !!js "process.execPath"
+    args:
+      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('forgejo-mcp-credential-wrapper.mjs', baseUrl))"
+      - --transport
+      - stdio
     env:
       FORGEJO_URL: http://forgejo.localhost:17480
-      FORGEJO_ACCESS_TOKEN: !!js "process.env.DSH_FORGEJO_ACCESS_TOKEN || ''"
+      FORGEJO_GIT_CREDENTIAL_URL: !!js "process.env.DSH_FORGEJO_GIT_CREDENTIAL_URL || 'http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git'"
+      FORGEJO_MCP_EXECUTABLE: !!js "process.env.DSH_FORGEJO_MCP_COMMAND || 'forgejo-mcp.exe'"
     cwd: !!js process.cwd()
     toolCallTimeoutMs: 60000
     failOnStartupError: false

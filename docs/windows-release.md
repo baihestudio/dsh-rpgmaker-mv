@@ -102,14 +102,17 @@ inspecting agent changes.
 Every shipped preset also uses DSH's native `@deepseek-ai/dsh-mcp-client` to
 start `forgejo-mcp` over stdio. It publishes upstream tools under the
 `mcp__forgejo__*` namespace. Install the upstream executable separately, then
-set `DSH_FORGEJO_MCP_COMMAND` to its absolute path and restart DSH; set
-`DSH_FORGEJO_ACCESS_TOKEN` only in the launch environment. Two shared Skills
-use `mcp__forgejo__list_repo_issues` and `mcp__forgejo__create_issue` only for
-`baihestudio/dsh-rpgmaker-mv`: `forgejo-agent-issue-report` handles verified
-agent-observed product incidents, while `forgejo-user-feedback-report` asks
-only the product questions needed to record user feedback clearly before
-filing it. Use a dedicated Forgejo credential restricted to that repository,
-because the native MCP client intentionally exposes the server's general API surface.
+set `DSH_FORGEJO_MCP_COMMAND` to its absolute path and restart DSH. The
+packaged wrapper obtains the password for
+`http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git` through
+`git credential fill` and supplies that Forgejo PAT only to `forgejo-mcp`. Two
+shared Skills use `mcp__forgejo__list_repo_issues` and
+`mcp__forgejo__create_issue` only for `baihestudio/dsh-rpgmaker-mv`:
+`forgejo-agent-issue-report` handles verified agent-observed product incidents,
+while `forgejo-user-feedback-report` asks only the product questions needed to
+record user feedback clearly before filing it. Use a dedicated Forgejo
+credential restricted to that repository, because the native MCP client
+intentionally exposes the server's general API surface.
 
 The web session always binds to `http://127.0.0.1:3081`. If that port is occupied, the launcher offers to open the existing session or asks you to close it and retry. It never silently selects another port and never starts concurrent project sessions.
 

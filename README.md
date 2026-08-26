@@ -114,12 +114,13 @@ workspaces fail before a server starts.
 Every shipped preset mounts the official DSH `@deepseek-ai/dsh-mcp-client`
 for the upstream Forgejo MCP server, so its full tool surface is published with
 names such as `mcp__forgejo__list_repo_issues` and
-`mcp__forgejo__create_issue`. It starts `forgejo-mcp.exe` against
-`http://forgejo.localhost:17480`; set `DSH_FORGEJO_MCP_COMMAND` to an absolute
-executable path when it is not on `PATH`, and set
-`DSH_FORGEJO_ACCESS_TOKEN` in the DSH launch environment to a Forgejo token.
-The native client passes that token only as `FORGEJO_ACCESS_TOKEN` to its child
-and never writes it to generated presets or unrelated setup processes. Use a
+`mcp__forgejo__create_issue`. It starts a packaged credential wrapper before
+`forgejo-mcp.exe` against `http://forgejo.localhost:17480`; set
+`DSH_FORGEJO_MCP_COMMAND` to an absolute executable path when it is not on
+`PATH`. The wrapper asks `git credential fill` for
+`http://forgejo.localhost:17480/baihestudio/dsh-rpgmaker-mv.git` and passes its
+`password` field (a Forgejo PAT) only as `FORGEJO_ACCESS_TOKEN` to the MCP
+child; it never writes a token to generated presets or release archives. Use a
 dedicated Forgejo credential limited to this product repository: native MCP
 access is intentionally general, while two shared Skills constrain automatic
 reporting to `baihestudio/dsh-rpgmaker-mv`:

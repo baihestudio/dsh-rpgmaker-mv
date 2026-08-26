@@ -464,12 +464,14 @@ export async function installPreset(sourceRoot: string, dshHome: string, codePre
   const sharedSkillsRoot = join(dirname(source), 'shared', 'skills');
   const sharedForgejoSkills = ['forgejo-agent-issue-report', 'forgejo-user-feedback-report'];
   const sharedForgejoProtocol = join(sharedSkillsRoot, 'forgejo-issue-reporting-protocol.md');
+  const sharedForgejoCredentialWrapper = join(dirname(source), 'shared', 'forgejo-mcp-credential-wrapper.mjs');
   if (!(await pathExists(sourceComposition)) || !(await pathExists(metadata))) throw new RpgMakerStartupError(`RPG Maker preset source is incomplete: ${source}`);
   for (const skillName of sharedForgejoSkills) {
     const skillPath = join(sharedSkillsRoot, skillName, 'SKILL.md');
     if (!(await pathExists(skillPath))) throw new RpgMakerStartupError(`RPG Maker preset shared Forgejo skill is missing: ${skillPath}`);
   }
   if (!(await pathExists(sharedForgejoProtocol))) throw new RpgMakerStartupError(`RPG Maker preset shared Forgejo reporting protocol is missing: ${sharedForgejoProtocol}`);
+  if (!(await pathExists(sharedForgejoCredentialWrapper))) throw new RpgMakerStartupError(`RPG Maker preset Forgejo credential wrapper is missing: ${sharedForgejoCredentialWrapper}`);
   const code = await readFile(codePresetPath, 'utf8');
   const skillFilesystem = "- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'";
   if (!code.includes(skillFilesystem)) throw new RpgMakerStartupError('Pinned DSH Code preset has no skill-filesystem row; refusing to mount an unverified RPG Maker skill.');
@@ -498,7 +500,8 @@ export async function installPreset(sourceRoot: string, dshHome: string, codePre
       join(installedSkillsRoot, skillName),
       { recursive: true, force: true }
     )),
-    cp(sharedForgejoProtocol, join(installedSkillsRoot, 'forgejo-issue-reporting-protocol.md'), { force: true })
+    cp(sharedForgejoProtocol, join(installedSkillsRoot, 'forgejo-issue-reporting-protocol.md'), { force: true }),
+    cp(sharedForgejoCredentialWrapper, join(presetDir, 'forgejo-mcp-credential-wrapper.mjs'), { force: true })
   ]);
   await writeFile(join(presetDir, 'agent.cordis.yml'), composed);
   await writeFile(join(presetDir, PRESET_OWNERSHIP_FILE), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId, format: 1 })}\n`);
