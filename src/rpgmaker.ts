@@ -461,9 +461,15 @@ export async function installPreset(sourceRoot: string, dshHome: string, codePre
   const source = resolve(sourceRoot);
   const sourceComposition = join(source, 'agent.cordis.yml');
   const metadata = join(source, 'preset.yml');
-  const sharedForgejoSkill = join(dirname(source), 'shared', 'skills', 'forgejo-issue-report');
+  const sharedSkillsRoot = join(dirname(source), 'shared', 'skills');
+  const sharedForgejoSkills = ['forgejo-agent-issue-report', 'forgejo-user-feedback-report'];
+  const sharedForgejoProtocol = join(sharedSkillsRoot, 'forgejo-issue-reporting-protocol.md');
   if (!(await pathExists(sourceComposition)) || !(await pathExists(metadata))) throw new RpgMakerStartupError(`RPG Maker preset source is incomplete: ${source}`);
-  if (!(await pathExists(join(sharedForgejoSkill, 'SKILL.md')))) throw new RpgMakerStartupError(`RPG Maker preset shared issue-report skill is missing: ${sharedForgejoSkill}`);
+  for (const skillName of sharedForgejoSkills) {
+    const skillPath = join(sharedSkillsRoot, skillName, 'SKILL.md');
+    if (!(await pathExists(skillPath))) throw new RpgMakerStartupError(`RPG Maker preset shared Forgejo skill is missing: ${skillPath}`);
+  }
+  if (!(await pathExists(sharedForgejoProtocol))) throw new RpgMakerStartupError(`RPG Maker preset shared Forgejo reporting protocol is missing: ${sharedForgejoProtocol}`);
   const code = await readFile(codePresetPath, 'utf8');
   const skillFilesystem = "- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'";
   if (!code.includes(skillFilesystem)) throw new RpgMakerStartupError('Pinned DSH Code preset has no skill-filesystem row; refusing to mount an unverified RPG Maker skill.');
@@ -484,9 +490,16 @@ export async function installPreset(sourceRoot: string, dshHome: string, codePre
     await rm(presetDir, { recursive: true, force: true });
   }
   await cp(source, presetDir, { recursive: true, force: true });
-  const installedForgejoSkill = join(presetDir, 'skills', 'forgejo-issue-report');
-  await mkdir(dirname(installedForgejoSkill), { recursive: true });
-  await cp(sharedForgejoSkill, installedForgejoSkill, { recursive: true, force: true });
+  const installedSkillsRoot = join(presetDir, 'skills');
+  await mkdir(installedSkillsRoot, { recursive: true });
+  await Promise.all([
+    ...sharedForgejoSkills.map((skillName) => cp(
+      join(sharedSkillsRoot, skillName),
+      join(installedSkillsRoot, skillName),
+      { recursive: true, force: true }
+    )),
+    cp(sharedForgejoProtocol, join(installedSkillsRoot, 'forgejo-issue-reporting-protocol.md'), { force: true })
+  ]);
   await writeFile(join(presetDir, 'agent.cordis.yml'), composed);
   await writeFile(join(presetDir, PRESET_OWNERSHIP_FILE), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId, format: 1 })}\n`);
   return { presetRoot, presetDir };

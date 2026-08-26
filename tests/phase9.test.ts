@@ -1154,10 +1154,17 @@ describe('asset-workshop preset composition', () => {
 
   async function sourceWith(root: string, overlay: string): Promise<string> {
     const source = join(root, 'preset-source');
-    const sharedSkill = join(root, 'shared', 'skills', 'forgejo-issue-report', 'SKILL.md');
+    const sharedSkillsRoot = join(root, 'shared', 'skills');
     await mkdir(join(source, 'skills', 'asset-workshop'), { recursive: true });
-    await mkdir(dirname(sharedSkill), { recursive: true });
-    await writeFile(sharedSkill, '---\nname: forgejo-issue-report\ndescription: fixture\n---\n');
+    await Promise.all([
+      mkdir(join(sharedSkillsRoot, 'forgejo-agent-issue-report'), { recursive: true }),
+      mkdir(join(sharedSkillsRoot, 'forgejo-user-feedback-report'), { recursive: true })
+    ]);
+    await Promise.all([
+      writeFile(join(sharedSkillsRoot, 'forgejo-agent-issue-report', 'SKILL.md'), '---\nname: forgejo-agent-issue-report\ndescription: fixture\n---\n'),
+      writeFile(join(sharedSkillsRoot, 'forgejo-user-feedback-report', 'SKILL.md'), '---\nname: forgejo-user-feedback-report\ndescription: fixture\n---\n'),
+      writeFile(join(sharedSkillsRoot, 'forgejo-issue-reporting-protocol.md'), '# fixture\n')
+    ]);
     await writeFile(join(source, 'preset.yml'), 'name: 游戏图片素材助手\ndescription: 测试\norder: 2\n');
     await writeFile(join(source, 'agent.cordis.yml'), overlay);
     return source;
@@ -1181,7 +1188,9 @@ describe('asset-workshop preset composition', () => {
         expect(composed).toContain('serverName: forgejo');
         expect(composed).toContain('FORGEJO_URL: http://forgejo.localhost:17480');
         expect(composed).toContain("FORGEJO_ACCESS_TOKEN: !!js \"process.env.DSH_FORGEJO_ACCESS_TOKEN || ''\"");
-        expect((await stat(join(presetDir, 'skills', 'forgejo-issue-report', 'SKILL.md'))).isFile()).toBe(true);
+        expect((await stat(join(presetDir, 'skills', 'forgejo-agent-issue-report', 'SKILL.md'))).isFile()).toBe(true);
+        expect((await stat(join(presetDir, 'skills', 'forgejo-user-feedback-report', 'SKILL.md'))).isFile()).toBe(true);
+        expect((await stat(join(presetDir, 'skills', 'forgejo-issue-reporting-protocol.md'))).isFile()).toBe(true);
         if (presetId === 'asset-workshop') expect(composed).toContain(`id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}`);
         else expect(composed).not.toContain(`id: ${IMAGE_WORKSHOP_PLUGIN_ROW_ID}`);
       }

@@ -121,9 +121,12 @@ executable path when it is not on `PATH`, and set
 The native client passes that token only as `FORGEJO_ACCESS_TOKEN` to its child
 and never writes it to generated presets or unrelated setup processes. Use a
 dedicated Forgejo credential limited to this product repository: native MCP
-access is intentionally general, while the shared `forgejo-issue-report` Skill
-always reports only to `baihestudio/dsh-rpgmaker-mv` after verified, complete
-deduplication.
+access is intentionally general, while two shared Skills constrain automatic
+reporting to `baihestudio/dsh-rpgmaker-mv`:
+`forgejo-agent-issue-report` files verified agent-observed defects, blockers,
+and tool/MCP failures; `forgejo-user-feedback-report` clarifies user-reported
+experience or capability feedback before filing it. Both use the same
+non-secret, complete deduplication protocol.
 
 The RPG Maker preset treats the MCP/agent as the sole writer. Its mounted
 `mv-reference.md` is a compact, locally authored map of MV core/runtime layers,
