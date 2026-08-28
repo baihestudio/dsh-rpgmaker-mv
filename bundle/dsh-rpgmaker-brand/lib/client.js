@@ -70,22 +70,22 @@ window.__ModuleLoader__.load({
       {
         label: '推敲游戏设计',
         skill: 'game-design',
-        prompt: '请使用 `game-design` Skill。先阅读当前项目已有的设计资料，再围绕下面的想法，只询问真正会影响玩家体验的关键问题，并把确认结论维护进设计文档：'
+        prompt: '/game-design 先阅读当前项目已有的设计资料，再围绕下面的想法，只询问真正会影响玩家体验的关键问题，并把确认结论维护进设计文档：'
       },
       {
         label: '修改当前项目',
         skill: 'rpgmaker-mv',
-        prompt: '请使用 `rpgmaker-mv` Skill。先检查当前项目，再实现下面的改动；完成后回读并验证：'
+        prompt: '/rpgmaker-mv 先检查当前项目，再实现下面的改动；完成后回读并验证：'
       },
       {
         label: '制作图片素材',
         skill: 'image-assets',
-        prompt: '请使用 `image-assets` Skill，为当前项目制作以下素材；先确认用途、目标尺寸或网格与风格：'
+        prompt: '/image-assets 为当前项目制作以下素材；先确认用途、目标尺寸或网格与风格：'
       },
       {
         label: '诊断 Playtest',
         skill: 'playtest-debug',
-        prompt: '请使用 `playtest-debug` Skill，对下面的问题进行有界 Playtest 诊断，说明证据并确认测试已停止：'
+        prompt: '/playtest-debug 对下面的问题进行有界 Playtest 诊断，说明证据并确认测试已停止：'
       }
     ];
 
