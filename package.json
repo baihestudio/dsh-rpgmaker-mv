@@ -14,7 +14,6 @@
     "doctor": "bun run src/cli.ts doctor",
     "launch": "bun run src/cli.ts launch",
     "phase2:real": "bun run scripts/phase2-real-acceptance.ts",
-    "phase4:real": "bun run scripts/phase4-real-acceptance.ts",
     "phase7:real": "bun run scripts/phase7-real-acceptance.ts",
     "phase7:windows-installed": "bun run scripts/phase7-windows-installed-gate.ts",
     "image:windows-hung-child": "node scripts/image-plugin-windows-hung-child-probe.mjs",

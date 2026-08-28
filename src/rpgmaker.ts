@@ -23,13 +23,13 @@ export const RPGMAKER_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
 export const RPGMAKER_MCP_VERSION = '0.1.0';
 export const RPGMAKER_PRESET_ID = 'rpgmaker';
 export const GAME_DESIGN_PRESET_ID = 'game-design';
-export const ASSET_WORKSHOP_PRESET_ID = 'asset-workshop';
 export const RPGMAKER_DSH_PROFILE = 'web';
 export const DEEPSEEK_VISION_MODEL = 'deepseek-v4-flash-vision-exp';
 export const DSH_TOOL_TIMEOUT_POLICY_PACKAGE = '@deepseek-ai/dsh-tool-call-timeout-policy';
 export const DSH_TOOL_TIMEOUT_POLICY_ROW_ID = 'timeout-policy';
 export const FORGEJO_MCP_CLIENT_ROW_ID = 'forgejo-mcp-client';
-export const CUSTOM_AGENT_PRESET_IDS = [RPGMAKER_PRESET_ID, GAME_DESIGN_PRESET_ID, ASSET_WORKSHOP_PRESET_ID] as const;
+export const CUSTOM_AGENT_PRESET_IDS = [RPGMAKER_PRESET_ID, GAME_DESIGN_PRESET_ID] as const;
+const REMOVED_PRESET_IDS = ['playtest-debug', 'asset-workshop'] as const;
 const PRESET_OWNERSHIP_FILE = '.dsh-rpgmaker-owned.json';
 const MCP_LOCK_INTEGRITY = 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==';
 const MCP_LOCK_BIN = 'dist/index.js';
@@ -126,7 +126,7 @@ async function snapshotOwnedRpgMakerProfile(dshHome: string): Promise<OwnedRpgMa
   const root = await mkdtemp(join(dshHome, '.rpgmaker-profile-rollback-'));
   const presetRoot = join(dshHome, '.agent-presets');
   const sources = [
-    ...CUSTOM_AGENT_PRESET_IDS.map((presetId) => join(presetRoot, presetId)),
+    ...[...CUSTOM_AGENT_PRESET_IDS, ...REMOVED_PRESET_IDS].map((presetId) => join(presetRoot, presetId)),
     join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml')
   ];
   const entries: OwnedRpgMakerProfileSnapshotEntry[] = [];
@@ -618,9 +618,8 @@ export async function deployRpgMakerPresets(options: RpgMakerPresetDeploymentOpt
   await mkdir(paths.neutralLandingDir, { recursive: true });
   return withOwnedRpgMakerProfileRepair(paths.dshHome, async () => {
     const installed = await installPreset(sourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
-    await installPreset(join(shippedPresetRoot, ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
     await installPreset(join(shippedPresetRoot, GAME_DESIGN_PRESET_ID), paths.dshHome, codePresetPath, GAME_DESIGN_PRESET_ID);
-    await removeOwnedPreset(join(paths.dshHome, '.agent-presets'), 'playtest-debug');
+    await Promise.all(REMOVED_PRESET_IDS.map((presetId) => removeOwnedPreset(join(paths.dshHome, '.agent-presets'), presetId)));
 
     const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
     await mkdir(dirname(compositionPath), { recursive: true });

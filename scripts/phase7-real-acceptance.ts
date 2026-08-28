@@ -68,11 +68,6 @@ try {
     await writeFile(compositionPath, renderPresetOnlyPatch(installed.presetRoot, preset));
     mounted.push(await mount(compositionPath, preset, true, dshLib, environmentModule));
   }
-  const asset = await installPreset(join(process.cwd(), 'presets', 'asset-workshop'), dshHome, codePreset, 'asset-workshop');
-  const assetPatch = join(dshHome, 'asset-only.patch.yml');
-  await writeFile(assetPatch, renderPresetOnlyPatch(asset.presetRoot, 'asset-workshop'));
-  mounted.push(await mount(assetPatch, 'asset-workshop', false, dshLib, environmentModule));
-
   console.log(JSON.stringify({ ok: true, dsh: DSH_VERSION, presets: mounted, windowsNwjs: process.platform === 'win32' ? 'requires installed MV hardware fixture' : 'unsupported hardware on this host; not claimed' }));
 } finally {
   await rm(root, { recursive: true, force: true });

@@ -451,7 +451,6 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'src/profile.ts',
     'presets/rpgmaker/preset.yml',
     'presets/game-design/preset.yml',
-    'presets/asset-workshop/preset.yml',
     'src/dsh-web.ts',
     `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_EXECUTABLE_NAME}`,
     `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_MANIFEST_NAME}`,

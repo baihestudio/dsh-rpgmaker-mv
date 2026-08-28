@@ -85,7 +85,7 @@ function helpText(): string {
     '  --dsh-executable <path>   Use an explicit DSH executable',
     '  --workspace <path>        Inspect one explicit Windows workspace with Doctor',
     '  --sandbox-probe            Run the pinned DSH workspace-write runner after workspace checks pass',
-    '  --preset <id>              Agent preset (rpgmaker, game-design, or asset-workshop)',
+    '  --preset <id>              Agent preset (rpgmaker or game-design)',
     '  --bun-executable <path>   Use an explicit Bun executable',
     '  --js-executable <path>    Use an explicit Bun or Node executable for MCP',
     '  --mcp-runtime-dir <path>  Use the app-owned RPG Maker MCP runtime',

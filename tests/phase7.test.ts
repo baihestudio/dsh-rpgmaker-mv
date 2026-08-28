@@ -1305,13 +1305,12 @@ describe('Windows release gate foundations', () => {
     const root = await temp('phase7-default-dependencies');
     try {
       const { bin, env: prerequisiteEnv } = await prerequisiteBin(root);
-      const imageMagick = join(bin, 'magick.exe');
-      const oxipng = join(bin, 'oxipng.exe');
-      await writeFile(imageMagick, 'fixture ImageMagick');
-      await writeFile(oxipng, 'fixture oxipng');
       const mutable = join(root, 'mutable');
       const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
       const state = join(mutable, 'state');
+      const retiredAssetPreset = join(state, '.agent-presets', 'asset-workshop');
+      await mkdir(retiredAssetPreset, { recursive: true });
+      await writeFile(join(retiredAssetPreset, '.dsh-rpgmaker-owned.json'), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId: 'asset-workshop', format: 1 })}\n`);
       const bun = join(bin, 'bun.exe');
       const npm = join(bin, 'npm.cmd');
       const node = join(bin, 'node.exe');
@@ -1319,11 +1318,7 @@ describe('Windows release gate foundations', () => {
         ...prerequisiteEnv,
         BUN_EXECUTABLE: bun,
         NPM_EXECUTABLE: npm,
-        NODE_EXECUTABLE: node,
-        DSH_IMAGE_MAGICK: imageMagick,
-        DSH_IMAGE_MAGICK_SHA256: sha256('fixture ImageMagick'),
-        DSH_OXIPNG: oxipng,
-        DSH_OXIPNG_SHA256: sha256('fixture oxipng')
+        NODE_EXECUTABLE: node
       };
       const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
       const commandRunner = defaultInstallRunner({ dshHome: state }, calls);
@@ -1349,6 +1344,7 @@ describe('Windows release gate foundations', () => {
       await install();
       const installedForgejoPreset = join(state, '.agent-presets', 'rpgmaker', 'agent.cordis.yml');
       expect(await Bun.file(installedForgejoPreset).exists()).toBe(true);
+      expect(await Bun.file(retiredAssetPreset).exists()).toBe(false);
       expect(await readFile(installedForgejoPreset, 'utf8')).toContain('DSH_RPGMAKER_PROGRAM_ROOT');
       expect(calls.some((call) => call.args.includes(`pnpm@${PNPM_VERSION}`))).toBe(true);
       expect(calls.some((call) => basename(call.command).toLowerCase() === 'python.exe')).toBe(true);

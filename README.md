@@ -45,7 +45,7 @@ On Windows, program-owned DSH/MCP/tool runtimes default under `%LOCALAPPDATA%\\P
 ```powershell
 ./launch.ps1
 # optionally choose the default Agent preset:
-./launch.ps1 --preset asset-workshop
+./launch.ps1 --preset game-design
 ```
 
 The Windows launcher is project-neutral: it never opens a folder picker, reads
@@ -53,11 +53,11 @@ recent projects, writes app-owned project-selection state, or accepts
 `launch --project`. The Release ZIP carries the prebuilt
 `bundle/dsh-workspace-mcp` package and generated Xerolo manifest. Launch
 prepares and verifies the pinned DSH, pnpm 10.15.1, MCPorter 0.12.3, Xerolo
-0.1.0, the five presets, the effective composition, and the app-owned
+0.1.0, the two presets, the effective composition, and the app-owned
 `dsh-workspace-mcp` profile link before starting official DSH. DSH starts in
 an app-owned neutral landing directory; choose and switch RPG Maker folders in
 DSH Web. `rpgmaker` is the default when `--preset` is omitted. New Agents across
-all three shipped presets default to `deepseek-v4-flash-vision-exp`; the normal
+both shipped presets default to `deepseek-v4-flash-vision-exp`; the normal
 DSH Web model selection remains a user override, and existing sessions retain
 their logged model choice. User-attached PNG, JPEG, WebP, and GIF images may be
 read as image input; this does not add image generation, remote URL ingestion,
@@ -88,8 +88,6 @@ If neither `DEEPSEEK_API_KEY` nor DSH's local credential metadata is present, DS
 ```powershell
 bun test
 bun run check
-# Optional real disposable pinned-DSH asset preset mount (no MCP service)
-bun run phase4:real
 # Optional real project-neutral DSH + Xerolo workspace acceptance
 bun run phase2:real
 ```
@@ -99,13 +97,11 @@ Tests use disposable runtime, DSH home, credential, and MV project directories. 
 ## Phase 2: RPG Maker Agent and MCP editing loop
 
 `launch.ps1` prepares the exact-pinned app-owned MCPorter and Xerolo runtimes,
-the local `dsh-workspace-mcp` Host bundle, three Chinese-named specialist
-presets (`rpgmaker`, `game-design`, and `asset-workshop`),
-and a project-neutral `web --dump-config` composition before
-launch. The picker displays `🐒 程序猿`, `🐶 策划汪`, and `🎨 P图仔`
-in that order; `rpgmaker` remains the default. `game-design` is a
-Code-derived document-workspace preset without the RPG Maker Agent row; the
-other two presets retain their scoped MCP/image boundaries. The access layer supplies stable
+the local `dsh-workspace-mcp` Host bundle, two Chinese-named specialist
+presets (`rpgmaker` and `game-design`), and a project-neutral `web --dump-config`
+composition before launch. The picker displays `🐒 程序猿` and `🐶 策划汪`;
+`rpgmaker` remains the default. `game-design` is a Code-derived document-workspace
+preset without the RPG Maker Agent row. The access layer supplies stable
 `rpgmaker_<raw Xerolo name>` tools synchronously and validates the live
 workspace connection before the first request. It contains no preset filter:
 presets that do not mount the row receive no RPG Maker tools. Invalid
@@ -155,7 +151,7 @@ installed runtime and is not edited. Neither app-owned Host patch inserts the
 timeout policy: the pinned DSH `web` profile owns the official
 `id: timeout-policy` / `@deepseek-ai/dsh-tool-call-timeout-policy` row at Host
 scope. Launch preparation and Doctor validate `web --dump-config` and require
-exactly one effective official row across all three custom Agent presets; the
+exactly one effective official row across both custom Agent presets; the
 preset compositions never contain it. Re-running preparation rewrites the
 app-owned patch, repairing older generated patches that inserted a duplicate.
 
@@ -174,20 +170,12 @@ existing documents automatically.
 
 报告区分静态验证、进程启动、崩溃/日志证据、清理确认与行为/视觉验证。进程启动和干净日志不是行为验证。Harness 拥有的进程树清理属于独立的 automated-playtest 能力；截图/输入/gameplay 自动化不在本仓库范围。
 
-## Phase 5: 🎨 P图仔
-
-Select the image-asset preset when creating a DSH Web Agent:
-
-```powershell
-./launch.ps1 --preset asset-workshop
-```
+## Phase 5: 图片素材
 
 `Install.cmd` installs `ImageMagick.ImageMagick` with WinGet as the Windows-wide
-`magick` command; it is not an app-owned binary or DSH plugin. 🎨 P图仔 uses Kepos
-for visual candidates and bare `magick` for deterministic, workspace-local work
-such as crisp integer scaling, chroma-key cleanup, transparent padding, and
-sheet preparation. The Skill requires an explicit input/output path, source
-preservation, and metadata inspection before handoff.
+`magick` command; it is not an app-owned binary or DSH plugin. 程序猿在图片素材
+任务中按需读取 `image-assets` Skill：Kepos 生成或编辑视觉候选，`magick` 进行像素
+缩放、绿幕清理和精灵表准备，并直接接入 RPG Maker 工作流。
 
 ## Phase 6: DSH runtime foundation
 
@@ -213,7 +201,6 @@ The release gate uses test-owned fake user/install roots in automated tests. The
 bun test
 bun run check
 bun run phase2:real
-bun run phase4:real
 ```
 
 The foundation stops before automated gameplay/CDP supervision, which remains on its separate draft/hold marker.

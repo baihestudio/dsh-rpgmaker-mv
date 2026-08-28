@@ -1115,12 +1115,11 @@ describe('real DSH Agent seam', () => {
           const hostCtx = new HarnessScope('host-isolation');
           hostBundle.apply(hostCtx);
           try {
-            // The two MCP-capable shipped preset compositions mount the Agent access
-            // row; they intentionally share the same canonical workspace server.
-            const shippedPresetIds = ['rpgmaker', 'asset-workshop'] as const;
-            const agentsA = shippedPresetIds.map((agentPreset, index) => createComposedAgent(agentBundle, `workspace-a-${index}`, {
+            // Two RPG Maker Agent sessions intentionally share the same canonical
+            // workspace server.
+            const agentsA = [0, 1].map((index) => createComposedAgent(agentBundle, `workspace-a-${index}`, {
               cwd: projectA,
-              agentPreset
+              agentPreset: 'rpgmaker'
             }, hostCtx.root));
             const agentB = createComposedAgent(agentBundle, 'workspace-b', { cwd: projectB, agentPreset: 'rpgmaker' }, hostCtx.root);
 
@@ -1216,7 +1215,7 @@ describe('real DSH Agent seam', () => {
           hostBundle.apply(hostCtx);
           try {
             const failedAgent = createComposedAgent(agentBundle, 'failed-agent', { cwd: failedProject, agentPreset: 'rpgmaker' }, hostCtx.root);
-            const healthyAgent = createComposedAgent(agentBundle, 'healthy-agent', { cwd: healthyProject, agentPreset: 'asset-workshop' }, hostCtx.root);
+            const healthyAgent = createComposedAgent(agentBundle, 'healthy-agent', { cwd: healthyProject, agentPreset: 'rpgmaker' }, hostCtx.root);
 
             // Manifest tools remain synchronously present for the failed Agent,
             // but its first request fails closed when the live server drifts.
@@ -1232,7 +1231,7 @@ describe('real DSH Agent seam', () => {
 
             // A failed acquisition is cached for this Host generation: a later
             // Agent observes the same failure, with no automatic Xerolo restart.
-            const retryAgent = createComposedAgent(agentBundle, 'failed-retry', { cwd: failedProject, agentPreset: 'asset-workshop' }, hostCtx.root);
+            const retryAgent = createComposedAgent(agentBundle, 'failed-retry', { cwd: failedProject, agentPreset: 'rpgmaker' }, hostCtx.root);
             expect(retryAgent.ctx.tools.schemas().map((tool) => tool.name).sort()).toEqual(expectedNames);
             await expect(retryAgent.ctx.assemble()).rejects.toThrow(/tools\/list returned no tools/);
             const starts = (await readFile(tracePath, 'utf8')).trim().split(/\r?\n/).filter(Boolean)
