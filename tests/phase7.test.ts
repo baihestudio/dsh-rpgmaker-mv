@@ -12,9 +12,7 @@ import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgej
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, RELEASE_ENTRIES, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { PNPM_VERSION } from '../src/profile';
-import { DSH_WEB_PACKAGE, DSH_WEB_VERSION } from '../src/dsh-web';
-import { DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION } from '../src/dsh-imagegen';
-import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE } from '../src/dsh-brand';
+import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, DSH_WEB_PACKAGE, DSH_WEB_VERSION } from '../src/managed-web-profile';
 import { findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
@@ -798,6 +796,25 @@ describe('Windows release gate foundations', () => {
         platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, imageMagickExecutable: imageMagick, commandRunner: prerequisiteRunner(),
         verifyAgentDependencies: async () => ({
           mcp: { id: 'rpgmaker-mcp', label: 'RPG Maker MV MCP runtime', ok: true, detail: 'fixture MCP verified' }
+        }),
+        managedWebProfileVerifier: async () => ({
+          valid: true,
+          errors: [],
+          profile: 'web',
+          profileDir: join(dshHome, 'profiles', 'web'),
+          dependencies: {},
+          bundles: [],
+          packages: [],
+          workspaceMcpBundle: {
+            valid: true,
+            errors: [],
+            packageDir: join(dshHome, 'rpgmaker-mv', 'bundle', 'dsh-workspace-mcp'),
+            packageVersion: '0.1.0',
+            bundleOccurrences: 1,
+            entrypoint: join(dshHome, 'rpgmaker-mv', 'bundle', 'dsh-workspace-mcp', 'lib', 'index.js'),
+            ownedPath: true,
+            sha256: 'fixture'
+          }
         })
       });
       expect(report.ok).toBe(true);
@@ -809,6 +826,8 @@ describe('Windows release gate foundations', () => {
       expect(report.executablePaths.imageMagick).toBe(imageMagick);
       expect(report.executablePaths.forgejoMcp).toContain(join('tools', 'forgejo-mcp', 'forgejo-mcp.exe'));
       expect(report.checks.map((check) => check.id)).toContain('app-layout');
+      expect(report.checks.map((check) => check.id)).toContain('managed-web-profile');
+      expect(report.checks.find((check) => check.id === 'managed-web-profile')?.ok).toBe(true);
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-profile');
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-provider');
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-activation');
@@ -1769,6 +1788,9 @@ describe('Windows release gate foundations', () => {
 
       const firstPreparation = await prepareRpgMakerLaunch(launchOptions);
       expect(firstPreparation.workspaceMcpBundle.valid).toBe(true);
+      expect(firstPreparation.managedWebProfile.valid).toBe(true);
+      expect(firstPreparation.managedWebProfile.packages).toHaveLength(4);
+      expect(firstPreparation.managedWebProfile.materialized).toBe(false);
       expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
       expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', '@anionex', 'dsh-vision-toolkit')).exists()).toBe(false);
       const profilePackage = join(state, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
@@ -1779,6 +1801,9 @@ describe('Windows release gate foundations', () => {
 
       const repairedPreparation = await prepareRpgMakerLaunch(launchOptions);
       expect(repairedPreparation.workspaceMcpBundle.valid).toBe(true);
+      expect(repairedPreparation.managedWebProfile.valid).toBe(true);
+      expect(repairedPreparation.managedWebProfile.materialized).toBe(true);
+      expect(repairedPreparation.managedWebProfile.packages).toHaveLength(4);
       expect((await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') })).valid).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });

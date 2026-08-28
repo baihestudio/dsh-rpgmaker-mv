@@ -1,17 +1,10 @@
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
-import { findDshExecutable } from './bootstrap';
-import { commandFailure, redactSensitive, runCommand, type CommandRunner } from './process';
-import {
-  pluginEnvironment,
-  preparePnpmRuntime,
-  profileDirFor,
-  resolveDshInvocation
-} from './profile';
+import { profileDirFor } from './profile';
 
 export const WORKSPACE_MCP_PACKAGE = '@baihestudio/dsh-workspace-mcp';
 export const WORKSPACE_MCP_VERSION = '0.1.0';
@@ -37,11 +30,6 @@ export const JS_RUNNER_ENV = 'DSH_RPGMAKER_JS_RUNNER';
 export interface WorkspaceMcpBundleOptions extends PathOptions {
   platform?: string;
   env?: Record<string, string | undefined>;
-  commandRunner?: CommandRunner;
-  dshExecutable?: string;
-  npmExecutable?: string;
-  pnpmExecutable?: string;
-  pnpmRuntimeDir?: string;
   profile?: string;
   bundleDir?: string;
 }
@@ -126,50 +114,6 @@ function isWithinCanonicalPath(child: string, parent: string, platform: string):
   const keyChild = pathKey(child, platform);
   const keyParent = pathKey(parent, platform);
   return keyChild === keyParent || keyChild.startsWith(`${keyParent}${sep}`);
-}
-
-interface WorkspaceMcpProfileSnapshotEntry {
-  source: string;
-  backup: string;
-  existed: boolean;
-}
-
-interface WorkspaceMcpProfileSnapshot {
-  root: string;
-  entries: WorkspaceMcpProfileSnapshotEntry[];
-}
-
-async function snapshotWorkspaceMcpProfile(paths: HarnessPaths, profileDir: string): Promise<WorkspaceMcpProfileSnapshot> {
-  const root = await mkdtemp(join(paths.dshHome, '.workspace-mcp-profile-rollback-'));
-  const sources = [
-    join(profileDir, 'package.json'),
-    join(profileDir, 'pnpm-lock.yaml'),
-    join(profileDir, 'cordis.patch.yml'),
-    profilePackageDir(profileDir)
-  ];
-  const entries: WorkspaceMcpProfileSnapshotEntry[] = [];
-  try {
-    for (const [index, source] of sources.entries()) {
-      const existed = await exists(source);
-      const backup = join(root, String(index));
-      if (existed) await cp(source, backup, { recursive: true, force: false, errorOnExist: true });
-      entries.push({ source, backup, existed });
-    }
-    return { root, entries };
-  } catch (error) {
-    await rm(root, { recursive: true, force: true });
-    throw error;
-  }
-}
-
-async function restoreWorkspaceMcpProfile(snapshot: WorkspaceMcpProfileSnapshot): Promise<void> {
-  for (const entry of snapshot.entries) {
-    await rm(entry.source, { recursive: true, force: true });
-    if (entry.existed) {
-      await mkdir(dirname(entry.source), { recursive: true });
-      await cp(entry.backup, entry.source, { recursive: true, force: false, errorOnExist: true });
-    }
-  }
 }
 
 export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOptions = {}): Promise<WorkspaceMcpBundleVerification> {
@@ -270,72 +214,6 @@ export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOption
     ownedPath,
     sha256
   };
-}
-
-async function linkWorkspaceMcpBundle(options: WorkspaceMcpBundleOptions, paths: HarnessPaths, bundleDir: string, platform: string, env: Record<string, string | undefined>): Promise<void> {
-  const pnpm = await preparePnpmRuntime({ ...options, useAppOwnedPnpm: true }, paths);
-  const dsh = options.dshExecutable ?? env.DSH_EXECUTABLE ?? await findDshExecutable(paths.runtimeDir, platform);
-  if (!dsh) throw new Error('Pinned DSH executable was not found; cannot link the app-owned workspace MCP bundle into the profile.');
-  const profile = options.profile ?? WORKSPACE_MCP_PROFILE;
-  const invocation = await resolveDshInvocation(dsh, options, env);
-  const args = ['plugin', '--profile', profile, 'add', '--save-exact', '--ignore-scripts', `file:${bundleDir}`];
-  const runner = options.commandRunner ?? runCommand;
-  let result;
-  try {
-    result = await runner(invocation.command, [...invocation.prefix, ...args], {
-      cwd: paths.dshHome,
-      env: pnpm.env,
-      platform,
-      timeoutMs: 15 * 60_000
-    });
-  } catch (error) {
-    throw new Error(redactSensitive(`Workspace MCP plugin manager could not start: ${error instanceof Error ? error.message : String(error)}`, env));
-  }
-  if (result.exitCode !== 0) throw new Error(redactSensitive(commandFailure(invocation.command, args, result, env).message, env));
-}
-
-/** Install or repair the app-owned workspace MCP bundle layer in the web profile. */
-export async function prepareWorkspaceMcpBundle(options: WorkspaceMcpBundleOptions = {}): Promise<WorkspaceMcpBundleVerification> {
-  const paths = resolveHarnessPaths(options);
-  const platform = options.platform ?? process.platform;
-  const env = pluginEnvironment(options.env ?? process.env);
-  await mkdir(paths.dshHome, { recursive: true });
-  const target = resolve(options.bundleDir ?? workspaceMcpBundleDirFor(paths));
-  const current = await verifyWorkspaceMcpBundle({ ...options, bundleDir: target });
-  if (current.valid) return current;
-
-  const source = resolve(options.bundleDir ?? defaultWorkspaceMcpBundleDir());
-  if (source !== target) {
-    await mkdir(dirname(target), { recursive: true });
-    const staging = `${target}.staging-${Date.now()}`;
-    await rm(staging, { recursive: true, force: true });
-    await cp(source, staging, { recursive: true });
-    await rm(target, { recursive: true, force: true });
-    await rename(staging, target);
-  }
-  const profile = options.profile ?? WORKSPACE_MCP_PROFILE;
-  const profileDir = profileDirFor(paths, profile);
-  const snapshot = await snapshotWorkspaceMcpProfile(paths, profileDir);
-  try {
-    // A file: dependency with the same path/version may be reused by pnpm;
-    // remove the exact profile entry so a stale copied bundle cannot survive a
-    // repair. The snapshot above restores it if linking fails.
-    await rm(profilePackageDir(profileDir), { recursive: true, force: true });
-    await linkWorkspaceMcpBundle(options, paths, target, platform, env);
-    const installed = await verifyWorkspaceMcpBundle({ ...options, bundleDir: target });
-    if (!installed.valid) throw new Error(`Workspace MCP bundle installation completed but verification failed: ${installed.errors.join('; ')}`);
-    return installed;
-  } catch (error) {
-    const original = error instanceof Error ? error : new Error(String(error));
-    try {
-      await restoreWorkspaceMcpProfile(snapshot);
-    } catch (restoreError) {
-      throw new Error(`${original.message}; workspace MCP bundle profile rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
-    }
-    throw original;
-  } finally {
-    await rm(snapshot.root, { recursive: true, force: true });
-  }
 }
 
 export function workspaceMcpSummary(verification: WorkspaceMcpBundleVerification): string {

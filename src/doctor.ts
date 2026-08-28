@@ -16,6 +16,7 @@ import {
   verifyMcpRuntime,
   verifyTimeoutPolicyComposition
 } from './rpgmaker';
+import { verifyManagedWebProfile, type ManagedWebProfileOptions, type ManagedWebProfileVerification } from './managed-web-profile';
 import { inspectWorkspaceSandbox } from './workspace-sandbox';
 
 export interface DoctorOptions extends PathOptions {
@@ -31,6 +32,7 @@ export interface DoctorOptions extends PathOptions {
   pythonExecutable?: string;
   imageMagickExecutable?: string;
   verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck }>;
+  managedWebProfileVerifier?: (options: ManagedWebProfileOptions) => Promise<ManagedWebProfileVerification>;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
 }
@@ -278,6 +280,28 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     });
     const agentDependencies = await verifyAgentDependencies({ platform, env: commandEnv, paths, commandRunner: runner });
     checks.push(agentDependencies.mcp);
+
+    const managedWebProfile = await (options.managedWebProfileVerifier ?? verifyManagedWebProfile)({
+      platform,
+      env: commandEnv,
+      dshHome: paths.dshHome,
+      programRoot: paths.programRoot,
+      mutableRoot: paths.mutableRoot,
+      runtimeDir: paths.runtimeDir,
+      dshExecutable,
+      npmExecutable: options.npmExecutable,
+      pnpmExecutable: undefined,
+      commandRunner: runner
+    });
+    checks.push(check(
+      'managed-web-profile',
+      'Managed Web profile',
+      managedWebProfile.valid,
+      managedWebProfile.valid
+        ? `Managed ${managedWebProfile.profile} profile has the exact pinned Web, image-generation, RPG Maker Agent brand, and workspace MCP packages`
+        : managedWebProfile.errors.join('; '),
+      managedWebProfile.profileDir
+    ));
 
     const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env: commandEnv, programRoot: paths.programRoot, commandRunner: runner });
     executablePaths.forgejoMcp = forgejoMcp.executablePath;

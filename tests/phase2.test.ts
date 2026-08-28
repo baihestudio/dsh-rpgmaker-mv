@@ -312,17 +312,27 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
             executable: join(runtimeDir, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist', 'index.js')
           };
         },
-        workspaceMcpBundlePreparer: async (options) => {
+        managedWebProfilePreparer: async (options) => {
           preparationHomes.bundle = options.env?.DSH_HOME;
           return {
             valid: true,
             errors: [],
-            packageDir: join(options.programRoot ?? root, 'bundle', 'dsh-workspace-mcp'),
-            packageVersion: '0.1.0',
-            bundleOccurrences: 1,
-            entrypoint: join(root, 'bundle', 'dsh-workspace-mcp', 'lib', 'index.js'),
-            ownedPath: true,
-            sha256: 'fixture'
+            profile: 'web',
+            profileDir: join(options.dshHome ?? root, 'profiles', 'web'),
+            dependencies: {},
+            bundles: [],
+            packages: [],
+            workspaceMcpBundle: {
+              valid: true,
+              errors: [],
+              packageDir: join(options.programRoot ?? root, 'bundle', 'dsh-workspace-mcp'),
+              packageVersion: '0.1.0',
+              bundleOccurrences: 1,
+              entrypoint: join(root, 'bundle', 'dsh-workspace-mcp', 'lib', 'index.js'),
+              ownedPath: true,
+              sha256: 'fixture'
+            },
+            materialized: false
           };
         },
         commandRunner: async (_command, args, options) => {

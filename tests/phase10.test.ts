@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { basename, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -10,9 +10,7 @@ import {
   MCPORTER_RUNTIME_ENV,
   WORKSPACE_MCP_PACKAGE,
   WORKSPACE_MCP_SHA256,
-  WORKSPACE_MCP_VERSION,
   XEROLO_RUNTIME_ENV,
-  prepareWorkspaceMcpBundle,
   verifyWorkspaceMcpBundle,
   workspaceMcpBundleDirFor
 } from '../src/workspace-mcp';
@@ -371,61 +369,6 @@ describe('Xerolo tool contract fail-closed', () => {
 
 describe('app-owned workspace MCP bundle profile link', () => {
   const BUNDLE_SOURCE = join(process.cwd(), 'bundle', 'dsh-workspace-mcp');
-  const OTHER_BUNDLE = '@deepseek-ai/dsh-base';
-
-  async function writeInstalledProfile(dshHome: string, dependency: string, bundleDir: string): Promise<void> {
-    const profile = join(dshHome, 'profiles', 'web');
-    const installedDir = join(profile, 'node_modules', WORKSPACE_MCP_PACKAGE);
-    await mkdir(dirnameOf(installedDir), { recursive: true });
-    await rm(installedDir, { recursive: true, force: true });
-    await symlink(bundleDir, installedDir, 'dir');
-    const manifest = {
-      name: 'dsh-profile-web',
-      private: true,
-      version: '0.1.0',
-      dependencies: { [WORKSPACE_MCP_PACKAGE]: dependency },
-      dsh: { profile: { bundles: [OTHER_BUNDLE, WORKSPACE_MCP_PACKAGE] } }
-    };
-    await writeFile(join(profile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-    await writeFile(join(profile, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\nimporters:\n  .:\n    dependencies:\n      __placeholder__:\n        specifier: "0.0.0"\n        version: 0.0.0\n');
-  }
-
-  test('installs the local bundle once as a host-level layer and reuses it idempotently', async () => {
-    const root = await temp('ws-bundle-install');
-    try {
-      const paths = harnessPaths(root);
-      await mkdir(join(paths.runtimeDir, 'node_modules', '.bin'), { recursive: true });
-      const pnpm = join(root, 'pnpm.exe');
-      await writeFile(pnpm, 'fixture');
-      const dsh = join(paths.runtimeDir, 'dsh.exe');
-      await writeFile(dsh, 'fixture');
-      let pluginCalls = 0;
-      const runner = async (command: string, args: string[]) => {
-        expect(command).toBe(dsh);
-        if (args[0] === 'plugin') {
-          pluginCalls += 1;
-          const local = args.find((value) => value.startsWith('file:'));
-          expect(local).toBeDefined();
-          await writeInstalledProfile(paths.dshHome, local!, workspaceMcpBundleDirFor(paths));
-          return { exitCode: 0, stdout: '', stderr: '' };
-        }
-        throw new Error(`unexpected runner call: ${args.join(' ')}`);
-      };
-      const options = { platform: 'win32', ...paths, dshExecutable: dsh, pnpmExecutable: pnpm, commandRunner: runner } as const;
-      const first = await prepareWorkspaceMcpBundle(options);
-      expect(first.valid).toBe(true);
-      expect(first.packageVersion).toBe(WORKSPACE_MCP_VERSION);
-      expect(first.bundleOccurrences).toBe(1);
-      expect(first.packageDir).toBe(await realpath(workspaceMcpBundleDirFor(paths)));
-      expect(pluginCalls).toBe(1);
-
-      const second = await prepareWorkspaceMcpBundle(options);
-      expect(second.valid).toBe(true);
-      expect(pluginCalls).toBe(1);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
 
   test('rejects a tampered bundle, a missing bundle patch, and a non-host-level occurrence', async () => {
     const root = await temp('ws-bundle-verify');
