@@ -1,4 +1,4 @@
-import { readFile, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 
 import { findDshExecutable } from './bootstrap';
 import { resolveHarnessPaths, type PathOptions } from './config';
@@ -13,24 +13,12 @@ import {
 export const DSH_WEB_PACKAGE = '@guionai/dsh-web';
 export const DSH_WEB_VERSION = '0.3.1';
 export const DSH_WEB_PROFILE = 'web';
-export const LEGACY_DSH_WEB_PACKAGE = '@tta-lab/dsh-web';
-const LEGACY_IMAGE_WORKSHOP_PACKAGE = '@baihestudio/dsh-image-workshop';
-
 export interface DshWebPluginOptions extends PathOptions {
   dshExecutable?: string;
   npmExecutable?: string;
   pnpmExecutable?: string;
   pnpmRuntimeDir?: string;
   commandRunner?: CommandRunner;
-}
-
-async function profileHasDependency(profileDir: string, packageName: string): Promise<boolean> {
-  try {
-    const manifest = JSON.parse(await readFile(`${profileDir}/package.json`, 'utf8')) as { dependencies?: Record<string, unknown> };
-    return typeof manifest.dependencies?.[packageName] === 'string';
-  } catch {
-    return false;
-  }
 }
 
 /** Install the published Web profile patch through DSH's normal plugin command. */
@@ -44,25 +32,7 @@ export async function prepareDshWebPlugin(options: DshWebPluginOptions = {}): Pr
   const invocation = await resolveDshInvocation(dsh, options, env);
   const runner = options.commandRunner ?? runCommand;
   const profileDir = profileDirFor(paths, DSH_WEB_PROFILE);
-  if (await profileHasDependency(profileDir, LEGACY_IMAGE_WORKSHOP_PACKAGE)) {
-    await rm(profileDir, { recursive: true, force: true });
-  }
-  if (await profileHasDependency(profileDir, LEGACY_DSH_WEB_PACKAGE)) {
-    const removeArgs = ['plugin', '--profile', DSH_WEB_PROFILE, 'remove', LEGACY_DSH_WEB_PACKAGE];
-    let removeFailed = false;
-    try {
-      const result = await runner(invocation.command, [...invocation.prefix, ...removeArgs], {
-        cwd: paths.dshHome,
-        env: pnpm.env,
-        platform,
-        timeoutMs: 15 * 60_000
-      });
-      removeFailed = result.exitCode !== 0;
-    } catch {
-      removeFailed = true;
-    }
-    if (removeFailed) await rm(profileDir, { recursive: true, force: true });
-  }
+  await rm(profileDir, { recursive: true, force: true });
   const packageSpec = `${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`;
   const args = ['plugin', '--profile', DSH_WEB_PROFILE, 'add', '--save-exact', '--ignore-scripts', packageSpec];
   let result;

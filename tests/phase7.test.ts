@@ -12,7 +12,7 @@ import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgej
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, RELEASE_ENTRIES, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { PNPM_VERSION } from '../src/profile';
-import { DSH_WEB_PACKAGE, DSH_WEB_VERSION, LEGACY_DSH_WEB_PACKAGE } from '../src/dsh-web';
+import { DSH_WEB_PACKAGE, DSH_WEB_VERSION } from '../src/dsh-web';
 import { DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION } from '../src/dsh-imagegen';
 import { findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
@@ -233,7 +233,6 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
     if (args[0] === 'pm') return { exitCode: 0, stdout: '', stderr: '' };
     if (args[0] === 'plugin') {
       const packageSpec = args.at(-1);
-      if (args[3] === 'remove' && packageSpec === LEGACY_DSH_WEB_PACKAGE) return { exitCode: 0, stdout: '', stderr: '' };
       if (packageSpec === `${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`) {
         await writeProfilePlugin(context.dshHome, DSH_WEB_PACKAGE, DSH_WEB_VERSION, '');
         return { exitCode: 0, stdout: '', stderr: '' };
@@ -1362,13 +1361,13 @@ describe('Windows release gate foundations', () => {
       const webProfileManifestPath = join(state, 'profiles', 'web', 'package.json');
       const webProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
       webProfileManifest.dependencies ??= {};
-      webProfileManifest.dependencies[LEGACY_DSH_WEB_PACKAGE] = '3.1.0';
+      webProfileManifest.dependencies['@tta-lab/dsh-web'] = '3.1.0';
       await writeFile(webProfileManifestPath, `${JSON.stringify(webProfileManifest, null, 2)}\n`);
       await install();
-      const legacyRemoval = calls.findIndex((call) => call.args.join(' ') === `plugin --profile web remove ${LEGACY_DSH_WEB_PACKAGE}`);
-      const guionAddition = calls.findIndex((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`));
-      expect(legacyRemoval).toBeGreaterThanOrEqual(0);
-      expect(guionAddition).toBeGreaterThan(legacyRemoval);
+      const rebuiltWebProfile = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      expect(rebuiltWebProfile.dependencies?.['@tta-lab/dsh-web']).toBeUndefined();
+      expect(rebuiltWebProfile.dependencies?.[DSH_WEB_PACKAGE]).toBe(DSH_WEB_VERSION);
+      expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`))).toBe(true);
       expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'package.json')).exists()).toBe(true);
