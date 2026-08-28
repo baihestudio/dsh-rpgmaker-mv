@@ -8,13 +8,13 @@ import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION, verifyMcpor
 import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
-  WORKSPACE_MCP_BUNDLE_RELATIVE,
   WORKSPACE_MCP_PACKAGE,
   WORKSPACE_MCP_SHA256,
   WORKSPACE_MCP_VERSION,
   XEROLO_RUNTIME_ENV,
   prepareWorkspaceMcpBundle,
-  verifyWorkspaceMcpBundle
+  verifyWorkspaceMcpBundle,
+  workspaceMcpBundleDirFor
 } from '../src/workspace-mcp';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
 import { redactSensitive, withoutCredentials } from '../src/process';
@@ -394,7 +394,6 @@ describe('app-owned workspace MCP bundle profile link', () => {
     const root = await temp('ws-bundle-install');
     try {
       const paths = harnessPaths(root);
-      await mkdir(join(paths.programRoot, 'bundle'), { recursive: true });
       await mkdir(join(paths.runtimeDir, 'node_modules', '.bin'), { recursive: true });
       const pnpm = join(root, 'pnpm.exe');
       await writeFile(pnpm, 'fixture');
@@ -407,7 +406,7 @@ describe('app-owned workspace MCP bundle profile link', () => {
           pluginCalls += 1;
           const local = args.find((value) => value.startsWith('file:'));
           expect(local).toBeDefined();
-          await writeInstalledProfile(paths.dshHome, local!, join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE));
+          await writeInstalledProfile(paths.dshHome, local!, workspaceMcpBundleDirFor(paths));
           return { exitCode: 0, stdout: '', stderr: '' };
         }
         throw new Error(`unexpected runner call: ${args.join(' ')}`);
@@ -417,7 +416,7 @@ describe('app-owned workspace MCP bundle profile link', () => {
       expect(first.valid).toBe(true);
       expect(first.packageVersion).toBe(WORKSPACE_MCP_VERSION);
       expect(first.bundleOccurrences).toBe(1);
-      expect(first.packageDir).toBe(await realpath(join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE)));
+      expect(first.packageDir).toBe(await realpath(workspaceMcpBundleDirFor(paths)));
       expect(pluginCalls).toBe(1);
 
       const second = await prepareWorkspaceMcpBundle(options);
@@ -432,8 +431,7 @@ describe('app-owned workspace MCP bundle profile link', () => {
     const root = await temp('ws-bundle-verify');
     try {
       const paths = harnessPaths(root);
-      await mkdir(paths.programRoot, { recursive: true });
-      const bundleDir = join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE);
+      const bundleDir = workspaceMcpBundleDirFor(paths);
       await cp(BUNDLE_SOURCE, bundleDir, { recursive: true });
       await writeFile(join(bundleDir, 'lib', 'index.js'), await readFile(join(bundleDir, 'lib', 'index.js'), 'utf8').then((text) => `${text}\n`));
 
@@ -459,7 +457,7 @@ describe('app-owned workspace MCP bundle profile link', () => {
     const root = await temp('ws-bundle-copied');
     try {
       const paths = harnessPaths(root);
-      const bundleDir = join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE);
+      const bundleDir = workspaceMcpBundleDirFor(paths);
       await mkdir(bundleDir, { recursive: true });
       await cp(BUNDLE_SOURCE, bundleDir, { recursive: true });
       const profile = join(paths.dshHome, 'profiles', 'web');
@@ -488,7 +486,7 @@ describe('app-owned workspace MCP bundle profile link', () => {
     const root = await temp('ws-bundle-redaction');
     try {
       const paths = harnessPaths(root);
-      const bundleDir = join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE);
+      const bundleDir = workspaceMcpBundleDirFor(paths);
       await mkdir(bundleDir, { recursive: true });
       await cp(BUNDLE_SOURCE, bundleDir, { recursive: true });
       const profile = join(paths.dshHome, 'profiles', 'web');
@@ -1115,12 +1113,11 @@ describe('real DSH Agent seam', () => {
           const hostCtx = new HarnessScope('host-isolation');
           hostBundle.apply(hostCtx);
           try {
-            // The two MCP-capable shipped preset compositions mount the Agent access
-            // row; they intentionally share the same canonical workspace server.
-            const shippedPresetIds = ['rpgmaker', 'asset-workshop'] as const;
-            const agentsA = shippedPresetIds.map((agentPreset, index) => createComposedAgent(agentBundle, `workspace-a-${index}`, {
+            // Two RPG Maker Agent sessions intentionally share the same canonical
+            // workspace server.
+            const agentsA = [0, 1].map((index) => createComposedAgent(agentBundle, `workspace-a-${index}`, {
               cwd: projectA,
-              agentPreset
+              agentPreset: 'rpgmaker'
             }, hostCtx.root));
             const agentB = createComposedAgent(agentBundle, 'workspace-b', { cwd: projectB, agentPreset: 'rpgmaker' }, hostCtx.root);
 
@@ -1216,7 +1213,7 @@ describe('real DSH Agent seam', () => {
           hostBundle.apply(hostCtx);
           try {
             const failedAgent = createComposedAgent(agentBundle, 'failed-agent', { cwd: failedProject, agentPreset: 'rpgmaker' }, hostCtx.root);
-            const healthyAgent = createComposedAgent(agentBundle, 'healthy-agent', { cwd: healthyProject, agentPreset: 'asset-workshop' }, hostCtx.root);
+            const healthyAgent = createComposedAgent(agentBundle, 'healthy-agent', { cwd: healthyProject, agentPreset: 'rpgmaker' }, hostCtx.root);
 
             // Manifest tools remain synchronously present for the failed Agent,
             // but its first request fails closed when the live server drifts.
@@ -1232,7 +1229,7 @@ describe('real DSH Agent seam', () => {
 
             // A failed acquisition is cached for this Host generation: a later
             // Agent observes the same failure, with no automatic Xerolo restart.
-            const retryAgent = createComposedAgent(agentBundle, 'failed-retry', { cwd: failedProject, agentPreset: 'asset-workshop' }, hostCtx.root);
+            const retryAgent = createComposedAgent(agentBundle, 'failed-retry', { cwd: failedProject, agentPreset: 'rpgmaker' }, hostCtx.root);
             expect(retryAgent.ctx.tools.schemas().map((tool) => tool.name).sort()).toEqual(expectedNames);
             await expect(retryAgent.ctx.assemble()).rejects.toThrow(/tools\/list returned no tools/);
             const starts = (await readFile(tracePath, 'utf8')).trim().split(/\r?\n/).filter(Boolean)

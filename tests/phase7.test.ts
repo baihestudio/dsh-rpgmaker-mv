@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test';
-import { createHash } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { basename, dirname, join, resolve, win32 } from 'node:path';
@@ -12,9 +11,9 @@ import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRA
 import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgejo-mcp';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, RELEASE_ENTRIES, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
-import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
 import { PNPM_VERSION } from '../src/profile';
 import { DSH_WEB_PACKAGE, DSH_WEB_VERSION } from '../src/dsh-web';
+import { DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION } from '../src/dsh-imagegen';
 import { findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
@@ -27,7 +26,7 @@ import { runCommand } from '../src/process';
 import { inspectWorkspaceSandbox } from '../src/workspace-sandbox';
 import { run as runProcessObservation } from '../scripts/process-observation.mjs';
 import { cleanupInstalledGateWorkspace, resolveInstalledNode, runInstalledMount } from '../scripts/phase7-windows-installed-gate';
-import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion } from '../src/executable';
+import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, uninstallHarness, UninstallSafetyError } from '../src/windows';
 
 async function temp(prefix: string): Promise<string> {
@@ -102,7 +101,7 @@ function runInteractive(command: string, args: string[], env: Record<string, str
 async function prerequisiteBin(root: string): Promise<{ bin: string; env: Record<string, string> }> {
   const bin = join(root, 'fake prerequisite bin');
   await mkdir(bin, { recursive: true });
-  for (const name of ['node.exe', 'npm.cmd', 'python.exe', 'bun.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', '7z.exe']) await writeFile(join(bin, name), 'fixture');
+  for (const name of ['node.exe', 'npm.cmd', 'python.exe', 'bun.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', 'magick.exe']) await writeFile(join(bin, name), 'fixture');
   return { bin, env: { PATH: bin, LOCALAPPDATA: join(root, 'Local AppData'), APPDATA: join(root, 'Roaming AppData') } };
 }
 
@@ -124,14 +123,10 @@ function prerequisiteRunner() {
     if (name === 'git.exe') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
     if (name === 'coreutils-manager.exe' && args[0] === '--help') return { exitCode: 0, stdout: 'Manage coreutils utilities and PowerShell profiles\n enable\n disable\n status\n', stderr: '' };
     if (name === 'coreutils-manager.exe' && args[0] === 'status') return { exitCode: 0, stdout: 'find enabled\ngrep enabled\n', stderr: '' };
-    if (name === '7z.exe' && args[0] === 'i') return { exitCode: 0, stdout: '7-Zip 24.09 (x64) : Copyright (c) 1999-2025 Igor Pavlov\n', stderr: '' };
+    if (name === 'magick.exe') return { exitCode: 0, stdout: 'ImageMagick 7.1.2-29 Q16 x64\n', stderr: '' };
     if (name === 'forgejo-mcp.exe' && args[0] === '--version') return { exitCode: 0, stdout: 'forgejo-mcp 2.34.1\n', stderr: '' };
     return { exitCode: 0, stdout: `${name} 0.1.0`, stderr: '' };
   };
-}
-
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
 }
 
 async function writePinnedPackageRuntime(
@@ -231,10 +226,6 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
       await writePinnedPackageRuntime(cwd!, RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==', { version: RPGMAKER_MCP_VERSION, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } });
       return { exitCode: 0, stdout: '', stderr: '' };
     }
-    if (args[0] === 'add' && packageSpec === `free-tex-packer-core@${FREE_TEX_PACKER_VERSION}`) {
-      await writePinnedPackageRuntime(cwd!, 'free-tex-packer-core', FREE_TEX_PACKER_VERSION, FREE_TEX_LOCK_INTEGRITY, { version: FREE_TEX_PACKER_VERSION });
-      return { exitCode: 0, stdout: '', stderr: '' };
-    }
     if (args[0] === 'add' && packageSpec === `${DSH_PACKAGE_NAME}@${DSH_VERSION}`) {
       await dshRuntime(cwd!);
       return { exitCode: 0, stdout: '', stderr: '' };
@@ -246,6 +237,10 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
         await writeProfilePlugin(context.dshHome, DSH_WEB_PACKAGE, DSH_WEB_VERSION, '');
         return { exitCode: 0, stdout: '', stderr: '' };
       }
+      if (packageSpec === `${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`) {
+        await writeProfilePlugin(context.dshHome, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, '');
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
       const local = args.find((value) => value.startsWith('file:'))?.slice('file:'.length);
       if (!local) throw new Error(`unexpected plugin fixture args: ${args.join(' ')}`);
       const localManifest = JSON.parse(await readFile(join(local, 'package.json'), 'utf8')) as { name?: string; version?: string };
@@ -255,7 +250,6 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
     }
     const name = basename(command).toLowerCase();
     if (name === 'magick.exe') return { exitCode: 0, stdout: 'ImageMagick 7.1.2-29 Q16 x64\n', stderr: '' };
-    if (name === 'oxipng.exe') return { exitCode: 0, stdout: 'oxipng 10.2.0\n', stderr: '' };
     if (name === 'python.exe') return { exitCode: 0, stdout: 'Python 3.13.15\n', stderr: '' };
     if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
     if (args[0] === 'add') throw new Error(`unexpected dependency fixture args: ${args.join(' ')}`);
@@ -569,144 +563,24 @@ describe('Windows release gate foundations', () => {
     }
   });
 
+  test('never returns a WindowsApps execution alias when no real PowerShell exists', async () => {
+    const root = await temp('phase7-pwsh-alias-only');
+    try {
+      const apps = join(root, 'WindowsApps');
+      await mkdir(apps, { recursive: true });
+      await writeFile(join(apps, 'pwsh.exe'), 'alias');
+      expect(await resolveWindowsPwsh({ platform: 'win32', env: { PATH: apps, ProgramFiles: join(root, 'Program Files') } })).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('resolves Windows executables from a case-insensitive Path environment key', async () => {
     const root = await temp('windows-path-case');
     try {
       const npm = join(root, 'npm.cmd');
       await writeFile(npm, 'fixture');
       expect(await resolveExecutable('npm', { platform: 'win32', env: { Path: root } })).toBe(npm);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('resolves installed 7-Zip from Program Files (x86) and per-user roots before PATH', async () => {
-    const root = await temp('phase7-sevenzip-roots');
-    try {
-      const x86 = join(root, 'Program Files (x86)', '7-Zip', '7z.exe');
-      await mkdir(dirname(x86), { recursive: true });
-      await writeFile(x86, 'fixture');
-      const perUser = join(root, 'Local AppData', 'Programs', '7-Zip', '7z.exe');
-      await mkdir(dirname(perUser), { recursive: true });
-      await writeFile(perUser, 'fixture');
-      const env = {
-        PATH: join(root, 'no-sevenzip-on-path'),
-        ProgramFiles: join(root, 'Program Files'),
-        'ProgramFiles(x86)': join(root, 'Program Files (x86)'),
-        ProgramW6432: join(root, 'Program Files'),
-        LOCALAPPDATA: join(root, 'Local AppData')
-      };
-      expect(await resolveWindowsSevenZip({ platform: 'win32', env })).toBe(x86);
-      await rm(dirname(x86), { recursive: true, force: true });
-      expect(await resolveWindowsSevenZip({ platform: 'win32', env })).toBe(perUser);
-      expect(parseSevenZipVersion('7-Zip 24.09 (x64) : Copyright (c) 1999-2025 Igor Pavlov\n')).toEqual([24, 9, 0]);
-      expect(parseSevenZipVersion('7-Zip [64] 19.00 (x64) : Copyright (c) 1999-2019 Igor Pavlov\n')).toEqual([19, 0, 0]);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('accepts legacy and modern 7-Zip banners and rejects an unrelated 7z shim', async () => {
-    const root = await temp('phase7-sevenzip-banners');
-    try {
-      const { env } = await prerequisiteBin(root);
-      const base = prerequisiteRunner();
-      const legacy = await verifyWindowsPrerequisites({
-        platform: 'win32', env, commandRunner: async (command, args, options) => {
-          if (basename(command).toLowerCase() === '7z.exe' && args[0] === 'i') return { exitCode: 0, stdout: '7-Zip [64] 19.00 (x64) : Copyright (c) 1999-2019 Igor Pavlov\n', stderr: '' };
-          return base(command, args, options);
-        }
-      });
-      const legacySevenZip = legacy.checks.find((item) => item.id === '7zip');
-      expect(legacySevenZip?.ok).toBe(true);
-      expect(legacySevenZip?.version).toBe('19.00');
-      const shim = await verifyWindowsPrerequisites({
-        platform: 'win32', env, commandRunner: async (command, args, options) => {
-          if (basename(command).toLowerCase() === '7z.exe' && args[0] === 'i') return { exitCode: 0, stdout: 'acme archiver 1.0\n', stderr: '' };
-          return base(command, args, options);
-        }
-      });
-      expect(shim.checks.find((item) => item.id === '7zip')?.ok).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('resolves installed 7-Zip from the 7-Zip registry key before PATH (custom WinGet location)', async () => {
-    const root = await temp('phase7-sevenzip-registry');
-    try {
-      const custom = join(root, '解压', '7-Zip', '7z.exe');
-      await mkdir(dirname(custom), { recursive: true });
-      await writeFile(custom, 'fixture');
-      const env = { PATH: join(root, 'no-sevenzip-on-path') };
-      const runner = async (command: string, args: string[]) => {
-        if (basename(command).toLowerCase() === 'reg.exe' && args[0] === 'query' && args[1] === 'HKLM\\SOFTWARE\\7-Zip') {
-          return { exitCode: 0, stdout: `\r\n    Path    REG_SZ    ${dirname(custom)}\r\n`, stderr: '' };
-        }
-        return { exitCode: 0, stdout: '', stderr: '' };
-      };
-      expect(await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: runner })).toBe(custom);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('falls back to PATH when the 7-Zip registry key is missing or malformed', async () => {
-    const root = await temp('phase7-sevenzip-registry-missing');
-    try {
-      const bin = join(root, 'bin');
-      await mkdir(bin, { recursive: true });
-      await writeFile(join(bin, '7z.exe'), 'fixture');
-      const env = { PATH: bin };
-      const runner = async () => ({ exitCode: 1, stdout: '', stderr: 'ERROR: The system was unable to find the specified registry key or value.' });
-      expect(await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: runner })).toBe(join(bin, '7z.exe'));
-
-      const malformed = async (command: string) => (basename(command).toLowerCase() === 'reg.exe'
-        ? { exitCode: 0, stdout: '\r\n    Path    REG_SZ    %NOT_SET%\\7-Zip\r\n', stderr: '' }
-        : { exitCode: 1, stdout: '', stderr: '' });
-      expect(await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: malformed })).toBe(join(bin, '7z.exe'));
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('prefers a standard 7-Zip root over the registry key', async () => {
-    const root = await temp('phase7-sevenzip-registry-priority');
-    try {
-      const standard = join(root, 'Program Files', '7-Zip', '7z.exe');
-      await mkdir(dirname(standard), { recursive: true });
-      await writeFile(standard, 'fixture');
-      const custom = join(root, 'custom', '7z.exe');
-      await mkdir(dirname(custom), { recursive: true });
-      await writeFile(custom, 'fixture');
-      const env = { PATH: join(root, 'no-sevenzip-on-path'), ProgramFiles: join(root, 'Program Files') };
-      const runner = async () => ({ exitCode: 0, stdout: `\r\n    Path    REG_SZ    ${dirname(custom)}\r\n`, stderr: '' });
-      expect(await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: runner })).toBe(standard);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('rejects an unrelated 7z shim resolved through the registry key', async () => {
-    const root = await temp('phase7-sevenzip-registry-shim');
-    try {
-      const custom = join(root, 'shim', '7z.exe');
-      await mkdir(dirname(custom), { recursive: true });
-      await writeFile(custom, 'fixture');
-      const { env } = await prerequisiteBin(root);
-      const base = prerequisiteRunner();
-      const report = await verifyWindowsPrerequisites({
-        platform: 'win32', env, commandRunner: async (command, args, options) => {
-          if (basename(command).toLowerCase() === 'reg.exe' && args[1]?.includes('7-Zip')) {
-            return { exitCode: 0, stdout: `\r\n    Path    REG_SZ    ${dirname(custom)}\r\n`, stderr: '' };
-          }
-          if (basename(command).toLowerCase() === '7z.exe' && args[0] === 'i') {
-            return { exitCode: 0, stdout: 'acme archiver 1.0\n', stderr: '' };
-          }
-          return base(command, args, options);
-        }
-      });
-      expect(report.checks.find((item) => item.id === '7zip')?.ok).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -734,7 +608,7 @@ describe('Windows release gate foundations', () => {
       const { bin, env } = await prerequisiteBin(root);
       const report = await verifyWindowsPrerequisites({ platform: 'win32', env, commandRunner: prerequisiteRunner() });
       expect(report.ok).toBe(true);
-      expect(report.checks.map((check) => check.id)).toEqual(['node', 'python', 'bun', 'powershell', 'git', 'coreutils', '7zip']);
+      expect(report.checks.map((check) => check.id)).toEqual(['node', 'python', 'bun', 'powershell', 'git', 'coreutils', 'imagemagick']);
       const missing = await verifyWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, commandRunner: prerequisiteRunner() });
       expect(missing.ok).toBe(false);
       await expect(installWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, consent: false, commandRunner: prerequisiteRunner() })).rejects.toBeInstanceOf(PrerequisiteConsentError);
@@ -904,7 +778,10 @@ describe('Windows release gate foundations', () => {
       const dshHome = join(mutableRoot, 'state');
       const programRoot = join(root, 'program');
       const runtime = join(programRoot, 'runtime', 'dsh');
+      const imageMagick = join(root, 'custom-magick', 'magick.exe');
       await dshRuntime(runtime);
+      await mkdir(dirname(imageMagick), { recursive: true });
+      await writeFile(imageMagick, 'fixture');
       await cp(join(REPOSITORY_ROOT, 'tools', 'forgejo-mcp'), join(programRoot, 'tools', 'forgejo-mcp'), { recursive: true });
       await ensureHarnessLayout({ platform: 'win32', env, mutableRoot, dshHome, programRoot, runtimeDir: runtime });
       await writeFile(join(dshHome, '.credentials.yaml'), 'provider: local\n');
@@ -916,29 +793,18 @@ describe('Windows release gate foundations', () => {
         await writeFile(join(presetRoot, presetId, 'agent.cordis.yml'), '- id: persona\n');
       }
       const report = await runDoctor({
-        platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, commandRunner: prerequisiteRunner(),
+        platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, imageMagickExecutable: imageMagick, commandRunner: prerequisiteRunner(),
         verifyAgentDependencies: async () => ({
-          mcp: { id: 'rpgmaker-mcp', label: 'RPG Maker MV MCP runtime', ok: true, detail: 'fixture MCP verified' },
-          image: { id: 'image-toolchain', label: 'Image asset toolchain', ok: true, detail: 'fixture image tools verified' }
-        }),
-        verifyImageWorkshopPlugin: async () => ({
-          valid: true,
-          errors: [],
-          packageDir: join(root, 'program', 'bundle', 'dsh-image-workshop'),
-          packageVersion: '0.1.0',
-          profileDependency: 'link:../../../../program/bundle/dsh-image-workshop',
-          bundleOccurrences: 0,
-          entrypoint: join(root, 'program', 'bundle', 'dsh-image-workshop', 'lib', 'index.js'),
-          ownedPath: true,
-          sha256: 'edd700c03856033e08d5886830d6bfee3f7f3e603f94cc10f011849ef0dde05a'
+          mcp: { id: 'rpgmaker-mcp', label: 'RPG Maker MV MCP runtime', ok: true, detail: 'fixture MCP verified' }
         })
       });
       expect(report.ok).toBe(true);
       expect(report.checks.map((check) => check.id)).toContain('node');
       expect(report.checks.map((check) => check.id)).toContain('python');
-      expect(report.checks.map((check) => check.id)).toContain('image-tool-plugin');
+      expect(report.checks.map((check) => check.id)).toContain('imagemagick');
       expect(report.checks.map((check) => check.id)).toContain('forgejo-mcp');
       expect(report.executablePaths.python).toContain('python.exe');
+      expect(report.executablePaths.imageMagick).toBe(imageMagick);
       expect(report.executablePaths.forgejoMcp).toContain(join('tools', 'forgejo-mcp', 'forgejo-mcp.exe'));
       expect(report.checks.map((check) => check.id)).toContain('app-layout');
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-profile');
@@ -1367,13 +1233,18 @@ describe('Windows release gate foundations', () => {
     const root = await temp('phase7-default-dependencies');
     try {
       const { bin, env: prerequisiteEnv } = await prerequisiteBin(root);
-      const imageMagick = join(bin, 'magick.exe');
-      const oxipng = join(bin, 'oxipng.exe');
-      await writeFile(imageMagick, 'fixture ImageMagick');
-      await writeFile(oxipng, 'fixture oxipng');
       const mutable = join(root, 'mutable');
       const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
       const state = join(mutable, 'state');
+      const retiredGameDesignPreset = join(state, '.agent-presets', 'game-design');
+      const retiredAssetPreset = join(state, '.agent-presets', 'asset-workshop');
+      const retiredBuildReleasePreset = join(state, '.agent-presets', 'build-release');
+      await mkdir(retiredGameDesignPreset, { recursive: true });
+      await writeFile(join(retiredGameDesignPreset, '.dsh-rpgmaker-owned.json'), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId: 'game-design', format: 1 })}\n`);
+      await mkdir(retiredAssetPreset, { recursive: true });
+      await writeFile(join(retiredAssetPreset, '.dsh-rpgmaker-owned.json'), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId: 'asset-workshop', format: 1 })}\n`);
+      await mkdir(retiredBuildReleasePreset, { recursive: true });
+      await writeFile(join(retiredBuildReleasePreset, '.dsh-rpgmaker-owned.json'), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId: 'build-release', format: 1 })}\n`);
       const bun = join(bin, 'bun.exe');
       const npm = join(bin, 'npm.cmd');
       const node = join(bin, 'node.exe');
@@ -1381,11 +1252,7 @@ describe('Windows release gate foundations', () => {
         ...prerequisiteEnv,
         BUN_EXECUTABLE: bun,
         NPM_EXECUTABLE: npm,
-        NODE_EXECUTABLE: node,
-        DSH_IMAGE_MAGICK: imageMagick,
-        DSH_IMAGE_MAGICK_SHA256: sha256('fixture ImageMagick'),
-        DSH_OXIPNG: oxipng,
-        DSH_OXIPNG_SHA256: sha256('fixture oxipng')
+        NODE_EXECUTABLE: node
       };
       const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
       const commandRunner = defaultInstallRunner({ dshHome: state }, calls);
@@ -1411,6 +1278,9 @@ describe('Windows release gate foundations', () => {
       await install();
       const installedForgejoPreset = join(state, '.agent-presets', 'rpgmaker', 'agent.cordis.yml');
       expect(await Bun.file(installedForgejoPreset).exists()).toBe(true);
+      expect(await Bun.file(retiredGameDesignPreset).exists()).toBe(false);
+      expect(await Bun.file(retiredAssetPreset).exists()).toBe(false);
+      expect(await Bun.file(retiredBuildReleasePreset).exists()).toBe(false);
       expect(await readFile(installedForgejoPreset, 'utf8')).toContain('DSH_RPGMAKER_PROGRAM_ROOT');
       expect(calls.some((call) => call.args.includes(`pnpm@${PNPM_VERSION}`))).toBe(true);
       expect(calls.some((call) => basename(call.command).toLowerCase() === 'python.exe')).toBe(true);
@@ -1420,16 +1290,38 @@ describe('Windows release gate foundations', () => {
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
       expect(calls.some((call) => call.args.includes(`${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`))).toBe(true);
       expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
+      expect(calls.flatMap((call) => call.args)).not.toContain('@tta-lab/dsh-web');
+      expect(calls.some((call) => call.args.includes(`${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'pnpm', 'node_modules', 'pnpm', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'node_modules', MCPORTER_PACKAGE, 'dist', 'index.js')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'node_modules', ...RPGMAKER_MCP_PACKAGE.split('/'), 'dist', 'index.js')).exists()).toBe(true);
 
       calls.length = 0;
+      const webProfileManifestPath = join(state, 'profiles', 'web', 'package.json');
+      const webProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      webProfileManifest.dependencies ??= {};
+      webProfileManifest.dependencies['@tta-lab/dsh-web'] = '3.1.0';
+      await writeFile(webProfileManifestPath, `${JSON.stringify(webProfileManifest, null, 2)}\n`);
       await install();
+      const rebuiltWebProfile = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      expect(rebuiltWebProfile.dependencies?.['@tta-lab/dsh-web']).toBeUndefined();
+      expect(rebuiltWebProfile.dependencies?.[DSH_WEB_PACKAGE]).toBe(DSH_WEB_VERSION);
+      expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`))).toBe(true);
       expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'package.json')).exists()).toBe(true);
+
+      calls.length = 0;
+      const staleProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      staleProfileManifest.dependencies ??= {};
+      staleProfileManifest.dependencies['@baihestudio/dsh-image-workshop'] = `file:${join(program, 'bundle', 'dsh-image-workshop')}`;
+      await writeFile(webProfileManifestPath, `${JSON.stringify(staleProfileManifest, null, 2)}\n`);
+      await install();
+      const rebuiltProfile = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      expect(rebuiltProfile.dependencies?.['@baihestudio/dsh-image-workshop']).toBeUndefined();
+      expect(rebuiltProfile.dependencies?.[DSH_WEB_PACKAGE]).toBe(DSH_WEB_VERSION);
+      expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`))).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1521,9 +1413,8 @@ describe('Windows release gate foundations', () => {
         const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
         const mutable = join(root, 'mutable');
         const state = join(mutable, 'state');
-        await mkdir(join(program, 'tools', 'image-workshop', 'native-tools'), { recursive: true });
+        await mkdir(program, { recursive: true });
         await writeFile(join(program, 'old-tree.txt'), `prior ${failure}\n`);
-        await writeFile(join(program, 'tools', 'image-workshop', 'native-tools', 'preserved-tool.txt'), 'verified dependency fixture\n');
         const baseRunner = prerequisiteRunner();
         const commandRunner = failure === 'bootstrap'
           ? async (command: string, args: string[], options: { cwd?: string }) => args[0] === 'add'
@@ -1549,7 +1440,6 @@ describe('Windows release gate foundations', () => {
         const failed = entries.find((entry) => entry.startsWith(`${basename(program)}.failed-`));
         expect(failed).toBeDefined();
         expect(await Bun.file(join(dirname(program), failed!, 'Install.cmd')).exists()).toBe(true);
-        expect(await readFile(join(dirname(program), failed!, 'tools', 'image-workshop', 'native-tools', 'preserved-tool.txt'), 'utf8')).toBe('verified dependency fixture\n');
         expect(await Bun.file(join(program, 'install.json')).exists()).toBe(false);
       } finally {
         await rm(root, { recursive: true, force: true });
@@ -1701,10 +1591,6 @@ describe('Windows release gate foundations', () => {
       expect(await Bun.file(join(extracted, 'Launch.cmd')).exists()).toBe(true);
 
       const { bin, env: prerequisiteEnv } = await prerequisiteBin(root);
-      const imageMagick = join(bin, 'magick.exe');
-      const oxipng = join(bin, 'oxipng.exe');
-      await writeFile(imageMagick, 'fixture ImageMagick');
-      await writeFile(oxipng, 'fixture oxipng');
       const mutable = join(root, 'Mutable state 选择 with spaces');
       const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
       const state = join(mutable, 'state');
@@ -1714,11 +1600,7 @@ describe('Windows release gate foundations', () => {
         ...prerequisiteEnv,
         BUN_EXECUTABLE: bun,
         NPM_EXECUTABLE: npm,
-        NODE_EXECUTABLE: join(bin, 'node.exe'),
-        DSH_IMAGE_MAGICK: imageMagick,
-        DSH_IMAGE_MAGICK_SHA256: sha256('fixture ImageMagick'),
-        DSH_OXIPNG: oxipng,
-        DSH_OXIPNG_SHA256: sha256('fixture oxipng')
+        NODE_EXECUTABLE: join(bin, 'node.exe')
       };
       const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
       const runner = defaultInstallRunner({ dshHome: state }, calls);

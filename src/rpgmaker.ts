@@ -8,12 +8,6 @@ import { resolveExecutable } from './executable';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 import { pathExists } from './project';
 import { addFixedWebBinding, ensureLaunchPort, launchProject, type LaunchOptions, type LaunchResult } from './launcher';
-import {
-  ASSET_WORKSHOP_PRESET_ID,
-  resolveImageToolchain,
-  type ImageToolchainPreparationOptions
-} from './image-workshop';
-import { IMAGE_WORKSHOP_PLUGIN_ROW_ID } from './image-plugin';
 import { prepareMcporterRuntime, mcporterRuntimeDirFor, type McporterRuntimeOptions, type McporterRuntimeVerification } from './mcport';
 import {
   JS_RUNNER_ENV,
@@ -28,13 +22,13 @@ import {
 export const RPGMAKER_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
 export const RPGMAKER_MCP_VERSION = '0.1.0';
 export const RPGMAKER_PRESET_ID = 'rpgmaker';
-export const GAME_DESIGN_PRESET_ID = 'game-design';
 export const RPGMAKER_DSH_PROFILE = 'web';
 export const DEEPSEEK_VISION_MODEL = 'deepseek-v4-flash-vision-exp';
 export const DSH_TOOL_TIMEOUT_POLICY_PACKAGE = '@deepseek-ai/dsh-tool-call-timeout-policy';
 export const DSH_TOOL_TIMEOUT_POLICY_ROW_ID = 'timeout-policy';
 export const FORGEJO_MCP_CLIENT_ROW_ID = 'forgejo-mcp-client';
-export const CUSTOM_AGENT_PRESET_IDS = [RPGMAKER_PRESET_ID, GAME_DESIGN_PRESET_ID, ASSET_WORKSHOP_PRESET_ID] as const;
+export const CUSTOM_AGENT_PRESET_IDS = [RPGMAKER_PRESET_ID] as const;
+const REMOVED_PRESET_IDS = ['game-design', 'asset-workshop', 'build-release'] as const;
 const PRESET_OWNERSHIP_FILE = '.dsh-rpgmaker-owned.json';
 const MCP_LOCK_INTEGRITY = 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==';
 const MCP_LOCK_BIN = 'dist/index.js';
@@ -47,17 +41,6 @@ export type RpgMakerLaunchOptions = LaunchOptions & {
   jsExecutable?: string;
   agentPreset?: string;
   sourceRoot?: string;
-  imageToolchainRoot?: string;
-  imageHelperRuntimeDir?: string;
-  imageMagickExecutable?: string;
-  imageMagickSha256?: string;
-  imageMagickUrl?: string;
-  imageMagickRelease?: ImageToolchainPreparationOptions['imageMagickRelease'];
-  oxipngExecutable?: string;
-  oxipngSha256?: string;
-  oxipngUrl?: string;
-  oxipngRelease?: ImageToolchainPreparationOptions['oxipngRelease'];
-  installOxipng?: boolean;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
   npmExecutable?: string;
@@ -137,12 +120,12 @@ interface OwnedRpgMakerProfileSnapshot {
   entries: OwnedRpgMakerProfileSnapshotEntry[];
 }
 
-/** Snapshot only the five app-owned Agent presets and shared Host patch. */
+/** Snapshot the shipped presets, retired app-owned overlays, and shared Host patch. */
 async function snapshotOwnedRpgMakerProfile(dshHome: string): Promise<OwnedRpgMakerProfileSnapshot> {
   const root = await mkdtemp(join(dshHome, '.rpgmaker-profile-rollback-'));
   const presetRoot = join(dshHome, '.agent-presets');
   const sources = [
-    ...CUSTOM_AGENT_PRESET_IDS.map((presetId) => join(presetRoot, presetId)),
+    ...[...CUSTOM_AGENT_PRESET_IDS, ...REMOVED_PRESET_IDS].map((presetId) => join(presetRoot, presetId)),
     join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml')
   ];
   const entries: OwnedRpgMakerProfileSnapshotEntry[] = [];
@@ -432,8 +415,7 @@ function composePresetComposition(code: string, overlay: string, presetId: strin
   const personaRows = overlayRows.filter((row) => row.id === 'persona');
   const workspaceRows = overlayRows.filter((row) => row.id === WORKSPACE_MCP_AGENT_ROW_ID);
   const forgejoRows = overlayRows.filter((row) => row.id === FORGEJO_MCP_CLIENT_ROW_ID);
-  const pluginRows = overlayRows.filter((row) => row.id === IMAGE_WORKSHOP_PLUGIN_ROW_ID);
-  const requiresWorkspaceMcp = presetId !== GAME_DESIGN_PRESET_ID;
+  const requiresWorkspaceMcp = presetId === RPGMAKER_PRESET_ID;
   if (personaRows.length !== 1) {
     throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must provide exactly one persona row; found ${personaRows.length}.`);
   }
@@ -444,25 +426,15 @@ function composePresetComposition(code: string, overlay: string, presetId: strin
     throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must provide exactly one ${WORKSPACE_MCP_AGENT_ROW_ID} row; found ${workspaceRows.length}.`);
   }
   if (!requiresWorkspaceMcp && workspaceRows.length !== 0) {
-    throw new RpgMakerStartupError(`Document preset ${presetId} must not provide a ${WORKSPACE_MCP_AGENT_ROW_ID} row; found ${workspaceRows.length}.`);
+    throw new RpgMakerStartupError(`Non-RPG-Maker preset ${presetId} must not provide a ${WORKSPACE_MCP_AGENT_ROW_ID} row; found ${workspaceRows.length}.`);
   }
-  if (pluginRows.length > 1) {
-    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must not duplicate the ${IMAGE_WORKSHOP_PLUGIN_ROW_ID} row.`);
-  }
-  const otherRows = overlayRows.filter((row) => row.id !== 'persona' && row.id !== WORKSPACE_MCP_AGENT_ROW_ID && row.id !== FORGEJO_MCP_CLIENT_ROW_ID && row.id !== IMAGE_WORKSHOP_PLUGIN_ROW_ID);
+  const otherRows = overlayRows.filter((row) => row.id !== 'persona' && row.id !== WORKSPACE_MCP_AGENT_ROW_ID && row.id !== FORGEJO_MCP_CLIENT_ROW_ID);
   if (otherRows.length > 0) {
-    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must define no composition rows beyond persona, ${FORGEJO_MCP_CLIENT_ROW_ID}, ${requiresWorkspaceMcp ? WORKSPACE_MCP_AGENT_ROW_ID : 'no workspace MCP row'}${pluginRows.length === 1 ? ' and the app-owned image plugin row' : ''}.`);
-  }
-  if (pluginRows.length === 1 && presetId !== ASSET_WORKSHOP_PRESET_ID) {
-    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must not mount the image tool plugin; only ${ASSET_WORKSHOP_PRESET_ID} may scope it.`);
-  }
-  if (!requiresWorkspaceMcp && pluginRows.length !== 0) {
-    throw new RpgMakerStartupError(`Document preset ${presetId} must not mount the image tool plugin.`);
+    throw new RpgMakerStartupError(`RPG Maker preset ${presetId} must define no composition rows beyond persona, ${FORGEJO_MCP_CLIENT_ROW_ID}, and ${requiresWorkspaceMcp ? WORKSPACE_MCP_AGENT_ROW_ID : 'no workspace MCP row'}.`);
   }
   let composed = replaceTopLevelRow(code, 'persona', personaRows[0].text, `RPG Maker preset ${presetId}`);
   if (requiresWorkspaceMcp) composed = insertTopLevelRowAfter(composed, 'persona', workspaceRows[0].text.trim(), `RPG Maker preset ${presetId}`);
   composed = insertTopLevelRowAfter(composed, 'persona', forgejoRows[0].text.trim(), `RPG Maker preset ${presetId}`);
-  if (pluginRows.length === 1) composed = insertTopLevelRowAfter(composed, WORKSPACE_MCP_AGENT_ROW_ID, pluginRows[0].text.trim(), `RPG Maker preset ${presetId}`);
   const ids = topLevelIds(composed);
   if (new Set(ids).size !== ids.length) throw new RpgMakerStartupError(`RPG Maker preset ${presetId} derived from Code contains duplicate top-level row ids.`);
   return composed;
@@ -557,49 +529,6 @@ export async function resolveMcpRunner(options: { jsExecutable?: string; bunExec
   throw new RpgMakerStartupError('MCP startup requires a resolved direct bun or node executable; shell command shims are not valid JavaScript runners.');
 }
 
-async function existingImageEnvironment(
-  options: RpgMakerLaunchOptions,
-  paths: ReturnType<typeof resolveHarnessPaths>,
-  platform: string,
-  env: Record<string, string | undefined>
-): Promise<Record<string, string | undefined>> {
-  const toolchainRoot = options.imageToolchainRoot ?? join(paths.programRoot, 'tools', 'image-workshop');
-  if (!(await pathExists(join(toolchainRoot, 'toolchain.json')))) return {};
-  try {
-    const toolchain = await resolveImageToolchain({
-      platform,
-      env,
-      dshHome: paths.dshHome,
-      programRoot: paths.programRoot,
-      mutableRoot: paths.mutableRoot,
-      toolchainRoot,
-      imageMagickExecutable: options.imageMagickExecutable,
-      imageMagickSha256: options.imageMagickSha256,
-      imageMagickUrl: options.imageMagickUrl,
-      imageMagickRelease: options.imageMagickRelease,
-      helperRoot: options.imageHelperRuntimeDir,
-      oxipngExecutable: options.oxipngExecutable,
-      oxipngSha256: options.oxipngSha256,
-      oxipngUrl: options.oxipngUrl,
-      oxipngRelease: options.oxipngRelease,
-      installOxipng: true,
-      commandRunner: options.commandRunner
-    });
-    return {
-      DSH_IMAGE_WORKSHOP_ROOT: toolchain.toolchainRoot,
-      DSH_IMAGE_WORKSHOP_MANIFEST: toolchain.manifestPath,
-      DSH_IMAGE_MAGICK: toolchain.imageMagick,
-      DSH_IMAGE_HELPER_ROOT: toolchain.helperRoot,
-      ...(toolchain.oxipng ? { DSH_OXIPNG: toolchain.oxipng } : {})
-    };
-  } catch {
-    // A normal launch must not turn an optional image dependency into a Host
-    // startup requirement. The image command will report or prepare it when
-    // the asset-workshop Agent actually requests an operation.
-    return {};
-  }
-}
-
 async function dumpPresetComposition(
   dshExecutable: string,
   compositionPath: string,
@@ -684,13 +613,11 @@ export async function deployRpgMakerPresets(options: RpgMakerPresetDeploymentOpt
 
   const codePresetPath = await findCodeComposition(paths.runtimeDir);
   const sourceRoot = options.sourceRoot ?? defaultSourceRoot(RPGMAKER_PRESET_ID);
-  const shippedPresetRoot = dirname(sourceRoot);
   await mkdir(paths.neutralLandingDir, { recursive: true });
   return withOwnedRpgMakerProfileRepair(paths.dshHome, async () => {
     const installed = await installPreset(sourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
-    await installPreset(join(shippedPresetRoot, ASSET_WORKSHOP_PRESET_ID), paths.dshHome, codePresetPath, ASSET_WORKSHOP_PRESET_ID);
-    await installPreset(join(shippedPresetRoot, GAME_DESIGN_PRESET_ID), paths.dshHome, codePresetPath, GAME_DESIGN_PRESET_ID);
     await removeOwnedPreset(join(paths.dshHome, '.agent-presets'), 'playtest-debug');
+    await Promise.all(REMOVED_PRESET_IDS.map((presetId) => removeOwnedPreset(join(paths.dshHome, '.agent-presets'), presetId)));
 
     const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
     await mkdir(dirname(compositionPath), { recursive: true });
@@ -823,10 +750,6 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
   const deployment = await prepareRpgMakerLaunch(options);
   const paths = resolveHarnessPaths(options);
   const env = { ...(options.env ?? process.env), DSH_HOME: paths.dshHome };
-  const imageEnvironment = await existingImageEnvironment(options, paths, options.platform ?? process.platform, env);
-  const releaseEnvironment = {
-    DSH_IMAGE_WORKSHOP_CLI: fileURLToPath(new URL('./cli.ts', import.meta.url))
-  };
   const ownedEnvironment = {
     [MCPORTER_RUNTIME_ENV]: deployment.mcporterRuntimeDir,
     [XEROLO_RUNTIME_ENV]: deployment.xeroloRuntimeDir,
@@ -840,7 +763,7 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
     portAlreadyChecked: true,
     webHost: WINDOWS_DSH_HOST,
     webPort: WINDOWS_DSH_PORT,
-    extraEnv: { ...(options.extraEnv ?? {}), ...releaseEnvironment, ...imageEnvironment, ...ownedEnvironment },
+    extraEnv: { ...(options.extraEnv ?? {}), ...ownedEnvironment },
     dshArgs: ['--profile', RPGMAKER_DSH_PROFILE, ...(options.dshArgs ?? []), '--patch', deployment.compositionPath]
   });
   return { ...result, deployment };

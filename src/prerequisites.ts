@@ -1,10 +1,10 @@
 import { join } from 'node:path';
 
 import { withEnvironmentPath } from './config';
-import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion, parseSevenZipVersionText } from './executable';
+import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 
-export const WINDOWS_PREREQUISITE_IDS = ['node', 'python', 'bun', 'powershell', 'git', 'coreutils', '7zip'] as const;
+export const WINDOWS_PREREQUISITE_IDS = ['node', 'python', 'bun', 'powershell', 'git', 'coreutils', 'imagemagick'] as const;
 export type WindowsPrerequisiteId = (typeof WINDOWS_PREREQUISITE_IDS)[number];
 
 export interface WindowsPrerequisiteCheck {
@@ -37,7 +37,7 @@ export interface WindowsPrerequisiteOptions {
   pwshExecutable?: string;
   gitExecutable?: string;
   coreutilsExecutable?: string;
-  sevenZipExecutable?: string;
+  imageMagickExecutable?: string;
   wingetExecutable?: string;
 }
 
@@ -195,7 +195,7 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const git = await resolved('git', options.gitExecutable ?? env.GIT_EXECUTABLE, env);
   const manager = await resolved('coreutils-manager', options.coreutilsExecutable ?? env.COREUTILS_MANAGER, env)
     ?? await resolved('coreutils', undefined, env);
-  const sevenZip = options.sevenZipExecutable ?? env.SEVEN_ZIP_EXECUTABLE ?? await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: runner });
+  const imageMagick = await resolved('magick', options.imageMagickExecutable, env);
   // Prefer find/grep owned by the verified Coreutils root so a clean install
   // succeeds even when System32/find.exe or another shim precedes Coreutils on PATH.
   const ownedCommands = await ownedCoreutilsCommands(manager, env);
@@ -213,9 +213,7 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const managerStatus = await commandVersion(runner, manager, env, ['status']);
   const findVersion = await commandVersion(runner, find, env);
   const grepVersion = await commandVersion(runner, grep, env);
-  const sevenZipVersion = await commandVersion(runner, sevenZip, env, ['i']);
-  const sevenZipParsed = parseSevenZipVersion(sevenZipVersion.output);
-  const sevenZipVersionText = parseSevenZipVersionText(sevenZipVersion.output);
+  const imageMagickVersion = await commandVersion(runner, imageMagick, env);
   const managerRoot = coreutilsRoot(manager);
   const nodeParsed = versionNumbers(nodeVersion.output);
   const nodeLtsName = nodeLts.output.trim().split(/\r?\n/).find(Boolean);
@@ -296,17 +294,17 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
       manager
     ),
     check(
-      '7zip',
-      '7-Zip',
-      '7zip.7zip',
-      sevenZipVersion.ok && Boolean(sevenZipParsed),
-      sevenZipVersion.ok && sevenZipParsed
-        ? `7-Zip ${sevenZipVersionText ?? sevenZipParsed.join('.')} is available at ${sevenZip}`
-        : sevenZip
-          ? `7-Zip was not verified at ${sevenZip}; install 7zip.7zip with WinGet`
-          : '7-Zip was not found; install 7zip.7zip with WinGet',
-      sevenZip,
-      sevenZipVersionText
+      'imagemagick',
+      'ImageMagick 7',
+      'ImageMagick.ImageMagick',
+      imageMagickVersion.ok && /ImageMagick\s+\d+\.\d+/i.test(imageMagickVersion.output),
+      imageMagickVersion.ok && /ImageMagick\s+\d+\.\d+/i.test(imageMagickVersion.output)
+        ? `ImageMagick is available at ${imageMagick}`
+        : imageMagick
+          ? `ImageMagick was not verified at ${imageMagick}; install ImageMagick.ImageMagick with WinGet`
+          : 'ImageMagick was not found; install ImageMagick.ImageMagick with WinGet',
+      imageMagick,
+      versionNumbers(imageMagickVersion.output)?.join('.')
     )
   ];
   const missing = checks.filter((item) => !item.ok).map((item) => item.id);

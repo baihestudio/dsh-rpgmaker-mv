@@ -1,21 +1,14 @@
-import { createHash } from 'node:crypto';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import { lstat, readFile, stat } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
+import { stat } from 'node:fs/promises';
 
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { verifyForgejoMcpRuntime } from './forgejo-mcp';
 import { ownedCoreutilsCommands } from './prerequisites';
 import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
-import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion, parseSevenZipVersionText } from './executable';
+import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
-import {
-  FREE_TEX_PACKER_VERSION,
-  IMAGE_MAGICK_VERSION,
-  OXIPNG_VERSION,
-  resolveImageToolchain
-} from './image-workshop';
 import {
   DSH_TOOL_TIMEOUT_POLICY_PACKAGE,
   RPGMAKER_DSH_PROFILE,
@@ -23,7 +16,6 @@ import {
   verifyMcpRuntime,
   verifyTimeoutPolicyComposition
 } from './rpgmaker';
-import { verifyImageWorkshopPlugin, imageWorkshopPluginSummary, type ImageWorkshopPluginVerification } from './image-plugin';
 import { inspectWorkspaceSandbox } from './workspace-sandbox';
 
 export interface DoctorOptions extends PathOptions {
@@ -37,9 +29,8 @@ export interface DoctorOptions extends PathOptions {
   nodeExecutable?: string;
   npmExecutable?: string;
   pythonExecutable?: string;
-  sevenZipExecutable?: string;
-  verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; image: DoctorCheck }>;
-  verifyImageWorkshopPlugin?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<ImageWorkshopPluginVerification>;
+  imageMagickExecutable?: string;
+  verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck }>;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
 }
@@ -123,70 +114,6 @@ function check(id: string, label: string, ok: boolean, detail: string, path?: st
   return { id, label, ok, detail: redactSensitive(detail), ...(path ? { path } : {}) };
 }
 
-function within(root: string, candidate: string): boolean {
-  const rest = relative(resolve(root), resolve(candidate));
-  return rest === '' || (!rest.startsWith(`..${sep}`) && rest !== '..');
-}
-
-async function matchesSha256(path: string | undefined, expected: unknown): Promise<boolean> {
-  if (!path || typeof expected !== 'string' || !/^[a-f0-9]{64}$/i.test(expected)) return false;
-  try {
-    const hash = createHash('sha256');
-    hash.update(await readFile(path) as unknown as string);
-    return hash.digest('hex') === expected.toLowerCase();
-  } catch {
-    return false;
-  }
-}
-
-async function verifyImageToolchainMetadata(toolchainRoot: string): Promise<{ valid: boolean; detail: string; path: string }> {
-  const manifestPath = join(toolchainRoot, 'toolchain.json');
-  try {
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
-      format?: unknown;
-      imageMagick?: { path?: unknown; version?: unknown; sha256?: unknown };
-      helper?: { root?: unknown; lockPath?: unknown; lockSha256?: unknown; packageVersion?: unknown };
-      oxipng?: { path?: unknown; version?: unknown; sha256?: unknown };
-    };
-    const imagePath = typeof manifest.imageMagick?.path === 'string' ? resolve(manifest.imageMagick.path) : undefined;
-    const helperRoot = typeof manifest.helper?.root === 'string' ? resolve(manifest.helper.root) : undefined;
-    const helperLock = typeof manifest.helper?.lockPath === 'string' ? resolve(manifest.helper.lockPath) : undefined;
-    const oxipngPath = typeof manifest.oxipng?.path === 'string' ? resolve(manifest.oxipng.path) : undefined;
-    const paths = [imagePath, helperRoot, helperLock, oxipngPath];
-    const filesReady = await Promise.all(paths.map(async (path, index) => {
-      if (!path || !within(toolchainRoot, path)) return false;
-      const info = await lstat(path).catch(() => undefined);
-      return Boolean(info && !info.isSymbolicLink() && (index === 1 ? info.isDirectory() : info.isFile()));
-    }));
-    const helperPackagePath = helperRoot ? join(helperRoot, 'node_modules', 'free-tex-packer-core', 'package.json') : undefined;
-    const helperPackage = helperPackagePath
-      ? JSON.parse(await readFile(helperPackagePath, 'utf8').catch(() => '{}')) as { version?: unknown }
-      : {};
-    const rootPackage = helperRoot
-      ? JSON.parse(await readFile(join(helperRoot, 'package.json'), 'utf8').catch(() => '{}')) as { dependencies?: Record<string, unknown> }
-      : {};
-    const valid = manifest.format === 2
-      && manifest.imageMagick?.version === IMAGE_MAGICK_VERSION
-      && manifest.helper?.packageVersion === FREE_TEX_PACKER_VERSION
-      && manifest.oxipng?.version === OXIPNG_VERSION
-      && helperPackage.version === FREE_TEX_PACKER_VERSION
-      && rootPackage.dependencies?.['free-tex-packer-core'] === FREE_TEX_PACKER_VERSION
-      && filesReady.every(Boolean)
-      && await matchesSha256(imagePath, manifest.imageMagick?.sha256)
-      && await matchesSha256(helperLock, manifest.helper?.lockSha256)
-      && await matchesSha256(oxipngPath, manifest.oxipng?.sha256);
-    return {
-      valid,
-      detail: valid
-        ? `Pinned ImageMagick ${IMAGE_MAGICK_VERSION}, free-tex-packer-core ${FREE_TEX_PACKER_VERSION}, and oxipng ${OXIPNG_VERSION} metadata and app-owned paths are verified without executing image tools`
-        : 'The app-owned image toolchain manifest, versions, or app-owned paths were not verified; run Install.cmd to repair it',
-      path: manifestPath
-    };
-  } catch {
-    return { valid: false, detail: 'The app-owned image toolchain manifest is missing or invalid; run Install.cmd to repair it', path: manifestPath };
-  }
-}
-
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
@@ -214,9 +141,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     ? await resolveExecutable(join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe'), { platform, env })
     : undefined;
   const python = options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? wingetPython ?? await resolveExecutable('python', { platform, env });
-  const sevenZip = platform === 'win32'
-    ? options.sevenZipExecutable ?? env.SEVEN_ZIP_EXECUTABLE ?? await resolveWindowsSevenZip({ platform, env, commandRunner: runner })
-    : undefined;
+  const imageMagick = platform === 'win32' ? await resolveExecutable(options.imageMagickExecutable ?? 'magick', { platform, env }) : undefined;
 
   const checks: DoctorCheck[] = [];
   const executablePaths: Record<string, string | undefined> = {
@@ -229,7 +154,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     node,
     npm,
     python,
-    ...(sevenZip ? { sevenZip } : {})
+    ...(imageMagick ? { imageMagick } : {})
   };
 
   const pwshVersion = await commandVersion(runner, pwsh, commandEnv);
@@ -281,15 +206,13 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   ));
 
   if (platform === 'win32') {
-    const sevenZipVersion = await commandVersion(runner, sevenZip, commandEnv, ['i']);
-    const sevenZipParsed = parseSevenZipVersion(sevenZipVersion.output);
-    const sevenZipVersionText = parseSevenZipVersionText(sevenZipVersion.output);
+    const imageMagickVersion = await commandVersion(runner, imageMagick, commandEnv);
     checks.push(check(
-      '7zip',
-      '7-Zip',
-      sevenZipVersion.ok && Boolean(sevenZipParsed),
-      sevenZipVersion.ok && sevenZipParsed ? `7-Zip ${sevenZipVersionText ?? sevenZipParsed.join('.')} is available at ${sevenZip}` : '7-Zip was not verified; run Install.cmd to install 7zip.7zip with WinGet',
-      sevenZip
+      'imagemagick',
+      'ImageMagick 7',
+      imageMagickVersion.ok && /ImageMagick\s+\d+\.\d+/i.test(imageMagickVersion.output),
+      imageMagickVersion.ok && /ImageMagick\s+\d+\.\d+/i.test(imageMagickVersion.output) ? `ImageMagick is available at ${imageMagick}` : 'ImageMagick was not verified; run Install.cmd to install ImageMagick.ImageMagick with WinGet',
+      imageMagick
     ));
 
     const pythonVersion = await commandVersion(runner, python, commandEnv);
@@ -349,15 +272,12 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     const verifyAgentDependencies = options.verifyAgentDependencies ?? (async (context) => {
       const mcpRuntime = join(context.paths.programRoot, 'runtime', 'mcp');
       const mcp = await verifyMcpRuntime(mcpRuntime, context.platform);
-      const imageMetadata = await verifyImageToolchainMetadata(join(context.paths.programRoot, 'tools', 'image-workshop'));
-      const image = check('image-toolchain', 'Image asset toolchain', imageMetadata.valid, imageMetadata.detail, imageMetadata.path);
       return {
-        mcp: check('rpgmaker-mcp', 'RPG Maker MV MCP runtime', mcp.valid, mcp.valid ? `Pinned RPG Maker MV MCP ${mcp.packageVersion} is verified` : mcp.errors.join('; '), mcp.executable ?? mcpRuntime),
-        image
+        mcp: check('rpgmaker-mcp', 'RPG Maker MV MCP runtime', mcp.valid, mcp.valid ? `Pinned RPG Maker MV MCP ${mcp.packageVersion} is verified` : mcp.errors.join('; '), mcp.executable ?? mcpRuntime)
       };
     });
     const agentDependencies = await verifyAgentDependencies({ platform, env: commandEnv, paths, commandRunner: runner });
-    checks.push(agentDependencies.mcp, agentDependencies.image);
+    checks.push(agentDependencies.mcp);
 
     const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env: commandEnv, programRoot: paths.programRoot, commandRunner: runner });
     executablePaths.forgejoMcp = forgejoMcp.executablePath;
@@ -367,23 +287,6 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
       forgejoMcp.valid,
       forgejoMcp.valid ? 'Pinned Forgejo MCP 2.34.1 is verified' : forgejoMcp.errors.join('; '),
       forgejoMcp.executablePath
-    ));
-
-    const imagePlugin = await (options.verifyImageWorkshopPlugin ?? (context => verifyImageWorkshopPlugin({
-      platform: context.platform,
-      env: context.env,
-      dshHome: context.paths.dshHome,
-      programRoot: context.paths.programRoot,
-      runtimeDir: context.paths.runtimeDir,
-      commandRunner: context.commandRunner
-    })))({ platform, env: commandEnv, paths, commandRunner: runner });
-    if (imagePlugin.packageDir) executablePaths['image-workshop-plugin'] = imagePlugin.packageDir;
-    checks.push(check(
-      'image-tool-plugin',
-      'App-owned image tool plugin',
-      imagePlugin.valid,
-      imageWorkshopPluginSummary(imagePlugin),
-      imagePlugin.packageDir
     ));
 
     const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome);

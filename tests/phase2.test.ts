@@ -283,7 +283,7 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
         runtimeDir: runtime,
         dshExecutable: dsh,
         jsExecutable: bun,
-        agentPreset: 'asset-workshop',
+        agentPreset: 'rpgmaker',
         sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'),
         dshRuntimePreparer: async (options) => {
           preparationHomes.dsh = options.env?.DSH_HOME;
@@ -328,7 +328,7 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
         commandRunner: async (_command, args, options) => {
           if (args.includes('--dump-config')) {
             preparationHomes.validation = options.env?.DSH_HOME;
-            return { exitCode: 0, stdout: '- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n  default: asset-workshop\n', stderr: '' };
+            return { exitCode: 0, stdout: '- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n  default: rpgmaker\n', stderr: '' };
           }
           return { exitCode: 0, stdout: '', stderr: '' };
         },
@@ -350,7 +350,7 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
         bundle: dshHome,
         validation: dshHome
       });
-      expect(result.deployment.agentPreset).toBe('asset-workshop');
+      expect(result.deployment.agentPreset).toBe('rpgmaker');
       expect(launch?.cwd).toBe(neutral);
       expect(launch?.args.slice(0, 2)).toEqual(['--profile', 'web']);
       expect(launch?.args[2]).toBe('--patch');

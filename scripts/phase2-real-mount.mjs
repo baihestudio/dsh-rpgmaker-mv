@@ -54,8 +54,8 @@ try {
   mounted = await profileModule.runProfile({
     profile: 'web',
     patchFiles: [process.env.COMPOSITION_FILE],
-    // The Agent/Xerolo probe needs rc.8's Web profile services, not its
-    // default listener. rc.8 accepts port 0 as an OS-assigned port, so this
+    // The Agent/Xerolo probe needs the pinned DSH Web profile services, not its
+    // default listener. The pinned DSH accepts port 0 as an OS-assigned port, so this
     // disposable mount stays off 3080.
     args: ['--port', '0'],
     environment
@@ -63,7 +63,7 @@ try {
   const presets = mounted.ctx.get('agentPresets')
   if (!presets) throw new Error('official DSH agent preset service did not mount')
   const presetIds = (await presets.list()).map((entry) => entry.id)
-  for (const id of ['rpgmaker', 'game-design', 'playtest-debug', 'asset-workshop']) {
+  for (const id of ['rpgmaker', 'playtest-debug']) {
     if (!presetIds.includes(id)) throw new Error(`shipped preset ${id} was not available in the neutral Host`)
   }
 
@@ -77,7 +77,7 @@ try {
       sessionId,
       meta: { cwd: project, agentPreset: 'rpgmaker' },
       setup: async (agentCtx) => {
-        if (!agentCtx.agent) throw new Error('rc.8 Agent setup did not supply agentCtx.agent')
+        if (!agentCtx.agent) throw new Error('DSH Agent setup did not supply agentCtx.agent')
         await presets.mount(agentCtx, 'rpgmaker')
       }
     })
@@ -87,7 +87,7 @@ try {
 
   const first = await createAgent('phase2-real-workspace-a')
   const compositionMount = livePresetMounts().find((mount) => mount.presetId === 'rpgmaker')
-  if (!compositionMount) throw new Error('rc.8 did not expose the mounted rpgmaker composition')
+  if (!compositionMount) throw new Error('DSH did not expose the mounted rpgmaker composition')
   if (compositionMount.fiber.ctx.agent !== undefined) {
     throw new Error('preset composition unexpectedly received ctx.agent; Agent must arrive at assembly/execution seams')
   }
@@ -99,7 +99,7 @@ try {
   }
 
   const firstAssembly = await systemPrompt.assemble(assembleContextFor(first.agent))
-  // Code mode (DSH rc.8 default for the shipped presets): the model calls
+  // Code mode (the pinned DSH default for the shipped presets): the model calls
   // tools through the generated run_code SDK, so the complete stable
   // rpgmaker_* tool set must appear in the assembly's tools:sdk section, and
   // no rpgmaker_* name may leak into the native tool list.
@@ -135,7 +135,7 @@ try {
 
   const directAgentToolCalls = []
   async function call(handle, rawName, args) {
-    // Code mode (DSH rc.8 shipped preset): the model calls tools through the
+    // Code mode (the pinned DSH shipped preset): the model calls tools through the
     // generated run_code SDK, so the representative call goes through the
     // same transport instead of a direct native dispatch.
     const modelName = `rpgmaker_${rawName}`
