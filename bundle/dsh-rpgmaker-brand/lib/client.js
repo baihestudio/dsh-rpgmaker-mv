@@ -68,24 +68,24 @@ window.__ModuleLoader__.load({
 
     const QUICK_STARTS = [
       {
-        label: '推敲游戏设计',
+        label: '推敲设计与剧情',
         skill: 'game-design',
-        prompt: '/game-design 先阅读当前项目已有的设计资料，再围绕下面的想法，只询问真正会影响玩家体验的关键问题，并把确认结论维护进设计文档：'
+        prompt: '/game-design 先阅读当前项目和已有设计资料，帮我推敲下面的游戏设计或剧情；只询问真正影响玩家体验的关键问题，并把确认结论维护进设计文档：'
       },
       {
-        label: '修改当前项目',
+        label: '开发插件与系统',
         skill: 'rpgmaker-mv',
-        prompt: '/rpgmaker-mv 先检查当前项目，再实现下面的改动；完成后回读并验证：'
+        prompt: '/rpgmaker-mv 先检查当前项目的插件结构和相关实现，再开发或修改下面的插件与系统功能；完成后回读并验证：'
       },
       {
-        label: '制作图片素材',
+        label: '编辑地图与事件',
+        skill: 'rpgmaker-mv',
+        prompt: '/rpgmaker-mv 先检查当前地图、Tileset 和相关事件，再修改下面的地图设置、通行边界或事件逻辑；完成后回读并验证：'
+      },
+      {
+        label: '制作美术素材',
         skill: 'image-assets',
-        prompt: '/image-assets 为当前项目制作以下素材；先确认用途、目标尺寸或网格与风格：'
-      },
-      {
-        label: '诊断 Playtest',
-        skill: 'playtest-debug',
-        prompt: '/playtest-debug 对下面的问题进行有界 Playtest 诊断，说明证据并确认测试已停止：'
+        prompt: '/image-assets 先确认素材用途、RPG Maker MV 目标尺寸或网格与现有风格，再制作或修改下面的美术素材：'
       }
     ];
 
@@ -119,7 +119,7 @@ window.__ModuleLoader__.load({
             jsx('span', { className: 'dsh-rpgmaker-quick-start-skill', children: item.skill })
           ],
           onClick: () => { inputActions.setDraft(item.prompt); }
-        }, item.skill))
+        }, item.label))
       });
     }
 

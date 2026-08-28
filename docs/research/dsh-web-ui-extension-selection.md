@@ -80,11 +80,12 @@ continues to own its exact version and removal.
 
 Contribute one compact 2-by-2 quick-start row from the existing release-owned
 UI bundle. Render it only while the selected Session's composer phase is
-`blank` and its draft is empty. The four visible actions should name their
-Skills: game design (`game-design`), project editing (`rpgmaker-mv`), image
-assets (`image-assets`), and Playtest diagnosis (`playtest-debug`). Clicking an
-action calls the supplied draft setter with a complete starter prompt and does
-not submit it. The row disappears once the user types or selects an action.
+`blank` and its draft is empty. The four visible actions should start from
+common user goals: design and story (`game-design`), plugin and system work
+(`rpgmaker-mv`), map and event work (`rpgmaker-mv`), and visual assets
+(`image-assets`). Clicking an action calls the supplied draft setter with a
+slash-prefixed starter prompt and does not submit it. The row disappears once
+the user types or selects an action.
 
 `game-design-bootstrap` remains a conditional prerequisite selected by the
 Agent when the project lacks a maintainable design-document foundation; it is

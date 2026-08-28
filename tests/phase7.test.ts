@@ -1353,10 +1353,10 @@ describe('Windows release gate foundations', () => {
       const quickStartButtons = quickStart?.props.children as Array<{ props: Record<string, unknown> }>;
       expect(quickStartButtons).toHaveLength(4);
       expect(quickStartButtons.map((button) => button.props['data-skill'])).toEqual([
-        'game-design', 'rpgmaker-mv', 'image-assets', 'playtest-debug'
+        'game-design', 'rpgmaker-mv', 'rpgmaker-mv', 'image-assets'
       ]);
       expect(quickStartButtons.map((button) => (button.props.children as Array<{ props: Record<string, unknown> }>)[0]?.props.children)).toEqual([
-        '推敲游戏设计', '修改当前项目', '制作图片素材', '诊断 Playtest'
+        '推敲设计与剧情', '开发插件与系统', '编辑地图与事件', '制作美术素材'
       ]);
 
       const draftWrites: string[] = [];
