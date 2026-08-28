@@ -1315,10 +1315,13 @@ describe('Windows release gate foundations', () => {
       const state = join(mutable, 'state');
       const retiredGameDesignPreset = join(state, '.agent-presets', 'game-design');
       const retiredAssetPreset = join(state, '.agent-presets', 'asset-workshop');
+      const retiredBuildReleasePreset = join(state, '.agent-presets', 'build-release');
       await mkdir(retiredGameDesignPreset, { recursive: true });
       await writeFile(join(retiredGameDesignPreset, '.dsh-rpgmaker-owned.json'), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId: 'game-design', format: 1 })}\n`);
       await mkdir(retiredAssetPreset, { recursive: true });
       await writeFile(join(retiredAssetPreset, '.dsh-rpgmaker-owned.json'), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId: 'asset-workshop', format: 1 })}\n`);
+      await mkdir(retiredBuildReleasePreset, { recursive: true });
+      await writeFile(join(retiredBuildReleasePreset, '.dsh-rpgmaker-owned.json'), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId: 'build-release', format: 1 })}\n`);
       const bun = join(bin, 'bun.exe');
       const npm = join(bin, 'npm.cmd');
       const node = join(bin, 'node.exe');
@@ -1354,6 +1357,7 @@ describe('Windows release gate foundations', () => {
       expect(await Bun.file(installedForgejoPreset).exists()).toBe(true);
       expect(await Bun.file(retiredGameDesignPreset).exists()).toBe(false);
       expect(await Bun.file(retiredAssetPreset).exists()).toBe(false);
+      expect(await Bun.file(retiredBuildReleasePreset).exists()).toBe(false);
       expect(await readFile(installedForgejoPreset, 'utf8')).toContain('DSH_RPGMAKER_PROGRAM_ROOT');
       expect(calls.some((call) => call.args.includes(`pnpm@${PNPM_VERSION}`))).toBe(true);
       expect(calls.some((call) => basename(call.command).toLowerCase() === 'python.exe')).toBe(true);

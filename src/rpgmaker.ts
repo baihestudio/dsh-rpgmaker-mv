@@ -28,7 +28,7 @@ export const DSH_TOOL_TIMEOUT_POLICY_PACKAGE = '@deepseek-ai/dsh-tool-call-timeo
 export const DSH_TOOL_TIMEOUT_POLICY_ROW_ID = 'timeout-policy';
 export const FORGEJO_MCP_CLIENT_ROW_ID = 'forgejo-mcp-client';
 export const CUSTOM_AGENT_PRESET_IDS = [RPGMAKER_PRESET_ID] as const;
-const REMOVED_PRESET_IDS = ['game-design', 'asset-workshop'] as const;
+const REMOVED_PRESET_IDS = ['game-design', 'asset-workshop', 'build-release'] as const;
 const PRESET_OWNERSHIP_FILE = '.dsh-rpgmaker-owned.json';
 const MCP_LOCK_INTEGRITY = 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==';
 const MCP_LOCK_BIN = 'dist/index.js';
