@@ -1314,25 +1314,81 @@ describe('Windows release gate foundations', () => {
       expect(registration?.id).toBe(DSH_BRAND_PACKAGE);
       expect(typeof client?.apply).toBe('function');
       expect(client?.inject).toEqual(['slots']);
-      const brandSlots: Array<{ options: { name: string; priority?: number }; component: (props: Record<string, unknown>) => { type: string; props: Record<string, unknown> } }> = [];
+      const registeredSlots: Array<{
+        options: { name: string; priority?: number; id?: string; order?: number };
+        component: (props: Record<string, unknown>) => { type: string; props: Record<string, unknown> } | null;
+      }> = [];
+      let quickStartStyleEffect: (() => unknown) | undefined;
       client?.apply?.({
+        effect: (effect: () => unknown) => { quickStartStyleEffect = effect; },
         slots: {
           inject: (_name: string, body: () => unknown) => {
             const result = body() as Iterable<unknown> | undefined;
             if (result?.[Symbol.iterator]) for (const _entry of result) undefined;
           },
           register: (options: { name: string; priority?: number }, component: (props: Record<string, unknown>) => { type: string; props: Record<string, unknown> }) => {
-            brandSlots.push({ options, component });
+            registeredSlots.push({ options, component });
           }
         }
       });
+      expect(typeof quickStartStyleEffect).toBe('function');
+      const brandSlots = registeredSlots.filter(({ options }) => options.name !== 'conversation.input.dock');
       expect(brandSlots.map(({ options }) => options)).toEqual([
         { name: 'sidebar.brand.mark', priority: -1 },
         { name: 'sidebar.brand.name', priority: -1 },
         { name: 'conversation.hero.brand.mark', priority: -1 }
       ]);
-      expect(brandSlots[0]?.component({ size: 24 }).props.alt).toBe('RPG Maker Agent');
-      expect(brandSlots[1]?.component({}).props.children).toBe('RPG Maker Agent');
+      expect(brandSlots[0]?.component({ size: 24 })?.props.alt).toBe('RPG Maker Agent');
+      expect(brandSlots[1]?.component({})?.props.children).toBe('RPG Maker Agent');
+      const quickStartSlots = registeredSlots.filter(({ options }) => options.name === 'conversation.input.dock');
+      expect(quickStartSlots.map(({ options }) => options)).toEqual([
+        { name: 'conversation.input.dock', id: 'quick-starts', order: 0 }
+      ]);
+      const quickStart = quickStartSlots[0]!.component({
+        session: { blank: true, awaitingFirstTurn: true, promptAttempted: false, running: false },
+        input: { draft: '  ' },
+        useConversation: () => ({ activeTargets: new Set() }),
+        inputActions: { setDraft: () => undefined }
+      });
+      expect(quickStart?.props['data-dsh-rpgmaker-quick-starts']).toBe(true);
+      const quickStartButtons = quickStart?.props.children as Array<{ props: Record<string, unknown> }>;
+      expect(quickStartButtons).toHaveLength(4);
+      expect(quickStartButtons.map((button) => button.props['data-skill'])).toEqual([
+        'game-design', 'rpgmaker-mv', 'image-assets', 'playtest-debug'
+      ]);
+      expect(quickStartButtons.map((button) => (button.props.children as Array<{ props: Record<string, unknown> }>)[0]?.props.children)).toEqual([
+        '推敲游戏设计', '修改当前项目', '制作图片素材', '诊断 Playtest'
+      ]);
+
+      const draftWrites: string[] = [];
+      const actionSurface = quickStartSlots[0]!.component({
+        session: { blank: true, awaitingFirstTurn: true, promptAttempted: false, running: false },
+        input: { draft: '' },
+        useConversation: () => ({ activeTargets: new Set() }),
+        inputActions: { setDraft: (text: string) => { draftWrites.push(text); } }
+      });
+      const actionButtons = actionSurface?.props.children as Array<{ props: Record<string, unknown> }>;
+      for (const button of actionButtons) (button.props.onClick as () => void)();
+      expect(draftWrites).toHaveLength(4);
+      expect(draftWrites.every((text) => text.length > 0)).toBe(true);
+      expect(quickStartSlots[0]!.component({
+        session: { blank: true, awaitingFirstTurn: true, promptAttempted: false, running: false },
+        input: { draft: 'already typing' },
+        useConversation: () => ({ activeTargets: new Set() }),
+        inputActions: { setDraft: () => undefined }
+      })).toBeNull();
+      expect(quickStartSlots[0]!.component({
+        session: { blank: true, awaitingFirstTurn: true, promptAttempted: true, running: false },
+        input: { draft: '' },
+        useConversation: () => ({ activeTargets: new Set() }),
+        inputActions: { setDraft: () => undefined }
+      })).toBeNull();
+      expect(quickStartSlots[0]!.component({
+        session: { blank: true, awaitingFirstTurn: true, promptAttempted: false, running: false },
+        input: { draft: '' },
+        useConversation: () => ({ activeTargets: new Set(['chat']) }),
+        inputActions: { setDraft: () => undefined }
+      })).toBeNull();
       expect(await Bun.file(join(program, 'runtime', 'pnpm', 'node_modules', 'pnpm', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'node_modules', MCPORTER_PACKAGE, 'dist', 'index.js')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'node_modules', ...RPGMAKER_MCP_PACKAGE.split('/'), 'dist', 'index.js')).exists()).toBe(true);
