@@ -563,6 +563,18 @@ describe('Windows release gate foundations', () => {
     }
   });
 
+  test('never returns a WindowsApps execution alias when no real PowerShell exists', async () => {
+    const root = await temp('phase7-pwsh-alias-only');
+    try {
+      const apps = join(root, 'WindowsApps');
+      await mkdir(apps, { recursive: true });
+      await writeFile(join(apps, 'pwsh.exe'), 'alias');
+      expect(await resolveWindowsPwsh({ platform: 'win32', env: { PATH: apps, ProgramFiles: join(root, 'Program Files') } })).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('resolves Windows executables from a case-insensitive Path environment key', async () => {
     const root = await temp('windows-path-case');
     try {

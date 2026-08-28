@@ -65,9 +65,13 @@ export async function resolveWindowsPwsh(options: ExecutableLookupOptions = {}):
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const explicit = env.PWSH_EXECUTABLE;
-  if (explicit) return resolveExecutable(explicit, { platform, env });
+  const isWindowsAppsAlias = (path: string): boolean => /[\\/]WindowsApps[\\/]pwsh\.exe$/i.test(path);
+  if (explicit) {
+    const executable = await resolveExecutable(explicit, { platform, env });
+    if (executable && !isWindowsAppsAlias(executable)) return executable;
+  }
   const resolved = await resolveExecutable('pwsh', { platform, env });
-  if (resolved && !/windowsapps/i.test(resolved)) return resolved;
+  if (resolved && !isWindowsAppsAlias(resolved)) return resolved;
   const programFiles = env.ProgramFiles ?? env.ProgramW6432;
   if (programFiles) {
     const standard = join(programFiles, 'PowerShell', '7', 'pwsh.exe');
@@ -75,7 +79,7 @@ export async function resolveWindowsPwsh(options: ExecutableLookupOptions = {}):
     const store = await resolveMsixPowerShell(programFiles);
     if (store) return store;
   }
-  return resolved;
+  return resolved && !isWindowsAppsAlias(resolved) ? resolved : undefined;
 }
 
 /**
