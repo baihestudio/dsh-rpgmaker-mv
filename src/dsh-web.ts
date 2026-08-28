@@ -45,12 +45,17 @@ export async function prepareDshWebPlugin(options: DshWebPluginOptions = {}): Pr
   const profileDir = profileDirFor(paths, DSH_WEB_PROFILE);
   if (await profileHasDependency(profileDir, LEGACY_DSH_WEB_PACKAGE)) {
     const removeArgs = ['plugin', '--profile', DSH_WEB_PROFILE, 'remove', LEGACY_DSH_WEB_PACKAGE];
-    const remove = await runner(invocation.command, [...invocation.prefix, ...removeArgs], {
-      cwd: paths.dshHome,
-      env: pnpm.env,
-      platform,
-      timeoutMs: 15 * 60_000
-    });
+    let remove;
+    try {
+      remove = await runner(invocation.command, [...invocation.prefix, ...removeArgs], {
+        cwd: paths.dshHome,
+        env: pnpm.env,
+        platform,
+        timeoutMs: 15 * 60_000
+      });
+    } catch (error) {
+      throw new Error(redactSensitive(`Shared Web profile legacy-plugin removal could not start: ${error instanceof Error ? error.message : String(error)}`, env));
+    }
     if (remove.exitCode !== 0) throw new Error(redactSensitive(commandFailure(invocation.command, removeArgs, remove, env).message, env));
   }
   const packageSpec = `${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`;
