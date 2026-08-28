@@ -13,6 +13,7 @@ import { deployRpgMakerPresets, prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { prepareMcporterRuntime } from './mcport';
 import { prepareDshWebPlugin } from './dsh-web';
 import { prepareDshImagegenPlugin } from './dsh-imagegen';
+import { DSH_BRAND_BUNDLE_RELATIVE, prepareDshBrandPlugin } from './dsh-brand';
 import { preparePnpmRuntime } from './profile';
 import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
@@ -38,7 +39,8 @@ export const RELEASE_ENTRIES = [
   'presets',
   'scripts',
   FORGEJO_MCP_RUNTIME_RELATIVE,
-  WORKSPACE_MCP_BUNDLE_RELATIVE
+  WORKSPACE_MCP_BUNDLE_RELATIVE,
+  DSH_BRAND_BUNDLE_RELATIVE
 ] as const;
 
 export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteOptions {
@@ -295,6 +297,16 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           commandRunner: context.commandRunner
         });
         await prepareDshImagegenPlugin({
+          platform,
+          env: context.env,
+          dshHome: context.paths.dshHome,
+          programRoot: context.paths.programRoot,
+          runtimeDir: context.paths.runtimeDir,
+          dshExecutable: context.env.DSH_EXECUTABLE,
+          npmExecutable: context.npmExecutable,
+          commandRunner: context.commandRunner
+        });
+        await prepareDshBrandPlugin({
           platform,
           env: context.env,
           dshHome: context.paths.dshHome,

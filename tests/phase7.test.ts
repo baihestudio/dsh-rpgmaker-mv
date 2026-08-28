@@ -14,6 +14,7 @@ import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../s
 import { PNPM_VERSION } from '../src/profile';
 import { DSH_WEB_PACKAGE, DSH_WEB_VERSION } from '../src/dsh-web';
 import { DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION } from '../src/dsh-imagegen';
+import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE } from '../src/dsh-brand';
 import { findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
@@ -1292,6 +1293,8 @@ describe('Windows release gate foundations', () => {
       expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
       expect(calls.flatMap((call) => call.args)).not.toContain('@tta-lab/dsh-web');
       expect(calls.some((call) => call.args.includes(`${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
+      expect(calls.some((call) => call.args.includes(`file:${join(program, DSH_BRAND_BUNDLE_RELATIVE)}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
+      expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', ...DSH_BRAND_PACKAGE.split('/'), 'assets', 'maker-ape-logo.png')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'pnpm', 'node_modules', 'pnpm', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'node_modules', MCPORTER_PACKAGE, 'dist', 'index.js')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'node_modules', ...RPGMAKER_MCP_PACKAGE.split('/'), 'dist', 'index.js')).exists()).toBe(true);
