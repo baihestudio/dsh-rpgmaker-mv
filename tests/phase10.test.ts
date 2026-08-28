@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { basename, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -10,8 +10,10 @@ import {
   MCPORTER_RUNTIME_ENV,
   WORKSPACE_MCP_PACKAGE,
   WORKSPACE_MCP_SHA256,
+  WORKSPACE_MCP_BUNDLE_RELATIVE,
   XEROLO_RUNTIME_ENV,
   verifyWorkspaceMcpBundle,
+  workspaceMcpBundleDigest,
   workspaceMcpBundleDirFor
 } from '../src/workspace-mcp';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
@@ -265,6 +267,10 @@ function relativeTo(from: string, to: string): string {
   return relative(from, to);
 }
 
+function directoryLinkType(): 'dir' | 'junction' {
+  return process.platform === 'win32' ? 'junction' : 'dir';
+}
+
 class TrackedAbortSignal {
   aborted = false;
   addCalls = 0;
@@ -420,6 +426,49 @@ describe('app-owned workspace MCP bundle profile link', () => {
       expect(verification.valid).toBe(true);
       expect(verification.bundleOccurrences).toBe(1);
       expect(verification.sha256).toBe(WORKSPACE_MCP_SHA256);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects source and installed workspace loaded paths that resolve outside their package roots', async () => {
+    const root = await temp('ws-bundle-loaded-path-escape');
+    try {
+      const paths = harnessPaths(root);
+      const sourceDir = join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE);
+      const bundleDir = workspaceMcpBundleDirFor(paths);
+      await cp(BUNDLE_SOURCE, sourceDir, { recursive: true });
+      await mkdir(bundleDir, { recursive: true });
+      await cp(sourceDir, bundleDir, { recursive: true });
+      const profile = join(paths.dshHome, 'profiles', 'web');
+      const installedDir = join(profile, 'node_modules', WORKSPACE_MCP_PACKAGE);
+      await mkdir(dirnameOf(installedDir), { recursive: true });
+      await cp(bundleDir, installedDir, { recursive: true });
+      await writeFile(join(profile, 'package.json'), `${JSON.stringify({
+        name: 'dsh-profile-web',
+        private: true,
+        version: '0.1.0',
+        dependencies: { [WORKSPACE_MCP_PACKAGE]: `file:${relativeTo(profile, bundleDir)}` },
+        dsh: { profile: { bundles: [WORKSPACE_MCP_PACKAGE] } }
+      }, null, 2)}\n`);
+
+      const outsideSource = join(root, 'outside-source-entry');
+      const outsideInstalled = join(root, 'outside-installed-agent');
+      await mkdir(outsideSource);
+      await mkdir(outsideInstalled);
+      await writeFile(join(outsideSource, 'index.js'), 'outside source\n');
+      await writeFile(join(outsideInstalled, 'agent.js'), 'outside installed\n');
+      await rm(join(sourceDir, 'lib', 'index.js'));
+      await symlink(outsideSource, join(sourceDir, 'lib', 'index.js'), directoryLinkType());
+      await rm(join(installedDir, 'lib', 'agent.js'));
+      await symlink(outsideInstalled, join(installedDir, 'lib', 'agent.js'), directoryLinkType());
+
+      await expect(workspaceMcpBundleDigest(sourceDir)).rejects.toThrow(/escapes its canonical bundle root/i);
+      const escaped = await verifyWorkspaceMcpBundle({ platform: 'win32', ...paths, bundleDir });
+      expect(escaped.valid).toBe(false);
+      const diagnostics = escaped.errors.join(' ');
+      expect(diagnostics).toMatch(/workspace MCP source bundle entrypoint .*escapes its canonical bundle root/i);
+      expect(diagnostics).toMatch(/installed profile package Agent entrypoint .*escapes its canonical bundle root/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

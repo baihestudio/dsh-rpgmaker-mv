@@ -313,6 +313,12 @@ describe('managed Web profile materialization', () => {
       const escapedPatch = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
       expect(escapedPatch.valid).toBe(false);
       expect(escapedPatch.errors.join(' ')).toMatch(/dsh-imagegen dsh\.bundle\.patch .*escapes its canonical package directory/i);
+
+      await rm(patchPath, { recursive: true, force: true });
+      await mkdir(patchPath);
+      const directoryPatch = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      expect(directoryPatch.valid).toBe(false);
+      expect(directoryPatch.errors.join(' ')).toMatch(/dsh-imagegen dsh\.bundle\.patch .*is not a regular file/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -348,6 +354,16 @@ describe('managed Web profile materialization', () => {
       const escapedPatch = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
       expect(escapedPatch.valid).toBe(false);
       expect(escapedPatch.errors.join(' ')).toMatch(/brand bundle dsh\.bundle patch escapes its canonical bundle directory/i);
+
+      const outsideClient = join(root, 'outside-brand-client');
+      await mkdir(outsideClient);
+      await writeFile(join(outsideClient, 'client.js'), 'outside brand client\n');
+      const clientPath = join(brandDir, 'lib', 'client.js');
+      await rm(clientPath);
+      await symlink(outsideClient, clientPath, directoryLinkType());
+      const escapedClient = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      expect(escapedClient.valid).toBe(false);
+      expect(escapedClient.errors.join(' ')).toMatch(/brand bundle client entrypoint .*escapes its canonical bundle directory/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -367,6 +383,50 @@ describe('managed Web profile materialization', () => {
       const escaped = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
       expect(escaped.valid).toBe(false);
       expect(escaped.errors.join(' ')).toMatch(/managed web profile root .*escapes the app-managed profiles directory/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed before runner or destructive mutation when the managed profile root escapes', async () => {
+    const root = await temp('phase11-managed-profile-root-ensure-escape');
+    try {
+      const roots = await appRoots(root);
+      const profilesRoot = join(roots.dshHome, 'profiles');
+      const outsideProfile = join(root, 'external-profile');
+      const marker = join(outsideProfile, 'marker.txt');
+      await mkdir(profilesRoot, { recursive: true });
+      await mkdir(outsideProfile);
+      await writeFile(marker, 'external profile must remain untouched\n');
+      await symlink(outsideProfile, join(profilesRoot, 'web'), directoryLinkType());
+      const calls: string[] = [];
+
+      await expect(ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, calls)))).rejects.toThrow(/managed roots are unsafe.*profile root.*escapes/i);
+      expect(calls).toEqual([]);
+      expect(await readFile(marker, 'utf8')).toBe('external profile must remain untouched\n');
+      expect(await rollbackSnapshotNames(roots.dshHome)).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed before runner or destructive mutation when the workspace data root escapes', async () => {
+    const root = await temp('phase11-managed-profile-data-ensure-escape');
+    try {
+      const roots = await appRoots(root);
+      const dataRoot = join(roots.dshHome, 'rpgmaker-mv');
+      const outsideData = join(root, 'external-data');
+      const marker = join(outsideData, 'marker.txt');
+      await mkdir(outsideData);
+      await writeFile(marker, 'external data must remain untouched\n');
+      await mkdir(roots.dshHome, { recursive: true });
+      await symlink(outsideData, dataRoot, directoryLinkType());
+      const calls: string[] = [];
+
+      await expect(ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, calls)))).rejects.toThrow(/managed roots are unsafe.*workspace MCP data root.*escapes/i);
+      expect(calls).toEqual([]);
+      expect(await readFile(marker, 'utf8')).toBe('external data must remain untouched\n');
+      expect(await rollbackSnapshotNames(roots.dshHome)).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
