@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 
 import { findDshExecutable } from './bootstrap';
 import { resolveHarnessPaths, type PathOptions } from './config';
@@ -14,6 +14,7 @@ export const DSH_WEB_PACKAGE = '@guionai/dsh-web';
 export const DSH_WEB_VERSION = '0.3.1';
 export const DSH_WEB_PROFILE = 'web';
 export const LEGACY_DSH_WEB_PACKAGE = '@tta-lab/dsh-web';
+const LEGACY_IMAGE_WORKSHOP_PACKAGE = '@baihestudio/dsh-image-workshop';
 
 export interface DshWebPluginOptions extends PathOptions {
   dshExecutable?: string;
@@ -43,20 +44,24 @@ export async function prepareDshWebPlugin(options: DshWebPluginOptions = {}): Pr
   const invocation = await resolveDshInvocation(dsh, options, env);
   const runner = options.commandRunner ?? runCommand;
   const profileDir = profileDirFor(paths, DSH_WEB_PROFILE);
+  if (await profileHasDependency(profileDir, LEGACY_IMAGE_WORKSHOP_PACKAGE)) {
+    await rm(profileDir, { recursive: true, force: true });
+  }
   if (await profileHasDependency(profileDir, LEGACY_DSH_WEB_PACKAGE)) {
     const removeArgs = ['plugin', '--profile', DSH_WEB_PROFILE, 'remove', LEGACY_DSH_WEB_PACKAGE];
-    let remove;
+    let removeFailed = false;
     try {
-      remove = await runner(invocation.command, [...invocation.prefix, ...removeArgs], {
+      const result = await runner(invocation.command, [...invocation.prefix, ...removeArgs], {
         cwd: paths.dshHome,
         env: pnpm.env,
         platform,
         timeoutMs: 15 * 60_000
       });
-    } catch (error) {
-      throw new Error(redactSensitive(`Shared Web profile legacy-plugin removal could not start: ${error instanceof Error ? error.message : String(error)}`, env));
+      removeFailed = result.exitCode !== 0;
+    } catch {
+      removeFailed = true;
     }
-    if (remove.exitCode !== 0) throw new Error(redactSensitive(commandFailure(invocation.command, removeArgs, remove, env).message, env));
+    if (removeFailed) await rm(profileDir, { recursive: true, force: true });
   }
   const packageSpec = `${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`;
   const args = ['plugin', '--profile', DSH_WEB_PROFILE, 'add', '--save-exact', '--ignore-scripts', packageSpec];

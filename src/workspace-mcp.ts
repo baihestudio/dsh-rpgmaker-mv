@@ -25,6 +25,7 @@ export const WORKSPACE_MCP_AGENT_ROW_ID = 'workspace-mcp-agent';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
 export const WORKSPACE_MCP_SHA256 = 'c316a730f28205d37df67d1365f696554c724c29ae765ce2818464dd19e40433';
 export const WORKSPACE_MCP_BUNDLE_RELATIVE = join('bundle', 'dsh-workspace-mcp');
+export const WORKSPACE_MCP_DATA_BUNDLE_RELATIVE = join('rpgmaker-mv', 'bundle', 'dsh-workspace-mcp');
 /** Archive entries always use POSIX separators, including on Windows. */
 export const WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE = 'bundle/dsh-workspace-mcp';
 
@@ -60,8 +61,8 @@ export function defaultWorkspaceMcpBundleDir(): string {
   return fileURLToPath(new URL(`../${WORKSPACE_MCP_BUNDLE_RELATIVE}/`, import.meta.url));
 }
 
-export function workspaceMcpBundleDirFor(paths: HarnessPaths): string {
-  return join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE);
+export function workspaceMcpBundleDirFor(paths: Pick<HarnessPaths, 'dshHome'>): string {
+  return join(paths.dshHome, WORKSPACE_MCP_DATA_BUNDLE_RELATIVE);
 }
 
 function asObject(value: unknown): Record<string, unknown> | undefined {
@@ -194,10 +195,10 @@ export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOption
   const sha256 = await workspaceMcpBundleDigest(bundleDir).catch(() => undefined);
   if (sha256 !== WORKSPACE_MCP_SHA256) errors.push(`bundle release hash mismatch (got ${sha256?.slice(0, 12) ?? 'none'}, expected ${WORKSPACE_MCP_SHA256.slice(0, 12)}); the prebuilt package must not be edited by hand`);
   let ownedPath = false;
-  const programRoot = await realpath(paths.programRoot).catch(() => paths.programRoot);
+  const dataRoot = await realpath(join(paths.dshHome, 'rpgmaker-mv')).catch(() => join(paths.dshHome, 'rpgmaker-mv'));
   const bundleReal = await realpath(bundleDir).catch(() => bundleDir);
-  ownedPath = bundleReal === programRoot || bundleReal.startsWith(`${programRoot}${sep}`);
-  if (!ownedPath) errors.push(`bundle path ${bundleDir} is not inside the app-owned program root ${paths.programRoot}`);
+  ownedPath = bundleReal === dataRoot || bundleReal.startsWith(`${dataRoot}${sep}`);
+  if (!ownedPath) errors.push(`bundle path ${bundleDir} is not inside the app-owned data root ${dataRoot}`);
 
   const profile = options.profile ?? WORKSPACE_MCP_PROFILE;
   const profileDir = profileDirFor(paths, profile);
@@ -229,7 +230,7 @@ export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOption
   if (!(await exists(installedDir))) {
     errors.push(`installed profile package ${WORKSPACE_MCP_PACKAGE} was not found under the ${profile} profile`);
   } else {
-    const ownedReal = await realpath(paths.programRoot).catch(() => paths.programRoot);
+    const ownedReal = dataRoot;
     const installedReal = await realpath(installedDir).catch(() => undefined);
     installedResolved = installedReal ?? installedDir;
     const canonicalProfile = await realpath(profileDir).catch(() => profileDir);
@@ -238,7 +239,7 @@ export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOption
       && (sameCanonicalPath(installedReal, ownedReal, platform) || isWithinCanonicalPath(installedReal, ownedReal, platform));
     const canonicalCopy = installedReal !== undefined && sameCanonicalPath(installedReal, canonicalInstalled, platform);
     if (!linkedToOwned && !canonicalCopy) {
-      errors.push(`installed profile package does not resolve to the app-owned program root or the canonical profile copy (got ${installedReal ?? 'unresolvable'})`);
+      errors.push(`installed profile package does not resolve to the app-owned data bundle or the canonical profile copy (got ${installedReal ?? 'unresolvable'})`);
     }
     const installedManifest = await readJson(join(installedReal ?? installedDir, 'package.json'));
     const installedName = typeof installedManifest?.name === 'string' ? installedManifest.name : undefined;

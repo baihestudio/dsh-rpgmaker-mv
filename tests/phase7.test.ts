@@ -1373,6 +1373,17 @@ describe('Windows release gate foundations', () => {
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'package.json')).exists()).toBe(true);
+
+      calls.length = 0;
+      const staleProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      staleProfileManifest.dependencies ??= {};
+      staleProfileManifest.dependencies['@baihestudio/dsh-image-workshop'] = `file:${join(program, 'bundle', 'dsh-image-workshop')}`;
+      await writeFile(webProfileManifestPath, `${JSON.stringify(staleProfileManifest, null, 2)}\n`);
+      await install();
+      const rebuiltProfile = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      expect(rebuiltProfile.dependencies?.['@baihestudio/dsh-image-workshop']).toBeUndefined();
+      expect(rebuiltProfile.dependencies?.[DSH_WEB_PACKAGE]).toBe(DSH_WEB_VERSION);
+      expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`))).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

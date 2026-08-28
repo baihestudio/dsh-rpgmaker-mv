@@ -12,7 +12,7 @@
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
    - ImageMagick 7 (`ImageMagick.ImageMagick`; installed system-wide and exposed as `magick` on Windows PATH)
-4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the pinned DSH `0.1.1-rc.2` runtime with Bun (npm integrity `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==`), installs the exact RPG Maker MCP, `@guionai/dsh-web@0.3.1`, and `@lamplitisles/dsh-imagegen@0.2.1` through DSH's normal `web` profile plugin command, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. If an older `@tta-lab/dsh-web` dependency exists, installation removes it before adding Guion Web. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, default preset, and neutral composition as needed.
+4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the pinned DSH `0.1.1-rc.2` runtime with Bun (npm integrity `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==`), installs the exact RPG Maker MCP, `@guionai/dsh-web@0.3.1`, and `@lamplitisles/dsh-imagegen@0.2.1` through DSH's normal `web` profile plugin command, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. If an obsolete image-workshop package is present, or the old `@tta-lab/dsh-web` package cannot be removed, installation rebuilds the app-managed Web profile before adding the current packages. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, default preset, and neutral composition as needed.
 
 The Web package belongs to DSH-managed profile state. If its plugin command fails after initializing that state, the installer reports failure and restores its program tree/shortcut; rerun `Install.cmd` to complete the profile setup. Profile-state rollback is intentionally not part of the installer.
 
@@ -50,7 +50,8 @@ The launcher is project-neutral: it opens no folder picker, reads no recent
 project list, writes no app-owned project-selection state, and rejects
 `launch --project`. The Release ZIP carries the prebuilt
 `bundle/dsh-workspace-mcp` package, including its generated Xerolo manifest;
-installation copies it to the stable app-owned program tree. Before spawning
+launch copies it to the stable app-owned data directory before linking it into
+the profile. Before spawning
 DSH, launch verifies or repairs the exact-pinned app-owned pnpm 10.15.1,
 MCPorter 0.12.3, and Xerolo RPG Maker MCP 0.1.0 runtimes, links the local
 workspace bundle into the `web` profile, installs the default preset, and verifies

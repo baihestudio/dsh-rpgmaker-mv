@@ -8,13 +8,13 @@ import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION, verifyMcpor
 import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
-  WORKSPACE_MCP_BUNDLE_RELATIVE,
   WORKSPACE_MCP_PACKAGE,
   WORKSPACE_MCP_SHA256,
   WORKSPACE_MCP_VERSION,
   XEROLO_RUNTIME_ENV,
   prepareWorkspaceMcpBundle,
-  verifyWorkspaceMcpBundle
+  verifyWorkspaceMcpBundle,
+  workspaceMcpBundleDirFor
 } from '../src/workspace-mcp';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
 import { redactSensitive, withoutCredentials } from '../src/process';
@@ -394,7 +394,6 @@ describe('app-owned workspace MCP bundle profile link', () => {
     const root = await temp('ws-bundle-install');
     try {
       const paths = harnessPaths(root);
-      await mkdir(join(paths.programRoot, 'bundle'), { recursive: true });
       await mkdir(join(paths.runtimeDir, 'node_modules', '.bin'), { recursive: true });
       const pnpm = join(root, 'pnpm.exe');
       await writeFile(pnpm, 'fixture');
@@ -407,7 +406,7 @@ describe('app-owned workspace MCP bundle profile link', () => {
           pluginCalls += 1;
           const local = args.find((value) => value.startsWith('file:'));
           expect(local).toBeDefined();
-          await writeInstalledProfile(paths.dshHome, local!, join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE));
+          await writeInstalledProfile(paths.dshHome, local!, workspaceMcpBundleDirFor(paths));
           return { exitCode: 0, stdout: '', stderr: '' };
         }
         throw new Error(`unexpected runner call: ${args.join(' ')}`);
@@ -417,7 +416,7 @@ describe('app-owned workspace MCP bundle profile link', () => {
       expect(first.valid).toBe(true);
       expect(first.packageVersion).toBe(WORKSPACE_MCP_VERSION);
       expect(first.bundleOccurrences).toBe(1);
-      expect(first.packageDir).toBe(await realpath(join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE)));
+      expect(first.packageDir).toBe(await realpath(workspaceMcpBundleDirFor(paths)));
       expect(pluginCalls).toBe(1);
 
       const second = await prepareWorkspaceMcpBundle(options);
@@ -432,8 +431,7 @@ describe('app-owned workspace MCP bundle profile link', () => {
     const root = await temp('ws-bundle-verify');
     try {
       const paths = harnessPaths(root);
-      await mkdir(paths.programRoot, { recursive: true });
-      const bundleDir = join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE);
+      const bundleDir = workspaceMcpBundleDirFor(paths);
       await cp(BUNDLE_SOURCE, bundleDir, { recursive: true });
       await writeFile(join(bundleDir, 'lib', 'index.js'), await readFile(join(bundleDir, 'lib', 'index.js'), 'utf8').then((text) => `${text}\n`));
 
@@ -459,7 +457,7 @@ describe('app-owned workspace MCP bundle profile link', () => {
     const root = await temp('ws-bundle-copied');
     try {
       const paths = harnessPaths(root);
-      const bundleDir = join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE);
+      const bundleDir = workspaceMcpBundleDirFor(paths);
       await mkdir(bundleDir, { recursive: true });
       await cp(BUNDLE_SOURCE, bundleDir, { recursive: true });
       const profile = join(paths.dshHome, 'profiles', 'web');
@@ -488,7 +486,7 @@ describe('app-owned workspace MCP bundle profile link', () => {
     const root = await temp('ws-bundle-redaction');
     try {
       const paths = harnessPaths(root);
-      const bundleDir = join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE);
+      const bundleDir = workspaceMcpBundleDirFor(paths);
       await mkdir(bundleDir, { recursive: true });
       await cp(BUNDLE_SOURCE, bundleDir, { recursive: true });
       const profile = join(paths.dshHome, 'profiles', 'web');
