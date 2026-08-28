@@ -188,6 +188,18 @@ function sameCanonicalPath(a: string, b: string, platform: string): boolean {
   return first === second;
 }
 
+async function profileVirtualStorePackageAllowed(
+  profileRootReal: string,
+  installedReal: string,
+  platform: string
+): Promise<boolean> {
+  const nodeModulesReal = await canonicalPath(join(profileRootReal, 'node_modules'));
+  const virtualStoreReal = await canonicalPath(join(profileRootReal, 'node_modules', '.pnpm'));
+  return pathIsStrictlyWithin(profileRootReal, nodeModulesReal, platform)
+    && pathIsStrictlyWithin(nodeModulesReal, virtualStoreReal, platform)
+    && pathIsStrictlyWithin(virtualStoreReal, installedReal, platform);
+}
+
 interface BundleRootVerification {
   manifest: Record<string, unknown> | undefined;
   entrypoint: string | undefined;
@@ -384,7 +396,9 @@ export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOption
     installedResolved = installedReal ?? installedDir;
     const canonicalInstalled = join(profileRootReal, 'node_modules', WORKSPACE_MCP_PACKAGE);
     const installedAllowed = profileRootAllowed && installedReal !== undefined
-      && (sameCanonicalPath(installedReal, bundleReal, platform) || sameCanonicalPath(installedReal, canonicalInstalled, platform));
+      && (sameCanonicalPath(installedReal, bundleReal, platform)
+        || sameCanonicalPath(installedReal, canonicalInstalled, platform)
+        || await profileVirtualStorePackageAllowed(profileRootReal, installedReal, platform));
     if (!installedAllowed) {
       errors.push(`installed profile package does not resolve to the app-owned data bundle or the canonical profile copy (got ${installedReal ?? 'unresolvable'})`);
     }

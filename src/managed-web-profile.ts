@@ -88,6 +88,7 @@ interface ManagedProfileSnapshot {
 }
 
 type ManagedProfileMutationGuard = () => Promise<void>;
+type ManagedProfileStructureGuard = () => Promise<void>;
 
 interface DesiredPackage {
   packageName: string;
@@ -253,6 +254,30 @@ function expectedSource(desired: DesiredPackage, brandBundleDir: string, workspa
   return undefined;
 }
 
+/**
+ * Real pnpm file: dependencies can be represented by raw profile links to a
+ * package inside the profile's virtual store. Keep that exception narrow:
+ * only the app-owned source, the exact canonical raw package path, or a
+ * strict descendant of a canonical in-profile .pnpm root is accepted.
+ */
+async function localPackageInstallAllowed(
+  profileDir: string,
+  packageName: string,
+  installedReal: string,
+  sourceReal: string,
+  platform: string
+): Promise<boolean> {
+  if (samePath(installedReal, sourceReal, platform)) return true;
+  const profileCanonical = await canonicalPath(profileDir);
+  const rawPackagePath = join(profileCanonical, 'node_modules', ...packageName.split('/'));
+  if (samePath(installedReal, rawPackagePath, platform)) return true;
+  const nodeModulesReal = await canonicalPath(join(profileCanonical, 'node_modules'));
+  const virtualStoreReal = await canonicalPath(join(profileCanonical, 'node_modules', '.pnpm'));
+  return pathIsStrictlyWithin(profileCanonical, nodeModulesReal, platform)
+    && pathIsStrictlyWithin(nodeModulesReal, virtualStoreReal, platform)
+    && pathIsStrictlyWithin(virtualStoreReal, installedReal, platform);
+}
+
 async function verifyBundlePackage(
   desired: DesiredPackage,
   profileDir: string,
@@ -330,10 +355,8 @@ async function verifyBundlePackage(
       }
     }
     if (installedExists) {
-      const profileCanonical = await canonicalPath(profileDir);
-      const isCanonicalCopy = samePath(installedReal, join(profileCanonical, 'node_modules', ...desired.packageName.split('/')), platform);
-      if (!samePath(installedReal, sourceReal, platform) && !isCanonicalCopy && !pathIsWithin(sourceReal, installedReal, platform)) {
-        packageErrors.push(`installed profile package ${desired.packageName} does not resolve to the app-owned bundle or canonical profile copy`);
+      if (!(await localPackageInstallAllowed(profileDir, desired.packageName, installedReal, sourceReal, platform))) {
+        packageErrors.push(`installed profile package ${desired.packageName} does not resolve to the app-owned bundle, canonical profile copy, or its in-profile pnpm virtual store`);
       }
     }
   } else if (installedExists) {
@@ -542,19 +565,21 @@ async function snapshotManagedWebProfile(
   }
 }
 
-async function restoreManagedWebProfile(snapshot: ManagedProfileSnapshot, beforeMutation: ManagedProfileMutationGuard): Promise<void> {
-  await beforeMutation();
+async function restoreManagedWebProfile(snapshot: ManagedProfileSnapshot, beforeRestore: ManagedProfileStructureGuard): Promise<void> {
+  await beforeRestore();
   await rm(snapshot.profileDir, { recursive: true, force: true });
   if (snapshot.profileExisted) {
-    await beforeMutation();
+    await beforeRestore();
     await mkdir(dirname(snapshot.profileDir), { recursive: true });
+    await beforeRestore();
     await cp(snapshot.profileBackup, snapshot.profileDir, { recursive: true, force: false, errorOnExist: true });
   }
-  await beforeMutation();
+  await beforeRestore();
   await rm(snapshot.bundleDir, { recursive: true, force: true });
   if (snapshot.bundleExisted) {
-    await beforeMutation();
+    await beforeRestore();
     await mkdir(dirname(snapshot.bundleDir), { recursive: true });
+    await beforeRestore();
     await cp(snapshot.bundleBackup, snapshot.bundleDir, { recursive: true, force: false, errorOnExist: true });
   }
 }
@@ -652,8 +677,11 @@ async function ensureManagedWebProfileUnlocked(options: ManagedWebProfileOptions
   if (!dsh) throw new Error('Pinned DSH executable was not found; cannot materialize the managed Web profile.');
   const invocation = await resolveDshInvocation(dsh, options, env);
   const profileDir = profileDirFor(paths, MANAGED_WEB_PROFILE);
-  const beforeMutation = async (): Promise<void> => {
+  const beforeRestore = async (): Promise<void> => {
     await requireManagedWebProfileStructure(paths, platform);
+  };
+  const beforeMutation = async (): Promise<void> => {
+    await beforeRestore();
     const sources = await requireManagedWebSources(paths, platform);
     if (!samePath(sources.workspaceSource, workspaceSource, platform)) {
       throw new Error('Managed Web profile repair refused because the app-owned workspace MCP source changed during preflight');
@@ -684,7 +712,7 @@ async function ensureManagedWebProfileUnlocked(options: ManagedWebProfileOptions
   } catch (error) {
     const original = error instanceof Error ? error : new Error(String(error));
     try {
-      await restoreManagedWebProfile(snapshot, beforeMutation);
+      await restoreManagedWebProfile(snapshot, beforeRestore);
     } catch (restoreError) {
       throw new Error(`${original.message}; managed Web profile rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}; rollback snapshot preserved at ${snapshot.root}`);
     }

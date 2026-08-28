@@ -157,6 +157,24 @@ async function appRoots(root: string) {
   };
 }
 
+async function relocateLocalPackagesToVirtualStore(dshHome: string, packageNames: readonly string[]): Promise<void> {
+  const profileDir = join(dshHome, 'profiles', 'web');
+  for (const packageName of packageNames) {
+    const rawPackage = join(profileDir, 'node_modules', ...packageName.split('/'));
+    const virtualPackage = join(
+      profileDir,
+      'node_modules',
+      '.pnpm',
+      `${packageName.replace(/\//g, '+')}@fixture`,
+      'node_modules',
+      ...packageName.split('/')
+    );
+    await mkdir(dirname(virtualPackage), { recursive: true });
+    await rename(rawPackage, virtualPackage);
+    await symlink(virtualPackage, rawPackage, directoryLinkType());
+  }
+}
+
 function optionsFor(
   roots: Awaited<ReturnType<typeof appRoots>>,
   commandRunner: ReturnType<typeof managedRunner>
@@ -261,6 +279,49 @@ describe('managed Web profile materialization', () => {
     }
   });
 
+  test('restores the prior profile with a structural guard when a failing runner damages an app-owned source', async () => {
+    const root = await temp('phase11-managed-profile-rollback-source-damage');
+    try {
+      const roots = await appRoots(root);
+      await writeFile(roots.npmExecutable, '@echo off\r\n');
+      await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      const profileDir = join(roots.dshHome, 'profiles', 'web');
+      const manifestPath = join(profileDir, 'package.json');
+      const priorManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { dependencies: Record<string, string> };
+      priorManifest.dependencies['@baihestudio/retired-profile-plugin'] = '9.9.9';
+      await writeFile(manifestPath, `${JSON.stringify(priorManifest, null, 2)}\n`);
+      const workspaceBundleDir = workspaceMcpBundleDirFor({ dshHome: roots.dshHome });
+      const priorProfileTree = await snapshotTree(profileDir);
+      const priorWorkspaceTree = await snapshotTree(workspaceBundleDir);
+      const priorWorkspaceDigest = await workspaceMcpBundleDigest(workspaceBundleDir);
+      const brandDir = join(roots.programRoot, DSH_BRAND_BUNDLE_RELATIVE);
+      const baseRunner = managedRunner(roots.dshHome, []);
+      let damaged = false;
+      const calls: string[] = [];
+      const runner = async (command: string, args: string[], context: { cwd?: string }) => {
+        calls.push(`${basename(command)} ${args.join(' ')}`);
+        const packageSpec = args.at(-1) ?? '';
+        if (!damaged && args[0] === 'plugin' && packageSpec.includes(DSH_IMAGEGEN_PACKAGE)) {
+          damaged = true;
+          await rm(brandDir, { recursive: true, force: true });
+          return { exitCode: 37, stdout: '', stderr: 'fixture source damage failure' };
+        }
+        return baseRunner(command, args, context);
+      };
+
+      await expect(ensureManagedWebProfile(optionsFor(roots, runner))).rejects.toThrow(/(?:dsh-imagegen|source damage failure).*prior managed Web profile was restored/i);
+      expect(damaged).toBe(true);
+      expect(await snapshotTree(profileDir)).toEqual(priorProfileTree);
+      expect(await snapshotTree(workspaceBundleDir)).toEqual(priorWorkspaceTree);
+      expect(await workspaceMcpBundleDigest(workspaceBundleDir)).toBe(priorWorkspaceDigest);
+      await expect(stat(brandDir)).rejects.toThrow();
+      expect(await rollbackSnapshotNames(roots.dshHome)).toEqual([]);
+      expect(calls.filter((call) => call.startsWith('dsh.exe plugin --profile web add'))).toHaveLength(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('rejects and repairs an installed package whose declared patch is missing', async () => {
     const root = await temp('phase11-managed-profile-missing-patch');
     try {
@@ -306,6 +367,29 @@ describe('managed Web profile materialization', () => {
       expect(repaired.materialized).toBe(true);
       expect((await stat(clientPath)).isFile()).toBe(true);
       expect(await readFile(join(outsideClient, 'marker.txt'), 'utf8')).toBe('external installed client\n');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('accepts real pnpm virtual-store links for both local packages without rematerializing', async () => {
+    const root = await temp('phase11-managed-profile-pnpm-virtual-store');
+    try {
+      const roots = await appRoots(root);
+      await writeFile(roots.npmExecutable, '@echo off\r\n');
+      await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      await relocateLocalPackagesToVirtualStore(roots.dshHome, [DSH_BRAND_PACKAGE, WORKSPACE_MCP_PACKAGE]);
+
+      const verification = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      expect(verification.valid).toBe(true);
+      expect(verification.packages.find((pkg) => pkg.packageName === DSH_BRAND_PACKAGE)?.installedDir).toContain('.pnpm');
+      expect(verification.packages.find((pkg) => pkg.packageName === WORKSPACE_MCP_PACKAGE)?.installedDir).toContain('.pnpm');
+
+      const calls: string[] = [];
+      const noop = await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, calls)));
+      expect(noop.valid).toBe(true);
+      expect(noop.materialized).toBe(false);
+      expect(calls).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
