@@ -38,6 +38,5 @@ Do not invent missing mechanics merely to fill a template.
 
 Finish when the index links every new note, observed facts remain distinguishable
 from assumptions, unresolved material choices have either been asked through the
-tool or recorded as open, and the next `game-design` invocation has a clear
-canonical starting point. Hand off to `game-design` for ongoing grilling and living-
-document maintenance; do not write game code.
+tool or recorded as open, and the game-design Skill has a clear canonical starting
+point. Do not write game code during this foundation pass.

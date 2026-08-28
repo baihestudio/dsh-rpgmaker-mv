@@ -675,7 +675,7 @@ describe('doctor and launcher seams', () => {
     }
   });
 
-  test('CLI rejects launch --project and prints the single-writer contract for a neutral launch', async () => {
+  test('CLI rejects project and preset selection and prints the single-writer contract for a neutral launch', async () => {
     const root = await disposableDirectory('cli-launch');
     try {
       const project = await makeMvProject(root);
@@ -691,6 +691,15 @@ describe('doctor and launcher seams', () => {
       });
       expect(rejected).toBe(1);
       expect(errorOutput).toMatch(/project-neutral.*does not accept --project/i);
+      errorOutput = '';
+      const rejectedPreset = await runCli(['launch', '--preset', 'game-design', '--dsh-executable', dsh, '--dsh-home', join(root, 'dsh-home')], {
+        platform: 'win32',
+        env: {},
+        rpgmaker: false,
+        io: { stdout: { write: () => undefined }, stderr: { write: (text) => { errorOutput += text; } } }
+      });
+      expect(rejectedPreset).toBe(1);
+      expect(errorOutput).toMatch(/single default rpgmaker.*does not accept --preset/i);
       const code = await runCli(['launch', '--dsh-executable', dsh, '--dsh-home', join(root, 'dsh-home')], {
         platform: 'win32',
         env: {},

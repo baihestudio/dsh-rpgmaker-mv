@@ -36,12 +36,12 @@ async function makeFixture(): Promise<void> {
   await writeFile(join(project, 'js', 'plugins.js'), 'var $plugins = [];\n');
 }
 
-async function mount(compositionPath: string, preset: string, expectedMcp: boolean, dshLib: string, environmentModule: string): Promise<Record<string, unknown>> {
+async function mount(compositionPath: string, preset: string, dshLib: string, environmentModule: string): Promise<Record<string, unknown>> {
   const profileFile = (await readdir(dshLib)).find((file) => file.startsWith('profile-boot-') && file.endsWith('.js'));
   assert.ok(profileFile, 'compiled DSH profile boot module missing');
   const probe = await runCommand(process.env.NODE_EXECUTABLE ?? 'node', [join(process.cwd(), 'scripts', 'phase7-real-mount.mjs')], {
     cwd: project,
-    env: { ...safeEnv, PROFILE_FILE: join(dshLib, profileFile), ENVIRONMENT_MODULE: environmentModule, COMPOSITION_FILE: compositionPath, EXPECTED_PRESET: preset, EXPECTED_MCP: String(expectedMcp) },
+    env: { ...safeEnv, PROFILE_FILE: join(dshLib, profileFile), ENVIRONMENT_MODULE: environmentModule, COMPOSITION_FILE: compositionPath, EXPECTED_PRESET: preset },
     platform: process.platform,
     timeoutMs: 120_000
   });
@@ -66,7 +66,7 @@ try {
     const compositionPath = join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
     await mkdir(join(dshHome, 'rpgmaker-mv'), { recursive: true });
     await writeFile(compositionPath, renderPresetOnlyPatch(installed.presetRoot, preset));
-    mounted.push(await mount(compositionPath, preset, true, dshLib, environmentModule));
+    mounted.push(await mount(compositionPath, preset, dshLib, environmentModule));
   }
   console.log(JSON.stringify({ ok: true, dsh: DSH_VERSION, presets: mounted, windowsNwjs: process.platform === 'win32' ? 'requires installed MV hardware fixture' : 'unsupported hardware on this host; not claimed' }));
 } finally {

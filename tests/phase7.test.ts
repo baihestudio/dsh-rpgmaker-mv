@@ -1302,7 +1302,10 @@ describe('Windows release gate foundations', () => {
       const mutable = join(root, 'mutable');
       const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
       const state = join(mutable, 'state');
+      const retiredGameDesignPreset = join(state, '.agent-presets', 'game-design');
       const retiredAssetPreset = join(state, '.agent-presets', 'asset-workshop');
+      await mkdir(retiredGameDesignPreset, { recursive: true });
+      await writeFile(join(retiredGameDesignPreset, '.dsh-rpgmaker-owned.json'), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId: 'game-design', format: 1 })}\n`);
       await mkdir(retiredAssetPreset, { recursive: true });
       await writeFile(join(retiredAssetPreset, '.dsh-rpgmaker-owned.json'), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId: 'asset-workshop', format: 1 })}\n`);
       const bun = join(bin, 'bun.exe');
@@ -1338,6 +1341,7 @@ describe('Windows release gate foundations', () => {
       await install();
       const installedForgejoPreset = join(state, '.agent-presets', 'rpgmaker', 'agent.cordis.yml');
       expect(await Bun.file(installedForgejoPreset).exists()).toBe(true);
+      expect(await Bun.file(retiredGameDesignPreset).exists()).toBe(false);
       expect(await Bun.file(retiredAssetPreset).exists()).toBe(false);
       expect(await readFile(installedForgejoPreset, 'utf8')).toContain('DSH_RPGMAKER_PROGRAM_ROOT');
       expect(calls.some((call) => call.args.includes(`pnpm@${PNPM_VERSION}`))).toBe(true);

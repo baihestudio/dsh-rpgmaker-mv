@@ -12,7 +12,7 @@
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
    - ImageMagick 7 (`ImageMagick.ImageMagick`; installed system-wide and exposed as `magick` on Windows PATH)
-4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the pinned DSH `0.1.1-rc.2` runtime with Bun (npm integrity `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==`), installs the exact RPG Maker MCP, `@guionai/dsh-web@0.3.1`, and `@lamplitisles/dsh-imagegen@0.2.1` through DSH's normal `web` profile plugin command, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. If an older `@tta-lab/dsh-web` dependency exists, installation removes it before adding Guion Web. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, two presets, and neutral composition as needed.
+4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the pinned DSH `0.1.1-rc.2` runtime with Bun (npm integrity `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==`), installs the exact RPG Maker MCP, `@guionai/dsh-web@0.3.1`, and `@lamplitisles/dsh-imagegen@0.2.1` through DSH's normal `web` profile plugin command, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. If an older `@tta-lab/dsh-web` dependency exists, installation removes it before adding Guion Web. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, default preset, and neutral composition as needed.
 
 The Web package belongs to DSH-managed profile state. If its plugin command fails after initializing that state, the installer reports failure and restores its program tree/shortcut; rerun `Install.cmd` to complete the profile setup. Profile-state rollback is intentionally not part of the installer.
 
@@ -53,7 +53,7 @@ project list, writes no app-owned project-selection state, and rejects
 installation copies it to the stable app-owned program tree. Before spawning
 DSH, launch verifies or repairs the exact-pinned app-owned pnpm 10.15.1,
 MCPorter 0.12.3, and Xerolo RPG Maker MCP 0.1.0 runtimes, links the local
-workspace bundle into the `web` profile, installs the two presets, and verifies
+workspace bundle into the `web` profile, installs the default preset, and verifies
 the effective composition from the neutral landing directory. The bundle's
 profile patch inserts only the Host service entry point; each shipped preset
 composition mounts the `/agent` entry point in Agent scope. The generated
@@ -61,7 +61,7 @@ RPG Maker Host patch selects the Agent preset but does not insert a timeout
 policy: pinned DSH rc.2's `web` profile owns the official Host row
 `id: timeout-policy` / `@deepseek-ai/dsh-tool-call-timeout-policy`. Launch
 preparation and Doctor validate the effective `web --dump-config` composition
-and require exactly one official row across both custom presets; the
+and require exactly one official row in the custom preset; the
 preset compositions remain policy-free. The Web package's patch selects
 Organon for stock PTC/Code batched search, registers `web_fetch`, `web_docs`,
 and `web_sgraph`, and keeps DSH's root URL-only `tool-web` disabled. Re-running preparation rewrites the
@@ -69,9 +69,8 @@ app-owned patch, repairing older generated patches that inserted a duplicate.
 The access layer shares Host state through the root-context WeakMap and does
 not publish a service into the ROOT realm or filter preset ids itself. The
 profile link is made during this pre-launch preparation, never while an install
-tree swap is in progress. Omit `--preset` to use `rpgmaker`, or pass `--preset game-design`,
-as the default Agent preset. The visible names are `🐒 程序猿` and `🐶 策划汪`.
-New Agents across both presets default to
+tree swap is in progress. The default Agent preset is `rpgmaker`, shown as `🐒 制作猿`.
+New Agents default to
 `deepseek-v4-flash-vision-exp`; the normal DSH Web model selection remains a
 user override, and existing sessions retain their logged model choice.
 User-attached PNG, JPEG, WebP, and GIF images may be read as image input only;
@@ -222,10 +221,9 @@ Purge is not automatic and still does not delete projects outside the app-data r
 
 ## Presets and truthful limits
 
-Two selectable presets share the DSH Web profile; one uses the shared MCP composition and stable Agent-scoped `rpgmaker_*` tools:
-
-- `rpgmaker` — default database, event, dialogue, map metadata, plugin work, image assets, and Playtest debug through local Skills;
-- `game-design` — Code-derived Markdown design workspace, without the RPG Maker MCP Agent row;
+The default `rpgmaker` preset uses the shared MCP composition and stable Agent-scoped
+`rpgmaker_*` tools for database, event, dialogue, map metadata, plugin work, image
+assets, Playtest debug, and game-design documentation through local Skills.
 
 The RPG Maker image-assets Skill uses Kepos for image generation/editing and the global `magick` CLI for deterministic preparation; no app-owned image transformation plugin is installed.
 

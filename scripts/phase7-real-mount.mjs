@@ -3,7 +3,6 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 const expectedPreset = process.env.EXPECTED_PRESET;
-const expectedMcp = process.env.EXPECTED_MCP === 'true';
 const profileModule = await import(pathToFileURL(process.env.PROFILE_FILE).href);
 const environmentModule = await import(pathToFileURL(process.env.ENVIRONMENT_MODULE).href);
 const environment = environmentModule.createLaunchEnvironmentSnapshot([{
@@ -27,8 +26,7 @@ try {
   const mcpTools = schemas.filter((schema) => String(schema.name ?? '').startsWith('mcp__'));
   const mcpNames = mcpTools.map((schema) => String(schema.name ?? ''));
   if (new Set(mcpNames).size !== mcpNames.length) throw new Error('duplicate MCP host tools were mounted');
-  if (expectedMcp && mcpTools.length < 41) throw new Error(`expected RPG Maker MCP tools, found ${mcpTools.length}`);
-  if (!expectedMcp && mcpTools.length !== 0) throw new Error(`asset-only preset unexpectedly mounted ${mcpTools.length} MCP tools`);
+  if (mcpTools.length < 41) throw new Error(`expected RPG Maker MCP tools, found ${mcpTools.length}`);
   const agentLoop = run.ctx.get('agentLoop');
   if (!agentLoop) throw new Error('official DSH agent-loop service did not mount');
   let handle;

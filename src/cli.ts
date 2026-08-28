@@ -85,7 +85,6 @@ function helpText(): string {
     '  --dsh-executable <path>   Use an explicit DSH executable',
     '  --workspace <path>        Inspect one explicit Windows workspace with Doctor',
     '  --sandbox-probe            Run the pinned DSH workspace-write runner after workspace checks pass',
-    '  --preset <id>              Agent preset (rpgmaker or game-design)',
     '  --bun-executable <path>   Use an explicit Bun executable',
     '  --js-executable <path>    Use an explicit Bun or Node executable for MCP',
     '  --mcp-runtime-dir <path>  Use the app-owned RPG Maker MCP runtime',
@@ -251,6 +250,9 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
       if (parsed.flags.has('project') || option(parsed.values, 'project') !== undefined) {
         throw new Error('The launch command is project-neutral and does not accept --project; choose a workspace in DSH Web.');
       }
+      if (parsed.flags.has('preset') || option(parsed.values, 'preset') !== undefined) {
+        throw new Error('The launch command uses the single default rpgmaker Agent preset and does not accept --preset.');
+      }
       validateCliFixedBinding(argv);
       // This notice is intentionally unconditional: do not detect editor processes or infer write ownership.
       io.stdout.write(`${SINGLE_WRITER_NOTICE}\n\n`);
@@ -258,7 +260,6 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         ...baseOptions(parsed, dependencies),
         dshExecutable: option(parsed.values, 'dsh-executable'),
         dshArgs: [],
-        agentPreset: option(parsed.values, 'preset'),
         spawnInteractive: dependencies.spawnInteractive,
         portProbe: dependencies.portProbe,
         onPortConflict: dependencies.onPortConflict,
