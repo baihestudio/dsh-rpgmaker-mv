@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -194,6 +194,13 @@ interface BundleRootVerification {
   digest: string | undefined;
 }
 
+export interface WorkspaceMcpSourceVerification {
+  valid: boolean;
+  errors: string[];
+  sourceDir: string;
+  sha256: string | undefined;
+}
+
 async function verifyLoadedFile(
   rootReal: string,
   target: string | undefined,
@@ -261,6 +268,50 @@ async function verifyBundleRoot(
   return { manifest, entrypoint, digest };
 }
 
+/**
+ * Verify only the app-owned workspace MCP source bundle. This intentionally
+ * excludes the mutable data target and profile state so a stale target can be
+ * repaired without weakening the source safety gate.
+ */
+export async function verifyWorkspaceMcpSource(options: WorkspaceMcpBundleOptions = {}): Promise<WorkspaceMcpSourceVerification> {
+  const paths = resolveHarnessPaths(options);
+  const platform = options.platform ?? process.platform;
+  const packagedSource = resolve(join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE));
+  const defaultSource = resolve(defaultWorkspaceMcpBundleDir());
+  let packagedSourceExists = false;
+  try {
+    await lstat(packagedSource);
+    packagedSourceExists = true;
+  } catch {
+    // An absent packaged source permits the canonical repository fallback.
+  }
+  const sourceDir = packagedSourceExists ? packagedSource : defaultSource;
+  const sourceReal = await canonicalPath(sourceDir);
+  const programRootReal = await canonicalPath(paths.programRoot);
+  const defaultSourceReal = await canonicalPath(defaultSource);
+  const sourceAllowed = packagedSourceExists
+    ? pathIsStrictlyWithin(programRootReal, sourceReal, platform)
+    : sameCanonicalPath(sourceReal, defaultSourceReal, platform);
+  const errors: string[] = [];
+  if (!sourceAllowed) {
+    errors.push(`workspace MCP source bundle ${sourceDir} is outside its allowed app-owned root`);
+    return { valid: false, errors, sourceDir, sha256: undefined };
+  }
+
+  const sourceCheck = await verifyBundleRoot(sourceDir, 'workspace MCP source bundle', platform, true, errors);
+  const sourceName = typeof sourceCheck.manifest?.name === 'string' ? sourceCheck.manifest.name : undefined;
+  const sourceVersion = typeof sourceCheck.manifest?.version === 'string' ? sourceCheck.manifest.version : undefined;
+  if (sourceName !== WORKSPACE_MCP_PACKAGE) errors.push(`workspace MCP source bundle identity is ${sourceName ?? 'missing'}, expected ${WORKSPACE_MCP_PACKAGE}`);
+  if (sourceVersion !== WORKSPACE_MCP_VERSION) errors.push(`workspace MCP source bundle version is ${sourceVersion ?? 'missing'}, expected ${WORKSPACE_MCP_VERSION}`);
+  if (sourceCheck.manifest?.license !== WORKSPACE_MCP_LICENSE) errors.push(`workspace MCP source bundle license is ${String(sourceCheck.manifest?.license ?? 'missing')}, expected ${WORKSPACE_MCP_LICENSE}`);
+  const sourcePatch = typeof asObject(asObject(sourceCheck.manifest?.dsh)?.bundle)?.patch === 'string'
+    ? asObject(asObject(sourceCheck.manifest?.dsh)?.bundle)?.patch as string
+    : undefined;
+  if (sourcePatch !== WORKSPACE_MCP_BUNDLE_PATCH) errors.push(`workspace MCP source bundle dsh.bundle.patch is not ${WORKSPACE_MCP_BUNDLE_PATCH}`);
+  if (sourceCheck.digest !== WORKSPACE_MCP_SHA256) errors.push(`workspace MCP source release hash mismatch (got ${sourceCheck.digest?.slice(0, 12) ?? 'none'}, expected ${WORKSPACE_MCP_SHA256.slice(0, 12)})`);
+  return { valid: errors.length === 0, errors, sourceDir: sourceReal, sha256: sourceCheck.digest };
+}
+
 export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOptions = {}): Promise<WorkspaceMcpBundleVerification> {
   const paths = resolveHarnessPaths(options);
   const platform = options.platform ?? process.platform;
@@ -285,19 +336,8 @@ export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOption
   if (!dataRootAllowed) errors.push(`workspace MCP data root ${dataRoot} escapes canonical DSH_HOME ${paths.dshHome}`);
   if (!ownedPath) errors.push(`bundle path ${bundleDir} is not strictly inside the app-owned data root ${dataRoot}`);
 
-  const packagedSource = resolve(join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE));
-  const defaultSource = resolve(defaultWorkspaceMcpBundleDir());
-  const packagedSourceExists = await exists(packagedSource);
-  const sourceDir = packagedSourceExists ? packagedSource : defaultSource;
-  const sourceReal = await canonicalPath(sourceDir);
-  const programRootReal = await canonicalPath(paths.programRoot);
-  const defaultSourceReal = await canonicalPath(defaultSource);
-  const sourceAllowed = packagedSourceExists
-    ? pathIsStrictlyWithin(programRootReal, sourceReal, platform)
-    : sameCanonicalPath(sourceReal, defaultSourceReal, platform);
-  if (!sourceAllowed) errors.push(`workspace MCP source bundle ${sourceDir} is outside its allowed app-owned root`);
-
-  const sourceCheck = await verifyBundleRoot(sourceDir, 'workspace MCP source bundle', platform, sourceAllowed, errors);
+  const sourceCheck = await verifyWorkspaceMcpSource({ ...options, platform });
+  errors.push(...sourceCheck.errors);
   const targetCheck = await verifyBundleRoot(bundleDir, 'bundle', platform, ownedPath, errors);
   const manifest = targetCheck.manifest;
   const packageName = typeof manifest?.name === 'string' ? manifest.name : undefined;
@@ -309,12 +349,6 @@ export async function verifyWorkspaceMcpBundle(options: WorkspaceMcpBundleOption
     ? asObject(asObject(manifest?.dsh)?.bundle)?.patch as string
     : undefined;
   if (bundlePatch !== WORKSPACE_MCP_BUNDLE_PATCH) errors.push(`bundle dsh.bundle.patch is not ${WORKSPACE_MCP_BUNDLE_PATCH}`);
-  const sourceName = typeof sourceCheck.manifest?.name === 'string' ? sourceCheck.manifest.name : undefined;
-  const sourceVersion = typeof sourceCheck.manifest?.version === 'string' ? sourceCheck.manifest.version : undefined;
-  if (sourceAllowed && sourceName !== WORKSPACE_MCP_PACKAGE) errors.push(`workspace MCP source bundle identity is ${sourceName ?? 'missing'}, expected ${WORKSPACE_MCP_PACKAGE}`);
-  if (sourceAllowed && sourceVersion !== WORKSPACE_MCP_VERSION) errors.push(`workspace MCP source bundle version is ${sourceVersion ?? 'missing'}, expected ${WORKSPACE_MCP_VERSION}`);
-  if (sourceAllowed && sourceCheck.manifest?.license !== WORKSPACE_MCP_LICENSE) errors.push(`workspace MCP source bundle license is ${String(sourceCheck.manifest?.license ?? 'missing')}, expected ${WORKSPACE_MCP_LICENSE}`);
-  if (sourceAllowed && sourceCheck.digest !== WORKSPACE_MCP_SHA256) errors.push(`workspace MCP source release hash mismatch (got ${sourceCheck.digest?.slice(0, 12) ?? 'none'}, expected ${WORKSPACE_MCP_SHA256.slice(0, 12)})`);
   const sha256 = targetCheck.digest;
   if (sha256 !== WORKSPACE_MCP_SHA256) errors.push(`bundle release hash mismatch (got ${sha256?.slice(0, 12) ?? 'none'}, expected ${WORKSPACE_MCP_SHA256.slice(0, 12)}); the prebuilt package must not be edited by hand`);
 

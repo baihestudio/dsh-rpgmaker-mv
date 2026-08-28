@@ -283,6 +283,34 @@ describe('managed Web profile materialization', () => {
     }
   });
 
+  test('rejects and repairs an installed brand package whose client entrypoint escapes', async () => {
+    const root = await temp('phase11-managed-profile-brand-client-escape');
+    try {
+      const roots = await appRoots(root);
+      await writeFile(roots.npmExecutable, '@echo off\r\n');
+      await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      const installedDir = join(roots.dshHome, 'profiles', 'web', 'node_modules', ...DSH_BRAND_PACKAGE.split('/'));
+      const clientPath = join(installedDir, 'lib', 'client.js');
+      const outsideClient = join(root, 'outside-installed-brand-client');
+      await mkdir(outsideClient);
+      await writeFile(join(outsideClient, 'marker.txt'), 'external installed client\n');
+      await rm(clientPath);
+      await symlink(outsideClient, clientPath, directoryLinkType());
+
+      const broken = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      expect(broken.valid).toBe(false);
+      expect(broken.errors.join(' ')).toMatch(/dsh-rpgmaker-brand client entrypoint .*escapes its canonical package directory/i);
+
+      const repaired = await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      expect(repaired.valid).toBe(true);
+      expect(repaired.materialized).toBe(true);
+      expect((await stat(clientPath)).isFile()).toBe(true);
+      expect(await readFile(join(outsideClient, 'marker.txt'), 'utf8')).toBe('external installed client\n');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('rejects managed package entrypoint and patch targets that escape the package root', async () => {
     const root = await temp('phase11-managed-profile-package-escape');
     try {
@@ -426,6 +454,52 @@ describe('managed Web profile materialization', () => {
       await expect(ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, calls)))).rejects.toThrow(/managed roots are unsafe.*workspace MCP data root.*escapes/i);
       expect(calls).toEqual([]);
       expect(await readFile(marker, 'utf8')).toBe('external data must remain untouched\n');
+      expect(await rollbackSnapshotNames(roots.dshHome)).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed before runner or destructive mutation when the app-owned brand source escapes', async () => {
+    const root = await temp('phase11-managed-profile-brand-source-escape');
+    try {
+      const roots = await appRoots(root);
+      const brandDir = join(roots.programRoot, DSH_BRAND_BUNDLE_RELATIVE);
+      const outsideBrand = join(root, 'external-brand-source');
+      const marker = join(outsideBrand, 'marker.txt');
+      await rename(brandDir, outsideBrand);
+      await writeFile(marker, 'external brand source must remain untouched\n');
+      await symlink(outsideBrand, brandDir, directoryLinkType());
+      await mkdir(roots.dshHome, { recursive: true });
+      const calls: string[] = [];
+
+      await expect(ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, calls)))).rejects.toThrow(/app-owned sources are unsafe.*brand bundle path .*not inside/i);
+      expect(calls).toEqual([]);
+      expect(await readFile(marker, 'utf8')).toBe('external brand source must remain untouched\n');
+      await expect(stat(workspaceMcpBundleDirFor({ dshHome: roots.dshHome }))).rejects.toThrow();
+      expect(await rollbackSnapshotNames(roots.dshHome)).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed before runner or destructive mutation when the app-owned workspace source escapes', async () => {
+    const root = await temp('phase11-managed-profile-workspace-source-escape');
+    try {
+      const roots = await appRoots(root);
+      const workspaceSource = join(roots.programRoot, 'bundle', 'dsh-workspace-mcp');
+      const outsideWorkspace = join(root, 'external-workspace-source');
+      const marker = join(outsideWorkspace, 'marker.txt');
+      await rename(workspaceSource, outsideWorkspace);
+      await writeFile(marker, 'external workspace source must remain untouched\n');
+      await symlink(outsideWorkspace, workspaceSource, directoryLinkType());
+      await mkdir(roots.dshHome, { recursive: true });
+      const calls: string[] = [];
+
+      await expect(ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, calls)))).rejects.toThrow(/app-owned sources are unsafe.*workspace MCP source bundle .*outside/i);
+      expect(calls).toEqual([]);
+      expect(await readFile(marker, 'utf8')).toBe('external workspace source must remain untouched\n');
+      await expect(stat(workspaceMcpBundleDirFor({ dshHome: roots.dshHome }))).rejects.toThrow();
       expect(await rollbackSnapshotNames(roots.dshHome)).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });

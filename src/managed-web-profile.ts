@@ -6,10 +6,9 @@ import { resolveHarnessPaths, type HarnessPaths, type PathOptions } from './conf
 import { withHarnessOperationLock } from './lock';
 import { commandFailure, redactSensitive, runCommand, type CommandRunner } from './process';
 import {
-  defaultWorkspaceMcpBundleDir,
   verifyWorkspaceMcpBundle,
+  verifyWorkspaceMcpSource,
   workspaceMcpBundleDirFor,
-  WORKSPACE_MCP_BUNDLE_RELATIVE,
   WORKSPACE_MCP_PACKAGE,
   WORKSPACE_MCP_VERSION,
   canonicalExistingPath,
@@ -298,6 +297,17 @@ async function verifyBundlePackage(
     } else if (!(await isRegularFile(patchPath))) {
       packageErrors.push(`installed profile package ${desired.packageName} dsh.bundle.patch ${patch} is not a regular file`);
     }
+    if (desired.source === 'brand') {
+      const clientPath = join(installedReal, 'lib', 'client.js');
+      const clientTarget = await canonicalExistingPath(clientPath);
+      if (!clientTarget) {
+        packageErrors.push(`installed profile package ${desired.packageName} client entrypoint lib/client.js was not found`);
+      } else if (!pathIsWithin(installedReal, clientTarget, platform)) {
+        packageErrors.push(`installed profile package ${desired.packageName} client entrypoint lib/client.js escapes its canonical package directory`);
+      } else if (!(await isRegularFile(clientPath))) {
+        packageErrors.push(`installed profile package ${desired.packageName} client entrypoint lib/client.js is not a regular file`);
+      }
+    }
   }
 
   if (!desired.source && dependency !== expectedDependencyValue) {
@@ -343,15 +353,38 @@ async function verifyBundlePackage(
   };
 }
 
-async function verifyBrandSource(bundleDir: string, platform: string, programRoot: string, errors: string[]): Promise<void> {
+interface ManagedBrandSourceVerification {
+  valid: boolean;
+  errors: string[];
+}
+
+async function verifyBrandSource(bundleDir: string, platform: string, programRoot: string): Promise<ManagedBrandSourceVerification> {
+  const errors: string[] = [];
   if (!(await exists(bundleDir))) {
     errors.push(`app-owned RPG Maker Agent brand bundle was not found at ${bundleDir}`);
-    return;
+    return { valid: false, errors };
   }
   const sourceReal = await canonicalPath(bundleDir);
   const programReal = await canonicalPath(programRoot);
-  if (!pathIsWithin(programReal, sourceReal, platform)) errors.push(`brand bundle path ${bundleDir} is not inside the app-owned program root ${programRoot}`);
-  const manifest = await readJson(join(bundleDir, 'package.json'));
+  if (!pathIsWithin(programReal, sourceReal, platform)) {
+    errors.push(`brand bundle path ${bundleDir} is not inside the app-owned program root ${programRoot}`);
+    return { valid: false, errors };
+  }
+  const manifestPath = join(bundleDir, 'package.json');
+  const manifestTarget = await canonicalExistingPath(manifestPath);
+  if (!manifestTarget) {
+    errors.push('brand bundle manifest package.json was not found');
+    return { valid: false, errors };
+  }
+  if (!pathIsWithin(sourceReal, manifestTarget, platform)) {
+    errors.push('brand bundle manifest package.json escapes its canonical bundle directory');
+    return { valid: false, errors };
+  }
+  if (!(await isRegularFile(manifestPath))) {
+    errors.push('brand bundle manifest package.json is not a regular file');
+    return { valid: false, errors };
+  }
+  const manifest = await readJson(manifestPath);
   if (manifest?.name !== DSH_BRAND_PACKAGE || manifest?.version !== DSH_BRAND_VERSION) errors.push(`brand bundle identity is ${String(manifest?.name ?? 'missing')}@${String(manifest?.version ?? 'missing')}, expected ${DSH_BRAND_PACKAGE}@${DSH_BRAND_VERSION}`);
   const main = typeof manifest?.main === 'string' ? manifest.main : undefined;
   const mainPath = main ? resolve(bundleDir, main) : undefined;
@@ -382,6 +415,39 @@ async function verifyBrandSource(bundleDir: string, platform: string, programRoo
   } else if (!(await isRegularFile(patchPath))) {
     errors.push('brand bundle dsh.bundle patch is not a regular file');
   }
+  return { valid: errors.length === 0, errors };
+}
+
+interface ManagedWebSourceVerification {
+  valid: boolean;
+  errors: string[];
+  workspaceSource: string;
+}
+
+/**
+ * Fixed product preflight for the two app-owned bundles consumed by profile
+ * repair. It deliberately does not inspect mutable profile or target state.
+ */
+async function verifyManagedWebSources(paths: HarnessPaths, platform: string): Promise<ManagedWebSourceVerification> {
+  const brandBundleDir = resolve(join(paths.programRoot, DSH_BRAND_BUNDLE_RELATIVE));
+  const brand = await verifyBrandSource(brandBundleDir, platform, paths.programRoot);
+  const workspace = await verifyWorkspaceMcpSource({
+    platform,
+    programRoot: paths.programRoot,
+    mutableRoot: paths.mutableRoot,
+    dshHome: paths.dshHome,
+    runtimeDir: paths.runtimeDir
+  });
+  const errors = [...brand.errors, ...workspace.errors];
+  return { valid: errors.length === 0, errors, workspaceSource: workspace.sourceDir };
+}
+
+async function requireManagedWebSources(paths: HarnessPaths, platform: string): Promise<ManagedWebSourceVerification> {
+  const sources = await verifyManagedWebSources(paths, platform);
+  if (!sources.valid) {
+    throw new Error(`Managed Web profile repair refused because app-owned sources are unsafe: ${sources.errors.join('; ')}`);
+  }
+  return sources;
 }
 
 /**
@@ -415,7 +481,7 @@ export async function verifyManagedWebProfile(options: ManagedWebProfileOptions 
     errors.push(`managed ${MANAGED_WEB_PROFILE} profile bundle registrations are not exact; expected ${MANAGED_WEB_PROFILE_BUNDLE_NAMES.join(', ')}`);
   }
 
-  await verifyBrandSource(brandBundleDir, platform, paths.programRoot, errors);
+  errors.push(...(await verifyBrandSource(brandBundleDir, platform, paths.programRoot)).errors);
   const workspaceMcpBundle = await verifyWorkspaceMcpBundle({
     ...options,
     profile: MANAGED_WEB_PROFILE,
@@ -471,7 +537,7 @@ async function snapshotManagedWebProfile(
     }
     return { root, profileDir, profileBackup, profileExisted, bundleDir, bundleBackup, bundleExisted };
   } catch (error) {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
 }
@@ -566,20 +632,21 @@ async function ensureManagedWebProfileUnlocked(options: ManagedWebProfileOptions
   const ambientEnv = options.env ?? process.env;
   const env = pluginEnvironment({ ...ambientEnv, DSH_HOME: paths.dshHome });
   await requireManagedWebProfileStructure(paths, platform);
+  const initialSources = await requireManagedWebSources(paths, platform);
+  const brandBundleDir = resolve(join(paths.programRoot, DSH_BRAND_BUNDLE_RELATIVE));
+  const workspaceBundleDir = resolve(workspaceMcpBundleDirFor(paths));
+  const workspaceSource = initialSources.workspaceSource;
   await mkdir(paths.dshHome, { recursive: true });
   const current = await verifyManagedWebProfile({ ...options, env });
   if (current.valid) return { ...current, materialized: false };
 
-  const brandBundleDir = resolve(join(paths.programRoot, DSH_BRAND_BUNDLE_RELATIVE));
-  const workspaceBundleDir = resolve(workspaceMcpBundleDirFor(paths));
-  const installedWorkspaceSource = resolve(join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE));
-  const workspaceSource = await exists(installedWorkspaceSource) ? installedWorkspaceSource : resolve(defaultWorkspaceMcpBundleDir());
-  if (!(await exists(workspaceSource))) throw new Error(`Managed Web profile materialization cannot find the app-owned workspace MCP bundle at ${workspaceSource}`);
-  if (!(await exists(brandBundleDir))) throw new Error(`Managed Web profile materialization cannot find the app-owned RPG Maker Agent brand bundle at ${brandBundleDir}`);
-
   // The app-owned pnpm runtime is resolved exactly once for this attempt and
   // its environment is reused for all four DSH plugin additions.
   await requireManagedWebProfileStructure(paths, platform);
+  const sourcesBeforePnpm = await requireManagedWebSources(paths, platform);
+  if (!samePath(sourcesBeforePnpm.workspaceSource, workspaceSource, platform)) {
+    throw new Error('Managed Web profile repair refused because the app-owned workspace MCP source changed during preflight');
+  }
   const pnpm = await preparePnpmRuntime({ ...options, env, useAppOwnedPnpm: true }, paths);
   const dsh = options.dshExecutable ?? env.DSH_EXECUTABLE ?? await findDshExecutable(paths.runtimeDir, platform);
   if (!dsh) throw new Error('Pinned DSH executable was not found; cannot materialize the managed Web profile.');
@@ -587,6 +654,10 @@ async function ensureManagedWebProfileUnlocked(options: ManagedWebProfileOptions
   const profileDir = profileDirFor(paths, MANAGED_WEB_PROFILE);
   const beforeMutation = async (): Promise<void> => {
     await requireManagedWebProfileStructure(paths, platform);
+    const sources = await requireManagedWebSources(paths, platform);
+    if (!samePath(sources.workspaceSource, workspaceSource, platform)) {
+      throw new Error('Managed Web profile repair refused because the app-owned workspace MCP source changed during preflight');
+    }
   };
   await beforeMutation();
   const snapshot = await snapshotManagedWebProfile(paths, profileDir, workspaceBundleDir, beforeMutation);
