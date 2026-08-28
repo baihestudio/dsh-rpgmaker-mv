@@ -86,9 +86,8 @@ an agent proposal.
 
 When a design note names an accessible code path, inspect only the relevant files and
 use the result to clarify feasibility, terminology, or constraints. Do not diagnose
-bugs, prescribe source-level fixes, or write implementation skeletons: hand those
-requests to the RPG Maker agent with the confirmed design constraints and acceptance
-criteria. User-attached images
+bugs, prescribe source-level fixes, or write implementation skeletons. Record the
+confirmed design constraints and acceptance criteria for implementation work. User-attached images
 may also be used as design reference, including visible text and visual details; do not
 claim they prove behavior beyond the supplied image or turn them into generated art. Do
 not silently implement game code from a planning request. Use shared Web tools when

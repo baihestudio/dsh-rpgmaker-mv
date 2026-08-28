@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test';
-import { createHash } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { basename, dirname, join, resolve, win32 } from 'node:path';
@@ -130,10 +129,6 @@ function prerequisiteRunner() {
   };
 }
 
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
 async function writePinnedPackageRuntime(
   runtime: string,
   packageName: string,
@@ -256,7 +251,6 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
     }
     const name = basename(command).toLowerCase();
     if (name === 'magick.exe') return { exitCode: 0, stdout: 'ImageMagick 7.1.2-29 Q16 x64\n', stderr: '' };
-    if (name === 'oxipng.exe') return { exitCode: 0, stdout: 'oxipng 10.2.0\n', stderr: '' };
     if (name === 'python.exe') return { exitCode: 0, stdout: 'Python 3.13.15\n', stderr: '' };
     if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
     if (args[0] === 'add') throw new Error(`unexpected dependency fixture args: ${args.join(' ')}`);
@@ -1644,10 +1638,6 @@ describe('Windows release gate foundations', () => {
       expect(await Bun.file(join(extracted, 'Launch.cmd')).exists()).toBe(true);
 
       const { bin, env: prerequisiteEnv } = await prerequisiteBin(root);
-      const imageMagick = join(bin, 'magick.exe');
-      const oxipng = join(bin, 'oxipng.exe');
-      await writeFile(imageMagick, 'fixture ImageMagick');
-      await writeFile(oxipng, 'fixture oxipng');
       const mutable = join(root, 'Mutable state 选择 with spaces');
       const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
       const state = join(mutable, 'state');
@@ -1657,11 +1647,7 @@ describe('Windows release gate foundations', () => {
         ...prerequisiteEnv,
         BUN_EXECUTABLE: bun,
         NPM_EXECUTABLE: npm,
-        NODE_EXECUTABLE: join(bin, 'node.exe'),
-        DSH_IMAGE_MAGICK: imageMagick,
-        DSH_IMAGE_MAGICK_SHA256: sha256('fixture ImageMagick'),
-        DSH_OXIPNG: oxipng,
-        DSH_OXIPNG_SHA256: sha256('fixture oxipng')
+        NODE_EXECUTABLE: join(bin, 'node.exe')
       };
       const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
       const runner = defaultInstallRunner({ dshHome: state }, calls);

@@ -58,7 +58,7 @@ the effective composition from the neutral landing directory. The bundle's
 profile patch inserts only the Host service entry point; each shipped preset
 composition mounts the `/agent` entry point in Agent scope. The generated
 RPG Maker Host patch selects the Agent preset but does not insert a timeout
-policy: pinned DSH rc.8's `web` profile owns the official Host row
+policy: pinned DSH rc.2's `web` profile owns the official Host row
 `id: timeout-policy` / `@deepseek-ai/dsh-tool-call-timeout-policy`. Launch
 preparation and Doctor validate the effective `web --dump-config` composition
 and require exactly one official row across both custom presets; the

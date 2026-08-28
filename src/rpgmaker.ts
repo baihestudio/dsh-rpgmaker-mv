@@ -29,7 +29,7 @@ export const DSH_TOOL_TIMEOUT_POLICY_PACKAGE = '@deepseek-ai/dsh-tool-call-timeo
 export const DSH_TOOL_TIMEOUT_POLICY_ROW_ID = 'timeout-policy';
 export const FORGEJO_MCP_CLIENT_ROW_ID = 'forgejo-mcp-client';
 export const CUSTOM_AGENT_PRESET_IDS = [RPGMAKER_PRESET_ID, GAME_DESIGN_PRESET_ID] as const;
-const REMOVED_PRESET_IDS = ['playtest-debug', 'asset-workshop'] as const;
+const REMOVED_PRESET_IDS = ['asset-workshop'] as const;
 const PRESET_OWNERSHIP_FILE = '.dsh-rpgmaker-owned.json';
 const MCP_LOCK_INTEGRITY = 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==';
 const MCP_LOCK_BIN = 'dist/index.js';
@@ -121,7 +121,7 @@ interface OwnedRpgMakerProfileSnapshot {
   entries: OwnedRpgMakerProfileSnapshotEntry[];
 }
 
-/** Snapshot only the five app-owned Agent presets and shared Host patch. */
+/** Snapshot the shipped presets, retired app-owned overlays, and shared Host patch. */
 async function snapshotOwnedRpgMakerProfile(dshHome: string): Promise<OwnedRpgMakerProfileSnapshot> {
   const root = await mkdtemp(join(dshHome, '.rpgmaker-profile-rollback-'));
   const presetRoot = join(dshHome, '.agent-presets');
@@ -619,6 +619,7 @@ export async function deployRpgMakerPresets(options: RpgMakerPresetDeploymentOpt
   return withOwnedRpgMakerProfileRepair(paths.dshHome, async () => {
     const installed = await installPreset(sourceRoot, paths.dshHome, codePresetPath, RPGMAKER_PRESET_ID);
     await installPreset(join(shippedPresetRoot, GAME_DESIGN_PRESET_ID), paths.dshHome, codePresetPath, GAME_DESIGN_PRESET_ID);
+    await removeOwnedPreset(join(paths.dshHome, '.agent-presets'), 'playtest-debug');
     await Promise.all(REMOVED_PRESET_IDS.map((presetId) => removeOwnedPreset(join(paths.dshHome, '.agent-presets'), presetId)));
 
     const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
