@@ -196,7 +196,7 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         consent: dependencies.prerequisiteConsent ?? parsed.flags.has('yes'),
         commandRunner: dependencies.commandRunner
       });
-      io.stdout.write(`Installed DSH for RPG Maker MV under ${result.paths.programRoot}\n`);
+      io.stdout.write(`Installed RPG Maker Agent under ${result.paths.programRoot}\n`);
       io.stdout.write(`Mutable state: ${result.paths.mutableRoot}; DSH_HOME: ${result.paths.dshHome}\n`);
       io.stdout.write(`Start Menu shortcut: ${result.shortcutPath}\n`);
       return 0;

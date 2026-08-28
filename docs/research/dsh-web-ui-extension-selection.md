@@ -60,8 +60,8 @@ does not advertise a sidebar, welcome-prompt, or product-branding feature.
 ### Branding — recommended next slice
 
 Add one release-owned client bundle that registers only the three official
-brand slots above. Keep the SVG mark and the `DSH for RPG Maker MV`/Chinese
-display name inside that package. It has no host route, filesystem, tool,
+brand slots above. Keep the mark and the `RPG Maker Agent` display name inside
+that package. It has no host route, filesystem, tool,
 credential, or build-script permission; normal app-managed-profile rebuild
 continues to own its exact version and removal.
 

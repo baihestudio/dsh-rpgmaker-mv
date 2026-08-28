@@ -72,10 +72,10 @@ try {
   }
   $logo = Join-Path $env:LOCALAPPDATA 'BaiheStudio\DSH-RPGMaker-MV\state\profiles\web\node_modules\@baihestudio\dsh-rpgmaker-brand\assets\maker-ape-logo.png'
   if (-not (Test-Path -LiteralPath $logo -PathType Leaf)) {
-    throw "Installed 制作猿 logo is missing: $logo"
+    throw "Installed RPG Maker Agent logo is missing: $logo"
   }
   $completed = $true
-  Write-Output "Installed 制作猿 branding: $brand"
+  Write-Output "Installed RPG Maker Agent branding: $brand"
   Write-Output "Verified logo: $logo"
 } finally {
   if ($completed -and (Test-Path -LiteralPath $extractRoot)) {

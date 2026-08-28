@@ -1,11 +1,11 @@
-# DSH for RPG Maker MV 用户指南
+# RPG Maker Agent 用户指南
 
 安装、更新和卸载请看 [Windows 安装与维护指南](windows-release.md)。本指南说明安装
 完成后怎样使用唯一的默认助手：`🐒 制作猿`。
 
 ## 开始使用
 
-从开始菜单启动 **DSH for RPG Maker MV**，在 DSH Web 中选择你的 RPG Maker MV 项目
+从开始菜单启动 **RPG Maker Agent**，在 DSH Web 中选择你的 RPG Maker MV 项目
 文件夹后直接描述目标。制作猿在同一会话中维护设计资料并修改项目；不需要先选择
 策划或程序员。
 

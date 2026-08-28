@@ -1,7 +1,7 @@
 {
   "name": "@baihestudio/dsh-rpgmaker-brand",
   "version": "0.1.0",
-  "description": "Small, app-owned DSH Web branding for 制作猿.",
+  "description": "Small, app-owned DSH Web branding for RPG Maker Agent.",
   "license": "MIT",
   "private": true,
   "type": "module",
