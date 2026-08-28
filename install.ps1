@@ -20,6 +20,18 @@ function Refresh-Path {
   $env:Path = ($parts -join ';')
 }
 
+function Resolve-RealPowerShell {
+  $standard = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+  if (Test-Path -LiteralPath $standard -PathType Leaf) { return $standard }
+  $packages = Get-AppxPackage -Name 'Microsoft.PowerShell*' -ErrorAction SilentlyContinue |
+    Sort-Object Version -Descending
+  foreach ($package in $packages) {
+    $candidate = Join-Path $package.InstallLocation 'pwsh.exe'
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+  }
+  return $null
+}
+
 # This is one consent for every possible missing or identity/version-invalid
 # prerequisite. The CLI performs the authoritative checks and all post-Bun
 # prerequisite work; command presence is never treated as consent.
@@ -37,6 +49,8 @@ if (-not $consent) {
 }
 
 Refresh-Path
+$realPowerShell = Resolve-RealPowerShell
+if ($realPowerShell) { $env:PWSH_EXECUTABLE = $realPowerShell }
 $bun = Get-Command bun.exe -ErrorAction SilentlyContinue
 if (-not $bun) {
   if (-not $consent) { throw 'Bun was not found and prerequisite installation was not consented to. Re-run Install.cmd and allow WinGet.' }
