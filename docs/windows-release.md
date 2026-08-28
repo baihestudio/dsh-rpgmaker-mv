@@ -31,6 +31,16 @@ nuc-powershell dev/update-local-windows.ps1 \
 
 The helper is development-only. `-StopRunningDsh` explicitly stops DSH processes that hold the installed program tree before the atomic update; without it, the helper refuses to interrupt an active session. It extracts the ZIP into a unique local Windows Temp directory, invokes its normal `install.ps1`, and removes the extracted copy after a successful update. Pass `-KeepExtractedRelease` only when retaining diagnostics is useful.
 
+From this Mac checkout, the equivalent NUC workflow is:
+
+```bash
+just install-from-mac-to-nuc
+```
+
+It builds a fresh temporary Release ZIP, transfers it through `nuc-kep`, stops
+the installed DSH process tree, and runs the same installer on the NUC. Set
+`NUC_SSH_HOST` only when using a different SSH route.
+
 ## Installed locations
 
 - Program files: `%LOCALAPPDATA%\Programs\BaiheStudio\DSH-RPGMaker-MV`
