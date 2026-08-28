@@ -12,9 +12,9 @@ import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRA
 import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgejo-mcp';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, RELEASE_ENTRIES, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
-import { FREE_TEX_LOCK_INTEGRITY, FREE_TEX_PACKER_VERSION } from '../src/image-toolchain';
 import { PNPM_VERSION } from '../src/profile';
-import { DSH_WEB_PACKAGE, DSH_WEB_VERSION } from '../src/dsh-web';
+import { DSH_WEB_PACKAGE, DSH_WEB_VERSION, LEGACY_DSH_WEB_PACKAGE } from '../src/dsh-web';
+import { DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION } from '../src/dsh-imagegen';
 import { findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
@@ -102,7 +102,7 @@ function runInteractive(command: string, args: string[], env: Record<string, str
 async function prerequisiteBin(root: string): Promise<{ bin: string; env: Record<string, string> }> {
   const bin = join(root, 'fake prerequisite bin');
   await mkdir(bin, { recursive: true });
-  for (const name of ['node.exe', 'npm.cmd', 'python.exe', 'bun.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', '7z.exe']) await writeFile(join(bin, name), 'fixture');
+  for (const name of ['node.exe', 'npm.cmd', 'python.exe', 'bun.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', 'magick.exe']) await writeFile(join(bin, name), 'fixture');
   return { bin, env: { PATH: bin, LOCALAPPDATA: join(root, 'Local AppData'), APPDATA: join(root, 'Roaming AppData') } };
 }
 
@@ -124,7 +124,7 @@ function prerequisiteRunner() {
     if (name === 'git.exe') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
     if (name === 'coreutils-manager.exe' && args[0] === '--help') return { exitCode: 0, stdout: 'Manage coreutils utilities and PowerShell profiles\n enable\n disable\n status\n', stderr: '' };
     if (name === 'coreutils-manager.exe' && args[0] === 'status') return { exitCode: 0, stdout: 'find enabled\ngrep enabled\n', stderr: '' };
-    if (name === '7z.exe' && args[0] === 'i') return { exitCode: 0, stdout: '7-Zip 24.09 (x64) : Copyright (c) 1999-2025 Igor Pavlov\n', stderr: '' };
+    if (name === 'magick.exe') return { exitCode: 0, stdout: 'ImageMagick 7.1.2-29 Q16 x64\n', stderr: '' };
     if (name === 'forgejo-mcp.exe' && args[0] === '--version') return { exitCode: 0, stdout: 'forgejo-mcp 2.34.1\n', stderr: '' };
     return { exitCode: 0, stdout: `${name} 0.1.0`, stderr: '' };
   };
@@ -231,10 +231,6 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
       await writePinnedPackageRuntime(cwd!, RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==', { version: RPGMAKER_MCP_VERSION, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } });
       return { exitCode: 0, stdout: '', stderr: '' };
     }
-    if (args[0] === 'add' && packageSpec === `free-tex-packer-core@${FREE_TEX_PACKER_VERSION}`) {
-      await writePinnedPackageRuntime(cwd!, 'free-tex-packer-core', FREE_TEX_PACKER_VERSION, FREE_TEX_LOCK_INTEGRITY, { version: FREE_TEX_PACKER_VERSION });
-      return { exitCode: 0, stdout: '', stderr: '' };
-    }
     if (args[0] === 'add' && packageSpec === `${DSH_PACKAGE_NAME}@${DSH_VERSION}`) {
       await dshRuntime(cwd!);
       return { exitCode: 0, stdout: '', stderr: '' };
@@ -242,8 +238,13 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
     if (args[0] === 'pm') return { exitCode: 0, stdout: '', stderr: '' };
     if (args[0] === 'plugin') {
       const packageSpec = args.at(-1);
+      if (args[3] === 'remove' && packageSpec === LEGACY_DSH_WEB_PACKAGE) return { exitCode: 0, stdout: '', stderr: '' };
       if (packageSpec === `${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`) {
         await writeProfilePlugin(context.dshHome, DSH_WEB_PACKAGE, DSH_WEB_VERSION, '');
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      if (packageSpec === `${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`) {
+        await writeProfilePlugin(context.dshHome, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, '');
         return { exitCode: 0, stdout: '', stderr: '' };
       }
       const local = args.find((value) => value.startsWith('file:'))?.slice('file:'.length);
@@ -606,32 +607,6 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('accepts legacy and modern 7-Zip banners and rejects an unrelated 7z shim', async () => {
-    const root = await temp('phase7-sevenzip-banners');
-    try {
-      const { env } = await prerequisiteBin(root);
-      const base = prerequisiteRunner();
-      const legacy = await verifyWindowsPrerequisites({
-        platform: 'win32', env, commandRunner: async (command, args, options) => {
-          if (basename(command).toLowerCase() === '7z.exe' && args[0] === 'i') return { exitCode: 0, stdout: '7-Zip [64] 19.00 (x64) : Copyright (c) 1999-2019 Igor Pavlov\n', stderr: '' };
-          return base(command, args, options);
-        }
-      });
-      const legacySevenZip = legacy.checks.find((item) => item.id === '7zip');
-      expect(legacySevenZip?.ok).toBe(true);
-      expect(legacySevenZip?.version).toBe('19.00');
-      const shim = await verifyWindowsPrerequisites({
-        platform: 'win32', env, commandRunner: async (command, args, options) => {
-          if (basename(command).toLowerCase() === '7z.exe' && args[0] === 'i') return { exitCode: 0, stdout: 'acme archiver 1.0\n', stderr: '' };
-          return base(command, args, options);
-        }
-      });
-      expect(shim.checks.find((item) => item.id === '7zip')?.ok).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   test('resolves installed 7-Zip from the 7-Zip registry key before PATH (custom WinGet location)', async () => {
     const root = await temp('phase7-sevenzip-registry');
     try {
@@ -687,31 +662,6 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('rejects an unrelated 7z shim resolved through the registry key', async () => {
-    const root = await temp('phase7-sevenzip-registry-shim');
-    try {
-      const custom = join(root, 'shim', '7z.exe');
-      await mkdir(dirname(custom), { recursive: true });
-      await writeFile(custom, 'fixture');
-      const { env } = await prerequisiteBin(root);
-      const base = prerequisiteRunner();
-      const report = await verifyWindowsPrerequisites({
-        platform: 'win32', env, commandRunner: async (command, args, options) => {
-          if (basename(command).toLowerCase() === 'reg.exe' && args[1]?.includes('7-Zip')) {
-            return { exitCode: 0, stdout: `\r\n    Path    REG_SZ    ${dirname(custom)}\r\n`, stderr: '' };
-          }
-          if (basename(command).toLowerCase() === '7z.exe' && args[0] === 'i') {
-            return { exitCode: 0, stdout: 'acme archiver 1.0\n', stderr: '' };
-          }
-          return base(command, args, options);
-        }
-      });
-      expect(report.checks.find((item) => item.id === '7zip')?.ok).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   test('resolves the branded program/mutable roots and state layout without using a live profile', async () => {
     const root = await temp('phase7-paths');
     try {
@@ -734,7 +684,7 @@ describe('Windows release gate foundations', () => {
       const { bin, env } = await prerequisiteBin(root);
       const report = await verifyWindowsPrerequisites({ platform: 'win32', env, commandRunner: prerequisiteRunner() });
       expect(report.ok).toBe(true);
-      expect(report.checks.map((check) => check.id)).toEqual(['node', 'python', 'bun', 'powershell', 'git', 'coreutils', '7zip']);
+      expect(report.checks.map((check) => check.id)).toEqual(['node', 'python', 'bun', 'powershell', 'git', 'coreutils', 'imagemagick']);
       const missing = await verifyWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, commandRunner: prerequisiteRunner() });
       expect(missing.ok).toBe(false);
       await expect(installWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, consent: false, commandRunner: prerequisiteRunner() })).rejects.toBeInstanceOf(PrerequisiteConsentError);
@@ -918,25 +868,13 @@ describe('Windows release gate foundations', () => {
       const report = await runDoctor({
         platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, commandRunner: prerequisiteRunner(),
         verifyAgentDependencies: async () => ({
-          mcp: { id: 'rpgmaker-mcp', label: 'RPG Maker MV MCP runtime', ok: true, detail: 'fixture MCP verified' },
-          image: { id: 'image-toolchain', label: 'Image asset toolchain', ok: true, detail: 'fixture image tools verified' }
-        }),
-        verifyImageWorkshopPlugin: async () => ({
-          valid: true,
-          errors: [],
-          packageDir: join(root, 'program', 'bundle', 'dsh-image-workshop'),
-          packageVersion: '0.1.0',
-          profileDependency: 'link:../../../../program/bundle/dsh-image-workshop',
-          bundleOccurrences: 0,
-          entrypoint: join(root, 'program', 'bundle', 'dsh-image-workshop', 'lib', 'index.js'),
-          ownedPath: true,
-          sha256: 'edd700c03856033e08d5886830d6bfee3f7f3e603f94cc10f011849ef0dde05a'
+          mcp: { id: 'rpgmaker-mcp', label: 'RPG Maker MV MCP runtime', ok: true, detail: 'fixture MCP verified' }
         })
       });
       expect(report.ok).toBe(true);
       expect(report.checks.map((check) => check.id)).toContain('node');
       expect(report.checks.map((check) => check.id)).toContain('python');
-      expect(report.checks.map((check) => check.id)).toContain('image-tool-plugin');
+      expect(report.checks.map((check) => check.id)).toContain('imagemagick');
       expect(report.checks.map((check) => check.id)).toContain('forgejo-mcp');
       expect(report.executablePaths.python).toContain('python.exe');
       expect(report.executablePaths.forgejoMcp).toContain(join('tools', 'forgejo-mcp', 'forgejo-mcp.exe'));
@@ -1420,12 +1358,23 @@ describe('Windows release gate foundations', () => {
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
       expect(calls.some((call) => call.args.includes(`${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`))).toBe(true);
       expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
+      expect(calls.flatMap((call) => call.args)).not.toContain('@tta-lab/dsh-web');
+      expect(calls.some((call) => call.args.includes(`${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'pnpm', 'node_modules', 'pnpm', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'node_modules', MCPORTER_PACKAGE, 'dist', 'index.js')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'node_modules', ...RPGMAKER_MCP_PACKAGE.split('/'), 'dist', 'index.js')).exists()).toBe(true);
 
       calls.length = 0;
+      const webProfileManifestPath = join(state, 'profiles', 'web', 'package.json');
+      const webProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      webProfileManifest.dependencies ??= {};
+      webProfileManifest.dependencies[LEGACY_DSH_WEB_PACKAGE] = '3.1.0';
+      await writeFile(webProfileManifestPath, `${JSON.stringify(webProfileManifest, null, 2)}\n`);
       await install();
+      const legacyRemoval = calls.findIndex((call) => call.args.join(' ') === `plugin --profile web remove ${LEGACY_DSH_WEB_PACKAGE}`);
+      const guionAddition = calls.findIndex((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`));
+      expect(legacyRemoval).toBeGreaterThanOrEqual(0);
+      expect(guionAddition).toBeGreaterThan(legacyRemoval);
       expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'package.json')).exists()).toBe(true);
@@ -1521,9 +1470,8 @@ describe('Windows release gate foundations', () => {
         const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
         const mutable = join(root, 'mutable');
         const state = join(mutable, 'state');
-        await mkdir(join(program, 'tools', 'image-workshop', 'native-tools'), { recursive: true });
+        await mkdir(program, { recursive: true });
         await writeFile(join(program, 'old-tree.txt'), `prior ${failure}\n`);
-        await writeFile(join(program, 'tools', 'image-workshop', 'native-tools', 'preserved-tool.txt'), 'verified dependency fixture\n');
         const baseRunner = prerequisiteRunner();
         const commandRunner = failure === 'bootstrap'
           ? async (command: string, args: string[], options: { cwd?: string }) => args[0] === 'add'
@@ -1549,7 +1497,6 @@ describe('Windows release gate foundations', () => {
         const failed = entries.find((entry) => entry.startsWith(`${basename(program)}.failed-`));
         expect(failed).toBeDefined();
         expect(await Bun.file(join(dirname(program), failed!, 'Install.cmd')).exists()).toBe(true);
-        expect(await readFile(join(dirname(program), failed!, 'tools', 'image-workshop', 'native-tools', 'preserved-tool.txt'), 'utf8')).toBe('verified dependency fixture\n');
         expect(await Bun.file(join(program, 'install.json')).exists()).toBe(false);
       } finally {
         await rm(root, { recursive: true, force: true });

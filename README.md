@@ -3,7 +3,7 @@ DeepSeek for RPG Maker MV
 
 ## Windows Release ZIP (Phase 7)
 
-For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs the verified Python 3.13 WinGet runtime as a general Agent utility, installs the pinned DSH, RPG Maker MCP, and complete image toolchain, and creates the per-user Start Menu shortcut **DSH for RPG Maker MV**. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
+For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs Python 3.13 and ImageMagick 7 as Windows-wide Agent utilities, installs the pinned DSH and RPG Maker MCP, and creates the per-user Start Menu shortcut **DSH for RPG Maker MV**. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
 
 The full first-run, repair, port-conflict, workspace-selection, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata and preserves rollback/recovery state, mutable state, credentials, logs, and projects; `uninstall.ps1 -Purge` is explicit.
 
@@ -36,7 +36,7 @@ all disposable state/processes.
 
 ### Install and repair
 
-`bootstrap.ps1` builds a fresh staging tree with the pinned `@deepseek-ai/dsh@0.1.0-rc.8` (npm integrity `sha512-VQU5NlomrKLRgcXuOf+sxWFvqxPA8q9vMhrKPlPPXiOJEhGlGlAdiyxZvZxkCVI+v0zbhe21cY3/luLyxpSzzA==`), runs `bun pm trust --all`, verifies the exact package/lock facts and `koffi`, then swaps it into place. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched; older DSH releases are not accepted. If process termination or rollback cannot be confirmed, the lock reports a degraded state and preserves recoverable staging/rollback paths for manual recovery. Re-running against a valid runtime is a no-op; bootstrap, doctor, and launch serialize short runtime operations through the operation lock. A live DSH child also holds a session lease that prevents bootstrap or a second launch from swapping the runtime, while doctor remains available.
+`bootstrap.ps1` builds a fresh staging tree with the pinned `@deepseek-ai/dsh@0.1.1-rc.2` (npm integrity `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==`), runs `bun pm trust --all`, verifies the exact package/lock facts and `koffi`, then swaps it into place. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched; older DSH releases are not accepted. If process termination or rollback cannot be confirmed, the lock reports a degraded state and preserves recoverable staging/rollback paths for manual recovery. Re-running against a valid runtime is a no-op; bootstrap, doctor, and launch serialize short runtime operations through the operation lock. A live DSH child also holds a session lease that prevents bootstrap or a second launch from swapping the runtime, while doctor remains available.
 
 On Windows, program-owned DSH/MCP/tool runtimes default under `%LOCALAPPDATA%\\Programs\\BaiheStudio\\DSH-RPGMaker-MV`; mutable DSH state defaults under `%LOCALAPPDATA%\\BaiheStudio\\DSH-RPGMaker-MV\\state`. Set `DSH_HOME`, `DSH_RPGMAKER_PROGRAM_ROOT`, `DSH_RPGMAKER_DATA_ROOT`, or `DSH_RPGMAKER_RUNTIME` for a test-owned or alternate location. The doctor checks the actual executable paths and versions visible to the launcher, rather than trusting package-manager metadata.
 
@@ -57,7 +57,7 @@ prepares and verifies the pinned DSH, pnpm 10.15.1, MCPorter 0.12.3, Xerolo
 `dsh-workspace-mcp` profile link before starting official DSH. DSH starts in
 an app-owned neutral landing directory; choose and switch RPG Maker folders in
 DSH Web. `rpgmaker` is the default when `--preset` is omitted. New Agents across
-all five shipped presets default to `deepseek-v4-flash-vision-exp`; the normal
+all three shipped presets default to `deepseek-v4-flash-vision-exp`; the normal
 DSH Web model selection remains a user override, and existing sessions retain
 their logged model choice. User-attached PNG, JPEG, WebP, and GIF images may be
 read as image input; this does not add image generation, remote URL ingestion,
@@ -176,40 +176,22 @@ existing documents automatically.
 
 ## Phase 5: 🎨 P图仔
 
-Select the deterministic image preset when creating a DSH Web Agent:
+Select the image-asset preset when creating a DSH Web Agent:
 
 ```powershell
 ./launch.ps1 --preset asset-workshop
-# For an explicit image operation override, also pass --image-magick-sha256 <64-hex-digest>
 ```
 
-`Install.cmd` provisions the complete app-owned image toolchain for every agent: ImageMagick `7.1.2-29`, `free-tex-packer-core@0.3.9`, and `oxipng@10.2.0`. Downloads are staged, checked against the pinned archive and executable hashes, verified by version, and installed atomically. Re-running the installer or launcher verifies and reuses a valid installation instead of downloading it again. Every launched session receives the resolved image workflow environment, so selecting 🎨 P图仔 in the Web UI does not depend on which preset originally started DSH. Explicit overrides must still supply their expected SHA-256 and PATH aliases or `convert` are never accepted. `oxipng` is installed for readiness but is invoked only by an explicit `optimize-png` operation with a distinct output path.
-
-Python 3.13 remains a verified WinGet-managed general Agent utility and is checked independently by Doctor. Image work is local and deterministic: the Asset Workshop Agent exposes seven structured tools backed by the pinned ImageMagick, free-tex-packer-core, and oxipng toolchain. No remote vision, OCR, or AI image-generation provider is installed or configured.
-
-The skill owns pixel-safe resize, transparent trim/pad, fixed-grid sheet
-slice/assembly, and no-rotation atlas packing. Each operation rejects an
-existing output directory, canonicalizes approved parents, writes to a unique
-sibling staging directory, verifies there, and commits without clobbering a
-racing output. Atlas packing treats `--output` as one new output directory and
-atomically renames that directory once; it contains the PNG, JSON, and
-`manifest.json` artifacts. Manifests are emitted only after verification and
-report representative-pixel verification rather than claiming universal
-losslessness. Optional Photoshop,
-Aseprite, and TexturePacker installations are detected as hints only; they are
-never downloaded or required.
-
-The same operations are available at the helper seam for disposable checks:
-
-```powershell
-bun src/cli.ts image resize-pixel --input source.png --output generated.png --scale 3
-bun src/cli.ts image sheet-slice --input sheet.png --output-dir frames --cell-width 48 --cell-height 48
-bun src/cli.ts image atlas-pack --inputs-json '["a.png","b.png"]' --output atlas-output --max-size 2048
-```
+`Install.cmd` installs `ImageMagick.ImageMagick` with WinGet as the Windows-wide
+`magick` command; it is not an app-owned binary or DSH plugin. 🎨 P图仔 uses Kepos
+for visual candidates and bare `magick` for deterministic, workspace-local work
+such as crisp integer scaling, chroma-key cleanup, transparent padding, and
+sheet preparation. The Skill requires an explicit input/output path, source
+preservation, and metadata inspection before handoff.
 
 ## Phase 6: DSH runtime foundation
 
-All launcher, preset, Windows shell, MCP, image, and Playtest contracts are mounted and checked against the official `@deepseek-ai/dsh@0.1.0-rc.8` runtime. The staged runtime verifies Bun installation/trust, the exact top-level package version and npm integrity, the DSH executable, and `koffi` before an atomic swap. Post-swap verification restores the prior runtime on failure and preserves the unverified tree for inspection; no live runtime is mutated in place.
+All launcher, preset, Windows shell, MCP, and Playtest contracts are mounted and checked against the official `@deepseek-ai/dsh@0.1.1-rc.2` runtime. The staged runtime verifies Bun installation/trust, the exact top-level package version and npm integrity, the DSH executable, and `koffi` before an atomic swap. Post-swap verification restores the prior runtime on failure and preserves the unverified tree for inspection; no live runtime is mutated in place.
 
 The Xerolo MCP lock check is deliberately limited to its stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata and unrelated Bun lock internals are not pinned. The production editing contract is the mounted RPG Maker skill plus stable `rpgmaker_*` tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, schema rejection, and the `rpgmaker`, `game-design`, and asset-only preset boundaries.
 

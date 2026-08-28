@@ -11,8 +11,8 @@
    - PowerShell 7.4+ (`Microsoft.PowerShell`)
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
-   - 7-Zip (`7zip.7zip`; extracts the pinned ImageMagick `.7z` archive)
-4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, extracts the pinned portable ImageMagick with the verified 7-Zip, stages the pinned DSH `0.1.0-rc.8` runtime with Bun (npm integrity `sha512-VQU5NlomrKLRgcXuOf+sxWFvqxPA8q9vMhrKPlPPXiOJEhGlGlAdiyxZvZxkCVI+v0zbhe21cY3/luLyxpSzzA==`), installs the exact RPG Maker MCP, app-owned image tool plugin (scoped to 🎨 P图仔), and `@tta-lab/dsh-web@3.0.0-beta.1` through DSH's normal `web` profile plugin command, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, three presets, and neutral composition as needed.
+   - ImageMagick 7 (`ImageMagick.ImageMagick`; installed system-wide and exposed as `magick` on Windows PATH)
+4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the pinned DSH `0.1.1-rc.2` runtime with Bun (npm integrity `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==`), installs the exact RPG Maker MCP, `@guionai/dsh-web@0.3.1`, and `@lamplitisles/dsh-imagegen@0.2.1` through DSH's normal `web` profile plugin command, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. If an older `@tta-lab/dsh-web` dependency exists, installation removes it before adding Guion Web. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, three presets, and neutral composition as needed.
 
 The Web package belongs to DSH-managed profile state. If its plugin command fails after initializing that state, the installer reports failure and restores its program tree/shortcut; rerun `Install.cmd` to complete the profile setup. Profile-state rollback is intentionally not part of the installer.
 
@@ -179,7 +179,7 @@ From the installed program root:
 ./doctor.ps1
 ```
 
-Doctor reports the resolved Node/npm, Python, Bun, PowerShell, Git, Coreutils, DSH runtime, RPG Maker MCP runtime, complete image toolchain, credential metadata, and mutable-layout facts without reading credential values. Python is verified independently as a general Agent utility; no managed image runtime is prepared. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
+Doctor reports the resolved Node/npm, Python, Bun, PowerShell, Git, Coreutils, global ImageMagick, DSH runtime, RPG Maker MCP runtime, credential metadata, and mutable-layout facts without reading credential values. Python is verified independently as a general Agent utility. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
 
 ### Diagnose a selected workspace sandbox
 
@@ -227,9 +227,9 @@ Three selectable presets share the DSH Web profile; two use the shared MCP compo
 
 - `rpgmaker` — default database, event, dialogue, map metadata, plugin work, and Playtest debug through the playtest-debug Skill;
 - `game-design` — Code-derived Markdown design workspace, without the RPG Maker MCP Agent row;
-- `asset-workshop` — deterministic ImageMagick and atlas workflows.
+- `asset-workshop` — Kepos candidate generation and deterministic ImageMagick workflows.
 
-Only the `asset-workshop` preset exposes the seven deterministic local image tools. The other two presets do not mount image tools. No remote vision, OCR, or AI image-generation provider is installed or configured.
+Only the `asset-workshop` preset instructs the Agent to use the global `magick` CLI. Kepos provides image generation/editing through the DSH Web profile; no app-owned image transformation plugin is installed.
 
 The `rpgmaker` preset's Playtest debug skill can truthfully report process launch, logs, MCP stop, and post-stop status. A launched process is not a gameplay or visual assertion. Actual RPG Maker MV/NW.js Windows launch, installed MV discovery, and behavior remain Windows hardware-gate observations. macOS substitutes are reported as non-blocking and never presented as Windows evidence. Photoshop, Aseprite, and TexturePacker are optional user-owned enhancements.
 

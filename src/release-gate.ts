@@ -6,14 +6,13 @@ import { fileURLToPath } from 'node:url';
 import { bootstrapRuntime, findDshExecutable, type BootstrapResult } from './bootstrap';
 import { environmentPath, pathDelimiter, withEnvironmentPath, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
 import { resolveExecutable, resolveWindowsPwsh } from './executable';
-import { prepareImageToolchain } from './image-workshop';
 import { FORGEJO_MCP_EXECUTABLE_NAME, FORGEJO_MCP_LICENSE_NAME, FORGEJO_MCP_MANIFEST_NAME, FORGEJO_MCP_RUNTIME_RELATIVE, forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from './forgejo-mcp';
 import { withoutCredentials, runCommand, type CommandRunner } from './process';
 import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
 import { deployRpgMakerPresets, prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { prepareMcporterRuntime } from './mcport';
-import { prepareImageWorkshopPlugin, IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE, IMAGE_WORKSHOP_BUNDLE_RELATIVE } from './image-plugin';
 import { prepareDshWebPlugin } from './dsh-web';
+import { prepareDshImagegenPlugin } from './dsh-imagegen';
 import { preparePnpmRuntime } from './profile';
 import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
@@ -39,7 +38,6 @@ export const RELEASE_ENTRIES = [
   'presets',
   'scripts',
   FORGEJO_MCP_RUNTIME_RELATIVE,
-  IMAGE_WORKSHOP_BUNDLE_RELATIVE,
   WORKSPACE_MCP_BUNDLE_RELATIVE
 ] as const;
 
@@ -164,7 +162,7 @@ function installMetadata(paths: HarnessPaths, prerequisites: WindowsPrerequisite
 }
 
 async function carryForwardVerifiedDependencies(previousProgramRoot: string, nextProgramRoot: string): Promise<void> {
-  for (const relativePath of [join('tools', 'image-workshop', 'native-tools'), join('runtime', 'mcp'), join('runtime', 'pnpm')]) {
+  for (const relativePath of [join('runtime', 'mcp'), join('runtime', 'pnpm')]) {
     const source = join(previousProgramRoot, relativePath);
     const destination = join(nextProgramRoot, relativePath);
     if (await exists(source) && !(await exists(destination))) {
@@ -172,10 +170,6 @@ async function carryForwardVerifiedDependencies(previousProgramRoot: string, nex
       await cp(source, destination, { recursive: true, force: false, errorOnExist: true });
     }
   }
-  // The legacy manifest may point at a helper runtime outside the carried tool
-  // tree. Native binaries are re-verified from their pinned locations and a
-  // fresh manifest is written after the canonical helper is prepared.
-  await rm(join(nextProgramRoot, 'tools', 'image-workshop', 'toolchain.json'), { force: true });
 }
 
 async function restoreInstallTransaction(
@@ -290,19 +284,7 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         if (!mcporter.valid) throw new Error(`MCPorter runtime is not usable: ${mcporter.errors.join('; ')}`);
         const mcp = await prepareRpgMakerMcpRuntime({ platform, env: context.env, bunExecutable: context.bunExecutable, commandRunner: context.commandRunner }, join(context.paths.programRoot, 'runtime', 'mcp'));
         if (!mcp.valid) throw new Error(`RPG Maker MCP is not usable: ${mcp.errors.join('; ')}`);
-        await prepareImageToolchain({
-          platform,
-          env: context.env,
-          dshHome: context.paths.dshHome,
-          programRoot: context.paths.programRoot,
-          mutableRoot: context.paths.mutableRoot,
-          toolchainRoot: join(context.paths.programRoot, 'tools', 'image-workshop'),
-          bunExecutable: context.bunExecutable,
-          commandRunner: context.commandRunner,
-          installOxipng: true,
-          sevenZipExecutable: prerequisites.checks.find((check) => check.id === '7zip')?.executable
-        });
-        await prepareImageWorkshopPlugin({
+        await prepareDshWebPlugin({
           platform,
           env: context.env,
           dshHome: context.paths.dshHome,
@@ -312,7 +294,7 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           npmExecutable: context.npmExecutable,
           commandRunner: context.commandRunner
         });
-        await prepareDshWebPlugin({
+        await prepareDshImagegenPlugin({
           platform,
           env: context.env,
           dshHome: context.paths.dshHome,
@@ -474,7 +456,6 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_EXECUTABLE_NAME}`,
     `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_MANIFEST_NAME}`,
     `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_LICENSE_NAME}`,
-    `${IMAGE_WORKSHOP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/package.json`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/cordis.patch.yml`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/LICENSE`,

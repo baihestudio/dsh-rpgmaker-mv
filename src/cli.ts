@@ -2,16 +2,7 @@ import { bootstrapRuntime, BootstrapError } from './bootstrap';
 import { runDoctor, renderDoctorReport } from './doctor';
 import { launchProject, SINGLE_WRITER_NOTICE, LauncherError } from './launcher';
 import { launchRpgmakerProject } from './rpgmaker';
-import {
-  createImageWorkshop,
-  prepareImageToolchain,
-  type ImageArchiveDownloader,
-  type ImageArchiveExtractor,
-  type ImageToolchainOptions
-} from './image-workshop';
-import type { ImageReleasePin } from './image-releases';
 import { childExitCode, redactSensitive, runCommand, type CommandRunner, type InteractiveSpawner } from './process';
-import { imageDiagnosticContextFromEnvironment, withImageDiagnostics } from './image-diagnostics';
 import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT } from './config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, uninstallWindowsRelease } from './release-gate';
 import type { PrerequisiteConsent } from './prerequisites';
@@ -27,17 +18,12 @@ export interface CliDependencies {
   platform?: string;
   io?: CliIO;
   commandRunner?: CommandRunner;
-  downloadArchive?: ImageArchiveDownloader;
-  extractArchive?: ImageArchiveExtractor;
-  imageMagickRelease?: ImageReleasePin;
-  oxipngRelease?: ImageReleasePin;
   spawnInteractive?: InteractiveSpawner;
   prerequisiteConsent?: PrerequisiteConsent;
   portProbe?: PortProbe;
   onPortConflict?: (url: string) => Promise<PortConflictAction> | PortConflictAction;
   openExistingSession?: ExistingSessionOpener;
   rpgmaker?: boolean;
-  signal?: AbortSignal;
 }
 
 interface ParsedArgs {
@@ -45,24 +31,6 @@ interface ParsedArgs {
   positionals: string[];
   values: Record<string, string>;
   flags: Set<string>;
-}
-
-const IMAGE_OPERATION_TOOL_NAMES: Readonly<Record<string, string>> = {
-  inspect: 'image_inspect',
-  'resize-pixel': 'image_resize_pixel',
-  'trim-pad': 'image_trim_pad',
-  'sheet-slice': 'image_sheet_slice',
-  'sheet-assemble': 'image_sheet_assemble',
-  'atlas-pack': 'image_atlas_pack',
-  'optimize-png': 'image_optimize_png'
-};
-
-function imageToolName(operation: string): string {
-  const toolName = Object.prototype.hasOwnProperty.call(IMAGE_OPERATION_TOOL_NAMES, operation)
-    ? IMAGE_OPERATION_TOOL_NAMES[operation]
-    : undefined;
-  if (!toolName) throw new Error(`Unknown image operation ${operation}.`);
-  return toolName;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -75,9 +43,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
     if (!value.startsWith('--')) {
-      if (command !== 'image' && command !== 'asset') throw new Error(`Unexpected argument: ${value}`);
-      positionals.push(value);
-      continue;
+      throw new Error(`Unexpected argument: ${value}`);
     }
     const encoded = value.slice(2);
     const equals = encoded.indexOf('=');
@@ -107,7 +73,6 @@ function helpText(): string {
     '  uninstall   Remove program files/cache (use --purge for state/credentials)',
     '  release-zip Build and inspect a distributable Release ZIP',
     '  launch      Start project-neutral DSH Web; choose workspaces in its UI',
-      '  image       Run a deterministic Asset Workshop image operation',
     '',
     'Options:',
     '  --release-root <path>     Extracted Release ZIP root (install)',
@@ -121,15 +86,6 @@ function helpText(): string {
     '  --workspace <path>        Inspect one explicit Windows workspace with Doctor',
     '  --sandbox-probe            Run the pinned DSH workspace-write runner after workspace checks pass',
     '  --preset <id>              Agent preset (rpgmaker, game-design, or asset-workshop)',
-    '  --image-magick <path>     Use the resolved pinned ImageMagick executable (requires SHA-256)',
-    '  --image-magick-sha256 <hex> Expected SHA-256 for an explicit ImageMagick override',
-    '  --image-magick-url <url>  Exact pinned ImageMagick release URL',
-    '  --image-toolchain-root <path>  Use the app-owned image toolchain directory',
-    '  --image-helper-runtime <path> Use the app-owned atlas helper runtime',
-    '  --oxipng <path>            Use an explicit pinned oxipng override (requires SHA-256)',
-    '  --install-oxipng          Download and install the optional pinned oxipng optimizer',
-    '  --oxipng-sha256 <hex>     Expected SHA-256 for an explicit oxipng override',
-    '  --oxipng-url <url>        Exact pinned oxipng release URL',
     '  --bun-executable <path>   Use an explicit Bun executable',
     '  --js-executable <path>    Use an explicit Bun or Node executable for MCP',
     '  --mcp-runtime-dir <path>  Use the app-owned RPG Maker MCP runtime',
@@ -143,16 +99,6 @@ function helpText(): string {
     '  --yes                     Consent to prerequisite installation',
     '  --purge                   Explicitly delete mutable state/credentials (uninstall)',
     '  --json                    Render doctor output as JSON',
-    '',
-    'Image operations:',
-    '  image inspect --input <path>',
-    '  image resize-pixel --input <path> --output <path> --scale <integer>',
-    '  image trim-pad --input <path> --output <path> --trim --width <n> --height <n>',
-    '  image sheet-slice --input <path> --output-dir <dir> --cell-width <n> --cell-height <n>',
-    '  image sheet-assemble --inputs-json <json-array> --output <path> --columns <n>',
-    '  image atlas-pack --inputs-json <json-array> --output <new-directory> --max-size <n>',
-    '  image optimize-png --input <path> --output <path> --level <0-6>',
-    '  image tool flags: --image-magick <path> --helper-root <path> --oxipng <path>',
     '  --help                    Show this help'
   ].join('\n');
 }
@@ -170,21 +116,8 @@ function baseOptions(parsed: ParsedArgs, dependencies: CliDependencies): Record<
     programRoot: option(parsed.values, 'program-root'),
     mutableRoot: option(parsed.values, 'mutable-root'),
     startMenuShortcutPath: option(parsed.values, 'start-menu-shortcut'),
-    imageMagickExecutable: option(parsed.values, 'image-magick'),
-    imageMagickSha256: option(parsed.values, 'image-magick-sha256'),
-    imageMagickUrl: option(parsed.values, 'image-magick-url'),
-    imageMagickRelease: dependencies.imageMagickRelease,
-    imageToolchainRoot: option(parsed.values, 'image-toolchain-root'),
-    imageHelperRuntimeDir: option(parsed.values, 'image-helper-runtime'),
-    oxipngExecutable: option(parsed.values, 'oxipng'),
-    oxipngSha256: option(parsed.values, 'oxipng-sha256'),
-    oxipngUrl: option(parsed.values, 'oxipng-url'),
-    oxipngRelease: dependencies.oxipngRelease,
-    installOxipng: parsed.flags.has('install-oxipng') || (parsed.flags.has('oxipng') && !option(parsed.values, 'oxipng')),
     bunExecutable: option(parsed.values, 'bun-executable'),
     jsExecutable: option(parsed.values, 'js-executable'),
-    downloadArchive: dependencies.downloadArchive,
-    extractArchive: dependencies.extractArchive,
     commandRunner: dependencies.commandRunner
   };
 }
@@ -193,14 +126,6 @@ function requiredOption(parsed: ParsedArgs, name: string): string {
   const value = option(parsed.values, name);
   if (!value) throw new Error(`Missing required option --${name}.`);
   return value;
-}
-
-function numericOption(parsed: ParsedArgs, name: string): number | undefined {
-  const value = option(parsed.values, name);
-  if (value === undefined) return undefined;
-  const number = Number(value);
-  if (!Number.isInteger(number)) throw new Error(`Option --${name} must be an integer.`);
-  return number;
 }
 
 function validateCliFixedBinding(argv: string[]): void {
@@ -225,113 +150,6 @@ function validateCliFixedBinding(argv: string[]): void {
   }
 }
 
-function inputList(parsed: ParsedArgs): string[] {
-  const encoded = requiredOption(parsed, 'inputs-json');
-  let value: unknown;
-  try {
-    value = JSON.parse(encoded);
-  } catch {
-    throw new Error('--inputs-json must be a JSON array of paths.');
-  }
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new Error('--inputs-json must be a JSON array of paths.');
-  return value;
-}
-
-async function runImageCommand(parsed: ParsedArgs, dependencies: CliDependencies, io: CliIO, signal?: AbortSignal): Promise<void> {
-  const operation = parsed.positionals[0] ?? option(parsed.values, 'operation');
-  if (!operation) throw new Error('Image operation is required.');
-  imageToolName(operation);
-  const imageEnv = dependencies.env ?? process.env;
-  const diagnostics = imageDiagnosticContextFromEnvironment(imageEnv, { operation });
-  const baseCommandRunner = dependencies.commandRunner ?? runCommand;
-  const commandRunner = withImageDiagnostics((command, args, options) => baseCommandRunner(command, args, {
-    ...options,
-    signal: signal ?? options.signal
-  }), diagnostics, { nativeCommandRunner: dependencies.commandRunner === undefined });
-  const toolchainOptions: ImageToolchainOptions = {
-    platform: dependencies.platform,
-    env: dependencies.env,
-    dshHome: option(parsed.values, 'dsh-home'),
-    toolchainRoot: option(parsed.values, 'toolchain-root'),
-    manifestPath: option(parsed.values, 'manifest'),
-    imageMagickExecutable: option(parsed.values, 'image-magick'),
-    imageMagickSha256: option(parsed.values, 'image-magick-sha256'),
-    imageMagickUrl: option(parsed.values, 'image-magick-url'),
-    imageMagickRelease: dependencies.imageMagickRelease,
-    helperRoot: option(parsed.values, 'helper-root'),
-    oxipngExecutable: option(parsed.values, 'oxipng'),
-    oxipngSha256: option(parsed.values, 'oxipng-sha256'),
-    oxipngUrl: option(parsed.values, 'oxipng-url'),
-    oxipngRelease: dependencies.oxipngRelease,
-    installOxipng: parsed.flags.has('install-oxipng') || (parsed.flags.has('oxipng') && !option(parsed.values, 'oxipng')),
-    downloadArchive: dependencies.downloadArchive,
-    extractArchive: dependencies.extractArchive,
-    commandRunner
-  };
-  const toolchain = (await prepareImageToolchain(toolchainOptions)).toolchain;
-  const workshop = createImageWorkshop(toolchain, {
-    commandRunner,
-    platform: dependencies.platform,
-    env: dependencies.env,
-    signal,
-    diagnostics
-  });
-  if (operation === 'inspect') {
-    io.stdout.write(`${JSON.stringify(await workshop.inspect(requiredOption(parsed, 'input')), null, 2)}\n`);
-    return;
-  }
-  let result;
-  if (operation === 'resize-pixel') {
-    result = await workshop.resizePixel({
-      input: requiredOption(parsed, 'input'),
-      output: requiredOption(parsed, 'output'),
-      scale: numericOption(parsed, 'scale'),
-      width: numericOption(parsed, 'width'),
-      height: numericOption(parsed, 'height')
-    });
-  } else if (operation === 'trim-pad') {
-    result = await workshop.trimPad({
-      input: requiredOption(parsed, 'input'),
-      output: requiredOption(parsed, 'output'),
-      trim: !parsed.flags.has('no-trim'),
-      width: numericOption(parsed, 'width'),
-      height: numericOption(parsed, 'height'),
-      gravity: option(parsed.values, 'gravity') as 'center' | 'north' | 'south' | 'east' | 'west' | 'northeast' | 'northwest' | 'southeast' | 'southwest' | undefined
-    });
-  } else if (operation === 'sheet-slice') {
-    result = await workshop.sheetSlice({
-      input: requiredOption(parsed, 'input'),
-      outputDir: requiredOption(parsed, 'output-dir'),
-      cellWidth: numericOption(parsed, 'cell-width') ?? 0,
-      cellHeight: numericOption(parsed, 'cell-height') ?? 0
-    });
-  } else if (operation === 'sheet-assemble') {
-    result = await workshop.sheetAssemble({
-      inputs: inputList(parsed),
-      output: requiredOption(parsed, 'output'),
-      columns: numericOption(parsed, 'columns') ?? 0
-    });
-  } else if (operation === 'atlas-pack') {
-    result = await workshop.atlasPack({
-      inputs: inputList(parsed),
-      output: requiredOption(parsed, 'output'),
-      maxSize: numericOption(parsed, 'max-size') ?? 0,
-      padding: numericOption(parsed, 'padding'),
-      extrusion: numericOption(parsed, 'extrusion'),
-      fixedGrid: parsed.flags.has('fixed-grid')
-    });
-  } else if (operation === 'optimize-png') {
-    result = await workshop.optimizePng({
-      input: requiredOption(parsed, 'input'),
-      output: requiredOption(parsed, 'output'),
-      level: numericOption(parsed, 'level')
-    });
-  } else {
-    throw new Error(`Unknown image operation ${operation}.`);
-  }
-  io.stdout.write(`${JSON.stringify(result.manifest, null, 2)}\n`);
-}
-
 export async function runCli(argv: string[] = process.argv.slice(2), dependencies: CliDependencies = {}): Promise<number> {
   const env = dependencies.env ?? process.env;
   const io = dependencies.io ?? { stdout: process.stdout, stderr: process.stderr };
@@ -349,25 +167,6 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
   }
 
   try {
-    if (parsed.command === 'image' || parsed.command === 'asset') {
-      const controller = dependencies.signal ? undefined : new AbortController();
-      const signal = dependencies.signal ?? controller?.signal;
-      const onSignal = (): void => controller?.abort();
-      if (controller) {
-        process.once('SIGTERM', onSignal);
-        process.once('SIGINT', onSignal);
-      }
-      try {
-        await runImageCommand(parsed, dependencies, io, signal);
-        return 0;
-      } finally {
-        if (controller) {
-          process.removeListener('SIGTERM', onSignal);
-          process.removeListener('SIGINT', onSignal);
-        }
-      }
-    }
-
     if (parsed.command === 'bootstrap') {
       const result = await bootstrapRuntime({
         ...baseOptions(parsed, dependencies),

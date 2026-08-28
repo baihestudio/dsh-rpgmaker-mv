@@ -1,65 +1,59 @@
 ---
 name: asset-workshop
-description: Deterministic, Windows-first RPG Maker MV image transformations with output manifests and fidelity checks.
+description: Prepare RPG Maker MV raster assets with Kepos for candidates and the globally installed ImageMagick magick CLI for deterministic workspace-local work.
 ---
 
 # Asset Workshop
 
-## Scope
+## Two lanes
 
-This Agent provides the seven deterministic local image tools below. It may analyze images the user attaches in DSH Web, including visible text and visual details, but actual raster changes must use the deterministic tools; it does not provide AI image generation or original illustration.
+Use `kepos_image_generate` only for a new visual candidate or model-assisted
+edit. It saves a candidate under `.dsh/kepos-imagegen/` in the active workspace;
+retain that relative path, inspect it at its intended in-game size, and ask for
+approval before treating it as a final asset. If the Kepos bridge is unavailable,
+say that its Settings bridge needs configuration; do not substitute another model.
 
-Use the harness-owned image workflow for every raster transformation. Do not
-write an ImageMagick command from memory, use `convert`, use a PATH-discovered
-binary, or invoke a user-provided shell wrapper. Prefer the typed tools below;
-the launcher-internal `DSH_IMAGE_WORKSHOP_CLI` is a maintainer/debug detail and
-must never be explained to the user or invoked directly.
+Use the Windows-wide ImageMagick 7 command `magick` for deterministic raster work.
+The launcher installs it with `winget install ImageMagick.ImageMagick --exact` and
+expects every newly launched Windows program to see it through PATH. At the start
+of a CLI image task, run `magick --version`; if it fails or is not ImageMagick,
+report the missing prerequisite rather than guessing a path or using `convert`.
 
-## Typed image tools
+## CLI safety contract
 
-This Agent mounts the app-owned image tool plugin, which exposes typed tools
-scoped to this Agent only. Use them instead of constructing commands:
+- Work only inside the DSH Web-selected workspace. Use explicit input and output
+  paths; never modify an input in place and never use `mogrify`.
+- Before writing, ensure the output path does not already exist. Keep generated
+  candidates and source files intact. Quote paths with spaces or CJK characters as
+  separate shell arguments, never by building a shell command string.
+- Inspect both ends: use `magick identify -verbose <path>` (or a concise
+  `magick identify <path>`) for dimensions, format, and alpha. State the intended
+  game-scale size in the handoff.
+- Use PNG output for MV. Preserve alpha deliberately with `PNG32:<output>` where
+  applicable. Do not silently substitute WebP, JPEG, SVG, or a lossy palette.
+- Do not trim, rotate, resample, or otherwise alter a tileset/spritesheet unless
+  the user supplied its cell/grid contract. Do not claim integration or playtest;
+  hand it to the RPG Maker agent after preparation.
 
-- `image_inspect` — decode and report an image's metadata (dimensions, format,
-  channels, alpha, bytes, SHA-256). `input` is project-relative to this
-  Agent's workspace.
-- `image_resize_pixel` — pixel-safe integer nearest-neighbour scaling.
-  Provide `scale`, or both `width` and `height` that match one integer scale;
-  non-integer scales are rejected rather than smoothed. `output` must not
-  exist and the source is never overwritten.
-- `image_trim_pad` — trim fully transparent margins and/or pad a transparent
-  canvas. `trim` defaults to true; supplying `width` and `height` together
-  pads to that exact canvas size, with optional `gravity` placement.
-  `output` must not exist and the source is never overwritten.
-- `image_sheet_slice` — slice a sprite sheet into equal `cellWidth` ×
-  `cellHeight` frames into a new `outputDir` (must not exist), writing
-  `frame-0000.png`… (zero-based) and `manifest.json`.
-- `image_sheet_assemble` — assemble equal-sized images (`inputs` array) into
-  one sprite sheet with `columns`; the input count must be divisible by
-  `columns`. `output` must not exist and sources are never overwritten.
-- `image_atlas_pack` — pack differently sized images (`inputs` array, unique
-  file names) into a PNG atlas plus JSON frame map in a new `output` directory
-  (must not exist). `maxSize` is required; `padding`, `extrusion`, and
-  `fixedGrid` are optional. Sources are never overwritten.
-- `image_optimize_png` — lossless oxipng optimization (`level` 0-6, default 4)
-  that preserves decoded pixels, dimensions, and alpha. PNG input/output only;
-  `output` must not exist and the source is never overwritten.
+## Common recipes
 
-Every path passed to these tools is project-relative to the current DSH Web workspace; the workspace is selected in DSH Web, not by the launcher.
-absolute paths, `..` traversal, symlink/junction escapes, missing inputs, and
-pre-existing outputs are rejected. External sources must first be copied into
-the workspace. Array inputs (sheet assembly, atlas packing) are real schema
-arrays; never encode them as JSON strings or shell text.
+Choose parameters from the actual asset; these recipes are starting points, not
+blind commands.
 
-The workflow has bounded ImageMagick resource and time limits. Treat malformed
-inputs, non-zero exits, missing output files, failed dimension/alpha checks,
-failed pixel checks, and incomplete atlas JSON as actionable failures. Paths
-may contain spaces and CJK characters; do not quote or concatenate them into a
-shell command string.
+- Pixel-art integer scaling: use `-filter point -resize <integer>x` and write a
+  new PNG32 output. Reject non-integer scaling when crisp pixels are required.
+- Green-screen extraction: first confirm the background is actually chroma green
+  and whether green foreground details must survive. For a clean uniform backdrop,
+  use `-alpha off -fuzz <tolerance> -transparent '#00FF00'`, then inspect edges.
+  Start near 10–20%; lower tolerance protects green details, higher tolerance
+  removes spill. Use `-trim +repage` only when changing the canvas origin is safe.
+- Sprite-sheet slices: use `-crop <cellWidth>x<cellHeight> +repage` only after
+  validating full-sheet dimensions divide exactly by the requested cell size. Write
+  to a fresh output directory with stable zero-padded names.
+- Lossless-ish delivery cleanup: prefer `-strip` only after confirming profile
+  metadata is not needed; it removes metadata, not visual pixels. Do not describe
+  arbitrary ImageMagick re-encoding as a guaranteed lossless optimizer.
 
-Do not invoke app-owned harness source or runtimes through shell escalation.
-The optional Photoshop, Aseprite, and TexturePacker paths in the manifest are
-capability hints only. They are user-owned enhancements: do not download,
-redistribute, require, or silently invoke them. PNG/MV work falls back to the
-pinned ImageMagick/helper path. WebP is not an MV-safe replacement unless the
-user explicitly supplies a compatible runtime/plugin plan.
+For a generated or edited candidate, read `imagegen-iteration` first. For every
+completed operation report input path, exact command/parameters, output path,
+verified dimensions/format/alpha, and the remaining integration check.
