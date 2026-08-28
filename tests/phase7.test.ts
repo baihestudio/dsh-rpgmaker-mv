@@ -202,6 +202,7 @@ async function writeProfilePlugin(
       dsh: { bundle: { patch: './cordis.patch.yml' } }
     }));
     await writeFile(join(installed, 'lib', 'index.js'), 'export {}\n');
+    await writeFile(join(installed, 'cordis.patch.yml'), '# fixture patch\n');
   }
   await mkdir(profile, { recursive: true });
   await writeFile(join(profile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);

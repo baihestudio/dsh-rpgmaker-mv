@@ -695,37 +695,26 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   if (!mcp.valid || !mcp.executable) throw new RpgMakerStartupError(`Pinned RPG Maker MCP runtime is not usable: ${mcp.errors.join('; ')}`);
   const jsRunner = await resolveMcpRunner(options, platform, withoutCredentials(env));
 
+  const managedWebProfileOptions: ManagedWebProfileOptions = {
+    platform,
+    env,
+    dshHome: paths.dshHome,
+    programRoot: paths.programRoot,
+    mutableRoot: paths.mutableRoot,
+    runtimeDir: paths.runtimeDir,
+    dshExecutable,
+    npmExecutable: options.npmExecutable,
+    pnpmExecutable: options.pnpmExecutable,
+    pnpmRuntimeDir: options.pnpmRuntimeDir,
+    nodeExecutable: options.jsExecutable,
+    bunExecutable: options.bunExecutable,
+    commandRunner: options.commandRunner,
+    lockTimeoutMs: options.lockTimeoutMs,
+    lockRetryMs: options.lockRetryMs
+  };
   const managedWebProfile = options.managedWebProfilePreparer
-    ? await options.managedWebProfilePreparer({
-      platform,
-      env,
-      dshHome: paths.dshHome,
-      programRoot: paths.programRoot,
-      mutableRoot: paths.mutableRoot,
-      runtimeDir: paths.runtimeDir,
-      dshExecutable,
-      npmExecutable: options.npmExecutable,
-      pnpmExecutable: options.pnpmExecutable,
-      pnpmRuntimeDir: options.pnpmRuntimeDir,
-      nodeExecutable: options.jsExecutable,
-      bunExecutable: options.bunExecutable,
-      commandRunner: options.commandRunner
-    })
-    : await ensureManagedWebProfile({
-      platform,
-      env,
-      dshHome: paths.dshHome,
-      programRoot: paths.programRoot,
-      mutableRoot: paths.mutableRoot,
-      runtimeDir: paths.runtimeDir,
-      dshExecutable,
-      npmExecutable: options.npmExecutable,
-      pnpmExecutable: options.pnpmExecutable,
-      pnpmRuntimeDir: options.pnpmRuntimeDir,
-      nodeExecutable: options.jsExecutable,
-      bunExecutable: options.bunExecutable,
-      commandRunner: options.commandRunner
-    });
+    ? await options.managedWebProfilePreparer(managedWebProfileOptions)
+    : await ensureManagedWebProfile(managedWebProfileOptions);
   if (!managedWebProfile.valid) throw new RpgMakerStartupError(`Managed Web profile is not usable: ${managedWebProfile.errors.join('; ')}`);
 
   const presets = await deployRpgMakerPresets({

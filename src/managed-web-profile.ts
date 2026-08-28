@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, resolve, sep, win32 } from 'node:path';
 
 import { findDshExecutable } from './bootstrap';
 import { resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { withHarnessOperationLock } from './lock';
 import { commandFailure, redactSensitive, runCommand, type CommandRunner } from './process';
 import {
   defaultWorkspaceMcpBundleDir,
@@ -22,20 +23,13 @@ import {
 
 /** The one DSH profile owned by this product. */
 export const MANAGED_WEB_PROFILE = 'web';
-/** Alias used by callers that describe the profile by its DSH name. */
-export const MANAGED_WEB_PROFILE_NAME = MANAGED_WEB_PROFILE;
 
-// The desired package set is deliberately declared beside the materializer;
-// package-shaped modules only re-export these constants for release/test code.
 export const DSH_WEB_PACKAGE = '@guionai/dsh-web';
 export const DSH_WEB_VERSION = '0.3.1';
-export const DSH_WEB_PROFILE = MANAGED_WEB_PROFILE;
 export const DSH_IMAGEGEN_PACKAGE = '@lamplitisles/dsh-imagegen';
 export const DSH_IMAGEGEN_VERSION = '0.2.1';
-export const DSH_IMAGEGEN_PROFILE = MANAGED_WEB_PROFILE;
 export const DSH_BRAND_PACKAGE = '@baihestudio/dsh-rpgmaker-brand';
 export const DSH_BRAND_VERSION = '0.1.0';
-export const DSH_BRAND_PROFILE = MANAGED_WEB_PROFILE;
 export const DSH_BRAND_BUNDLE_RELATIVE = join('bundle', 'dsh-rpgmaker-brand');
 
 export interface ManagedWebProfileOptions extends PathOptions {
@@ -46,6 +40,8 @@ export interface ManagedWebProfileOptions extends PathOptions {
   nodeExecutable?: string;
   bunExecutable?: string;
   commandRunner?: CommandRunner;
+  lockTimeoutMs?: number;
+  lockRetryMs?: number;
 }
 
 export interface ManagedWebPackageVerification {
@@ -216,6 +212,12 @@ async function verifyBundlePackage(
     }
     const main = typeof installedManifest?.main === 'string' ? installedManifest.main : undefined;
     if (!main || !(await exists(join(installedReal, main)))) packageErrors.push(`installed profile package entrypoint ${main ?? 'missing'} was not found`);
+    const bundle = asObject(asObject(installedManifest?.dsh)?.bundle);
+    const patch = typeof bundle?.patch === 'string' ? bundle.patch : undefined;
+    const patchPath = patch ? resolve(installedReal, patch) : undefined;
+    if (!patch || !patchPath || !pathIsWithin(installedReal, patchPath, platform) || !(await exists(patchPath))) {
+      packageErrors.push(`installed profile package ${desired.packageName} dsh.bundle.patch ${patch ?? 'missing'} was not found`);
+    }
   }
 
   if (!desired.source && dependency !== expectedDependencyValue) {
@@ -425,6 +427,13 @@ async function writeManagedBundleRegistrations(profileDir: string): Promise<void
 /** Materialize the complete exact Web profile, preserving the prior profile on failure. */
 export async function ensureManagedWebProfile(options: ManagedWebProfileOptions = {}): Promise<ManagedWebProfileResult> {
   const paths = resolveHarnessPaths(options);
+  return withHarnessOperationLock(paths.lockDir, paths.sessionLeaseDir, () => ensureManagedWebProfileUnlocked(options, paths), {
+    timeoutMs: options.lockTimeoutMs ?? 15 * 60_000,
+    retryMs: options.lockRetryMs
+  });
+}
+
+async function ensureManagedWebProfileUnlocked(options: ManagedWebProfileOptions, paths: HarnessPaths): Promise<ManagedWebProfileResult> {
   const platform = options.platform ?? process.platform;
   const ambientEnv = options.env ?? process.env;
   const env = pluginEnvironment({ ...ambientEnv, DSH_HOME: paths.dshHome });
@@ -447,7 +456,6 @@ export async function ensureManagedWebProfile(options: ManagedWebProfileOptions 
   const invocation = await resolveDshInvocation(dsh, options, env);
   const profileDir = profileDirFor(paths, MANAGED_WEB_PROFILE);
   const snapshot = await snapshotManagedWebProfile(paths, profileDir, workspaceBundleDir);
-  let restored = false;
   try {
     await replaceWorkspaceBundle(workspaceSource, workspaceBundleDir, platform);
     await rm(profileDir, { recursive: true, force: true });
@@ -463,21 +471,21 @@ export async function ensureManagedWebProfile(options: ManagedWebProfileOptions 
     await writeManagedBundleRegistrations(profileDir);
     const verification = await verifyManagedWebProfile({ ...options, env });
     if (!verification.valid) throw new Error(`Managed Web profile materialization completed but verification failed: ${verification.errors.join('; ')}`);
-    await rm(snapshot.root, { recursive: true, force: true });
+    // Snapshot cleanup is best effort after successful verification. A cleanup
+    // error must never turn a successful materialization into a rollback.
+    await rm(snapshot.root, { recursive: true, force: true }).catch(() => undefined);
     return { ...verification, materialized: true };
   } catch (error) {
     const original = error instanceof Error ? error : new Error(String(error));
     try {
       await restoreManagedWebProfile(snapshot);
-      restored = true;
     } catch (restoreError) {
       throw new Error(`${original.message}; managed Web profile rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}; rollback snapshot preserved at ${snapshot.root}`);
     }
-    throw new Error(`${original.message}; the prior managed Web profile was restored${restored ? '' : ' unsuccessfully'}`);
-  } finally {
-    if (restored) await rm(snapshot.root, { recursive: true, force: true });
+    // Restoration succeeded, so cleanup is again best effort. Preserve the
+    // original materialization error even if the rollback snapshot cannot be
+    // removed.
+    await rm(snapshot.root, { recursive: true, force: true }).catch(() => undefined);
+    throw new Error(`${original.message}; the prior managed Web profile was restored`);
   }
 }
-
-/** Descriptive alias for callers that use the preparation vocabulary. */
-export const prepareManagedWebProfile = ensureManagedWebProfile;

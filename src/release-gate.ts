@@ -11,7 +11,7 @@ import { withoutCredentials, runCommand, type CommandRunner } from './process';
 import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
 import { deployRpgMakerPresets, prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { prepareMcporterRuntime } from './mcport';
-import { DSH_BRAND_BUNDLE_RELATIVE, ensureManagedWebProfile, type ManagedWebProfileOptions, type ManagedWebProfileResult } from './managed-web-profile';
+import { DSH_BRAND_BUNDLE_RELATIVE, ensureManagedWebProfile } from './managed-web-profile';
 import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
@@ -49,7 +49,6 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   createShortcut?: (options: ShortcutCreationOptions) => Promise<string>;
   writeInstallMetadata?: (path: string, content: string) => Promise<void>;
   prepareAgentDependencies?: (context: { paths: HarnessPaths; env: Record<string, string | undefined>; bunExecutable: string; npmExecutable?: string; commandRunner?: CommandRunner }) => Promise<void>;
-  managedWebProfilePreparer?: (options: ManagedWebProfileOptions) => Promise<ManagedWebProfileResult>;
   now?: () => Date;
 }
 
@@ -275,7 +274,7 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         if (!mcp.valid) throw new Error(`RPG Maker MCP is not usable: ${mcp.errors.join('; ')}`);
         const dshExecutable = bootstrap.verification.dshExecutable ?? await findDshExecutable(context.paths.runtimeDir, platform);
         if (!dshExecutable) throw new Error('Pinned DSH executable was not found before managed Web profile materialization.');
-        const managed = await (options.managedWebProfilePreparer ?? ensureManagedWebProfile)({
+        const managed = await ensureManagedWebProfile({
           platform,
           env: context.env,
           dshHome: context.paths.dshHome,
