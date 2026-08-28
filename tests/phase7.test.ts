@@ -170,7 +170,8 @@ async function writeProfilePlugin(
   packageName: string,
   version: string,
   integrity: string,
-  source?: string
+  source?: string,
+  bundle = false
 ): Promise<void> {
   const profile = join(dshHome, 'profiles', 'web');
   const installed = join(profile, 'node_modules', ...packageName.split('/'));
@@ -186,7 +187,7 @@ async function writeProfilePlugin(
   const dsh = (manifest.dsh ?? {}) as Record<string, unknown>;
   const profileConfig = (dsh.profile ?? {}) as Record<string, unknown>;
   const bundles = Array.isArray(profileConfig.bundles) ? [...profileConfig.bundles] : [];
-  if (packageName === '@baihestudio/dsh-workspace-mcp') bundles.push(packageName);
+  if (bundle) bundles.push(packageName);
   profileConfig.bundles = [...new Set(bundles)];
   dsh.profile = profileConfig;
   manifest.dsh = dsh;
@@ -244,9 +245,9 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
       }
       const local = args.find((value) => value.startsWith('file:'))?.slice('file:'.length);
       if (!local) throw new Error(`unexpected plugin fixture args: ${args.join(' ')}`);
-      const localManifest = JSON.parse(await readFile(join(local, 'package.json'), 'utf8')) as { name?: string; version?: string };
+      const localManifest = JSON.parse(await readFile(join(local, 'package.json'), 'utf8')) as { name?: string; version?: string; dsh?: { bundle?: unknown } };
       if (!localManifest.name || !localManifest.version) throw new Error(`local plugin fixture has no package identity: ${local}`);
-      await writeProfilePlugin(context.dshHome, localManifest.name, localManifest.version, '', local);
+      await writeProfilePlugin(context.dshHome, localManifest.name, localManifest.version, '', local, Boolean(localManifest.dsh?.bundle));
       return { exitCode: 0, stdout: '', stderr: '' };
     }
     const name = basename(command).toLowerCase();
@@ -1295,6 +1296,32 @@ describe('Windows release gate foundations', () => {
       expect(calls.some((call) => call.args.includes(`${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
       expect(calls.some((call) => call.args.includes(`file:${join(program, DSH_BRAND_BUNDLE_RELATIVE)}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
       expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', ...DSH_BRAND_PACKAGE.split('/'), 'assets', 'maker-ape-logo.png')).exists()).toBe(true);
+      expect((JSON.parse(await readFile(join(state, 'profiles', 'web', 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }).dsh?.profile?.bundles).toContain(DSH_BRAND_PACKAGE);
+      expect((JSON.parse(await readFile(join(program, DSH_BRAND_BUNDLE_RELATIVE, 'package.json'), 'utf8')) as { exports?: Record<string, string> }).exports?.['./package.json']).toBe('./package.json');
+      const clientSource = await readFile(join(program, DSH_BRAND_BUNDLE_RELATIVE, 'lib', 'client.js'), 'utf8');
+      let registration: { id: string; factory: (require: (id: string) => unknown) => { apply?: (ctx: unknown) => unknown; inject?: unknown } } | undefined;
+      new Function('window', clientSource)({ __ModuleLoader__: { load: (value: typeof registration) => { registration = value; } } });
+      const client = registration?.factory(() => ({ jsx: () => undefined }));
+      expect(registration?.id).toBe(DSH_BRAND_PACKAGE);
+      expect(typeof client?.apply).toBe('function');
+      expect(client?.inject).toEqual(['slots']);
+      const brandSlots: Array<{ name: string; priority?: number }> = [];
+      client?.apply?.({
+        slots: {
+          inject: (_name: string, body: () => unknown) => {
+            const result = body() as Iterable<unknown> | undefined;
+            if (result?.[Symbol.iterator]) for (const _entry of result) undefined;
+          },
+          register: (options: { name: string; priority?: number }) => {
+            brandSlots.push(options);
+          }
+        }
+      });
+      expect(brandSlots).toEqual([
+        { name: 'sidebar.brand.mark', priority: -1 },
+        { name: 'sidebar.brand.name', priority: -1 },
+        { name: 'conversation.hero.brand.mark', priority: -1 }
+      ]);
       expect(await Bun.file(join(program, 'runtime', 'pnpm', 'node_modules', 'pnpm', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'node_modules', MCPORTER_PACKAGE, 'dist', 'index.js')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'node_modules', ...RPGMAKER_MCP_PACKAGE.split('/'), 'dist', 'index.js')).exists()).toBe(true);
