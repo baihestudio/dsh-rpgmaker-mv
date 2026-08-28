@@ -68,9 +68,9 @@ window.__ModuleLoader__.load({
 
     const QUICK_STARTS = [
       {
-        label: '推敲设计与剧情',
+        label: '推敲剧情与玩法',
         skill: 'game-design',
-        prompt: '/game-design 先阅读当前项目和已有设计资料，帮我推敲下面的游戏设计或剧情；只询问真正影响玩家体验的关键问题，并把确认结论维护进设计文档：'
+        prompt: '/game-design 先阅读当前项目和已有设计资料，帮我推敲下面的剧情或玩法；只询问真正影响玩家体验的关键问题，并把确认结论维护进设计文档：'
       },
       {
         label: '开发插件',
@@ -78,9 +78,9 @@ window.__ModuleLoader__.load({
         prompt: '/rpgmaker-mv 先检查当前项目的插件结构和相关实现，再开发或修改下面的插件；完成后回读并验证：'
       },
       {
-        label: '编辑地图与事件',
+        label: '编辑对话与事件',
         skill: 'rpgmaker-mv',
-        prompt: '/rpgmaker-mv 先检查当前地图、Tileset 和相关事件，再修改下面的地图设置、通行边界或事件逻辑；完成后回读并验证：'
+        prompt: '/rpgmaker-mv 先检查当前项目的相关事件页，再编辑下面的对话、分支、触发条件或事件逻辑；完成后回读并验证：'
       },
       {
         label: '制作美术素材',
