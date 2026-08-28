@@ -1345,9 +1345,8 @@ describe('Windows release gate foundations', () => {
         { name: 'conversation.input.dock', id: 'quick-starts', order: 0 }
       ]);
       const quickStart = quickStartSlots[0]!.component({
-        session: { blank: true, awaitingFirstTurn: true, promptAttempted: false, running: false },
+        session: { composerPhase: 'blank' },
         input: { draft: '  ' },
-        useConversation: () => ({ activeTargets: new Set() }),
         inputActions: { setDraft: () => undefined }
       });
       expect(quickStart?.props['data-dsh-rpgmaker-quick-starts']).toBe(true);
@@ -1361,32 +1360,37 @@ describe('Windows release gate foundations', () => {
       ]);
 
       const draftWrites: string[] = [];
+      let submitCalls = 0;
       const actionSurface = quickStartSlots[0]!.component({
-        session: { blank: true, awaitingFirstTurn: true, promptAttempted: false, running: false },
+        session: { composerPhase: 'blank' },
         input: { draft: '' },
-        useConversation: () => ({ activeTargets: new Set() }),
-        inputActions: { setDraft: (text: string) => { draftWrites.push(text); } }
+        inputActions: {
+          setDraft: (text: string) => { draftWrites.push(text); },
+          submit: () => { submitCalls += 1; }
+        }
       });
       const actionButtons = actionSurface?.props.children as Array<{ props: Record<string, unknown> }>;
-      for (const button of actionButtons) (button.props.onClick as () => void)();
+      for (const button of actionButtons) {
+        const writesBeforeClick = draftWrites.length;
+        (button.props.onClick as () => void)();
+        expect(draftWrites.length).toBe(writesBeforeClick + 1);
+      }
       expect(draftWrites).toHaveLength(4);
       expect(draftWrites.every((text) => text.length > 0)).toBe(true);
+      expect(submitCalls).toBe(0);
       expect(quickStartSlots[0]!.component({
-        session: { blank: true, awaitingFirstTurn: true, promptAttempted: false, running: false },
+        session: { composerPhase: 'blank' },
         input: { draft: 'already typing' },
-        useConversation: () => ({ activeTargets: new Set() }),
         inputActions: { setDraft: () => undefined }
       })).toBeNull();
       expect(quickStartSlots[0]!.component({
-        session: { blank: true, awaitingFirstTurn: true, promptAttempted: true, running: false },
+        session: { composerPhase: 'engaging' },
         input: { draft: '' },
-        useConversation: () => ({ activeTargets: new Set() }),
         inputActions: { setDraft: () => undefined }
       })).toBeNull();
       expect(quickStartSlots[0]!.component({
-        session: { blank: true, awaitingFirstTurn: true, promptAttempted: false, running: false },
+        session: { composerPhase: 'active' },
         input: { draft: '' },
-        useConversation: () => ({ activeTargets: new Set(['chat']) }),
         inputActions: { setDraft: () => undefined }
       })).toBeNull();
       expect(await Bun.file(join(program, 'runtime', 'pnpm', 'node_modules', 'pnpm', 'package.json')).exists()).toBe(true);

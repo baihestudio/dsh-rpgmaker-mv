@@ -103,26 +103,8 @@ window.__ModuleLoader__.load({
       return jsx('span', { children: 'RPG Maker Agent' });
     }
 
-    function activeConversationTargets(conversation) {
-      const targets = conversation?.activeTargets;
-      if (typeof targets?.size === 'number') return targets.size > 0;
-      return Array.isArray(targets) && targets.length > 0;
-    }
-
-    function conversationPhase(session, conversation) {
-      const suppliedPhase = conversation?.phase ?? conversation?.composerPhase;
-      if (suppliedPhase !== undefined) return suppliedPhase;
-      const active = activeConversationTargets(conversation)
-        || (session?.blank !== true && session?.awaitingFirstTurn !== true)
-        || session?.running === true;
-      return active ? 'active' : session?.promptAttempted === true ? 'engaging' : 'blank';
-    }
-
-    function RpgMakerQuickStarts({ session, input, useConversation, inputActions }) {
-      if (typeof useConversation !== 'function' || session === undefined || input === undefined) return null;
-      const conversation = useConversation((snapshot) => snapshot);
-      if (conversation === undefined || conversationPhase(session, conversation) !== 'blank') return null;
-      if (typeof input.draft !== 'string' || input.draft.trim() !== '') return null;
+    function RpgMakerQuickStarts({ session, input, inputActions }) {
+      if (session.composerPhase !== 'blank' || input.draft.trim() !== '') return null;
 
       return jsx('div', {
         'aria-label': '快速开始',
@@ -136,7 +118,7 @@ window.__ModuleLoader__.load({
             jsx('span', { className: 'dsh-rpgmaker-quick-start-label', children: item.label }),
             jsx('span', { className: 'dsh-rpgmaker-quick-start-skill', children: item.skill })
           ],
-          onClick: () => { inputActions?.setDraft?.(item.prompt); }
+          onClick: () => { inputActions.setDraft(item.prompt); }
         }, item.skill))
       });
     }
@@ -151,9 +133,7 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      if (typeof ctx.effect === 'function') {
-        ctx.effect(installQuickStartStyles, 'dsh-rpgmaker-brand: quick-start styles');
-      }
+      ctx.effect(installQuickStartStyles, 'dsh-rpgmaker-brand: quick-start styles');
       ctx.slots.inject('sidebar.brand.mark', () => ctx.slots.inject('sidebar.brand.name', () => ctx.slots.inject('conversation.hero.brand.mark', function* () {
         yield ctx.slots.register({ name: 'sidebar.brand.mark', priority: -1 }, RpgMakerAgentMark);
         yield ctx.slots.register({ name: 'sidebar.brand.name', priority: -1 }, RpgMakerAgentName);
