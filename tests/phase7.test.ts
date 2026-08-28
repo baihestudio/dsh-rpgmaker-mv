@@ -1356,7 +1356,7 @@ describe('Windows release gate foundations', () => {
         'game-design', 'rpgmaker-mv', 'rpgmaker-mv', 'image-assets'
       ]);
       expect(quickStartButtons.map((button) => (button.props.children as Array<{ props: Record<string, unknown> }>)[0]?.props.children)).toEqual([
-        '推敲设计与剧情', '开发插件与系统', '编辑地图与事件', '制作美术素材'
+        '推敲设计与剧情', '开发插件', '编辑地图与事件', '制作美术素材'
       ]);
 
       const draftWrites: string[] = [];

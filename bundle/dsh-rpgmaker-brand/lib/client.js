@@ -73,9 +73,9 @@ window.__ModuleLoader__.load({
         prompt: '/game-design 先阅读当前项目和已有设计资料，帮我推敲下面的游戏设计或剧情；只询问真正影响玩家体验的关键问题，并把确认结论维护进设计文档：'
       },
       {
-        label: '开发插件与系统',
+        label: '开发插件',
         skill: 'rpgmaker-mv',
-        prompt: '/rpgmaker-mv 先检查当前项目的插件结构和相关实现，再开发或修改下面的插件与系统功能；完成后回读并验证：'
+        prompt: '/rpgmaker-mv 先检查当前项目的插件结构和相关实现，再开发或修改下面的插件；完成后回读并验证：'
       },
       {
         label: '编辑地图与事件',

@@ -81,7 +81,7 @@ continues to own its exact version and removal.
 Contribute one compact 2-by-2 quick-start row from the existing release-owned
 UI bundle. Render it only while the selected Session's composer phase is
 `blank` and its draft is empty. The four visible actions should start from
-common user goals: design and story (`game-design`), plugin and system work
+common user goals: design and story (`game-design`), plugin work
 (`rpgmaker-mv`), map and event work (`rpgmaker-mv`), and visual assets
 (`image-assets`). Clicking an action calls the supplied draft setter with a
 slash-prefixed starter prompt and does not submit it. The row disappears once
