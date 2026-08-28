@@ -96,8 +96,12 @@ const DESIRED_PACKAGES: readonly DesiredPackage[] = [
   { packageName: WORKSPACE_MCP_PACKAGE, version: WORKSPACE_MCP_VERSION, source: 'workspace' }
 ] as const;
 
-export const MANAGED_WEB_PROFILE_PACKAGES = DESIRED_PACKAGES;
 export const MANAGED_WEB_PROFILE_PACKAGE_NAMES = DESIRED_PACKAGES.map(({ packageName }) => packageName) as readonly string[];
+export const MANAGED_WEB_PROFILE_BUNDLE_NAMES = [
+  '@deepseek-ai/dsh-base',
+  '@deepseek-ai/dsh-web-app',
+  ...MANAGED_WEB_PROFILE_PACKAGE_NAMES
+] as readonly string[];
 
 function asObject(value: unknown): JsonObject | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : undefined;
@@ -211,12 +215,25 @@ async function verifyBundlePackage(
       packageErrors.push(`installed profile package identity is ${installedName ?? 'missing'}@${installedVersion ?? 'missing'}, expected ${desired.packageName}@${desired.version}`);
     }
     const main = typeof installedManifest?.main === 'string' ? installedManifest.main : undefined;
-    if (!main || !(await exists(join(installedReal, main)))) packageErrors.push(`installed profile package entrypoint ${main ?? 'missing'} was not found`);
+    const mainPath = main ? resolve(installedReal, main) : undefined;
+    const mainTarget = mainPath ? await canonical(mainPath) : undefined;
+    if (!main || !mainPath || !mainTarget) {
+      packageErrors.push(`installed profile package entrypoint ${main ?? 'missing'} was not found`);
+    } else if (!pathIsWithin(installedReal, mainTarget, platform)) {
+      packageErrors.push(`installed profile package ${desired.packageName} entrypoint ${main} escapes its canonical package directory`);
+    } else if (!(await exists(mainPath))) {
+      packageErrors.push(`installed profile package entrypoint ${main} was not found`);
+    }
     const bundle = asObject(asObject(installedManifest?.dsh)?.bundle);
     const patch = typeof bundle?.patch === 'string' ? bundle.patch : undefined;
     const patchPath = patch ? resolve(installedReal, patch) : undefined;
-    if (!patch || !patchPath || !pathIsWithin(installedReal, patchPath, platform) || !(await exists(patchPath))) {
+    const patchTarget = patchPath ? await canonical(patchPath) : undefined;
+    if (!patch || !patchPath || !patchTarget) {
       packageErrors.push(`installed profile package ${desired.packageName} dsh.bundle.patch ${patch ?? 'missing'} was not found`);
+    } else if (!pathIsWithin(installedReal, patchTarget, platform)) {
+      packageErrors.push(`installed profile package ${desired.packageName} dsh.bundle.patch ${patch} escapes its canonical package directory`);
+    } else if (!(await exists(patchPath))) {
+      packageErrors.push(`installed profile package ${desired.packageName} dsh.bundle.patch ${patch} was not found`);
     }
   }
 
@@ -274,11 +291,27 @@ async function verifyBrandSource(bundleDir: string, platform: string, programRoo
   const manifest = await readJson(join(bundleDir, 'package.json'));
   if (manifest?.name !== DSH_BRAND_PACKAGE || manifest?.version !== DSH_BRAND_VERSION) errors.push(`brand bundle identity is ${String(manifest?.name ?? 'missing')}@${String(manifest?.version ?? 'missing')}, expected ${DSH_BRAND_PACKAGE}@${DSH_BRAND_VERSION}`);
   const main = typeof manifest?.main === 'string' ? manifest.main : undefined;
-  if (!main || !(await exists(join(bundleDir, main)))) errors.push(`brand bundle entrypoint ${main ?? 'missing'} was not found`);
+  const mainPath = main ? resolve(bundleDir, main) : undefined;
+  const mainTarget = mainPath ? await canonical(mainPath) : undefined;
+  if (!main || !mainPath || !mainTarget) {
+    errors.push(`brand bundle entrypoint ${main ?? 'missing'} was not found`);
+  } else if (!pathIsWithin(sourceReal, mainTarget, platform)) {
+    errors.push(`brand bundle entrypoint ${main} escapes its canonical bundle directory`);
+  } else if (!(await exists(mainPath))) {
+    errors.push(`brand bundle entrypoint ${main} was not found`);
+  }
   const client = await exists(join(bundleDir, 'lib', 'client.js'));
   if (!client) errors.push('brand bundle client entrypoint lib/client.js was not found');
   const patch = asObject(asObject(manifest?.dsh)?.bundle)?.patch;
-  if (patch !== './cordis.patch.yml' || !(await exists(join(bundleDir, './cordis.patch.yml')))) errors.push('brand bundle dsh.bundle patch is missing or invalid');
+  const patchPath = typeof patch === 'string' ? resolve(bundleDir, patch) : undefined;
+  const patchTarget = patchPath ? await canonical(patchPath) : undefined;
+  if (patch !== './cordis.patch.yml' || !patchPath || !patchTarget) {
+    errors.push('brand bundle dsh.bundle patch is missing or invalid');
+  } else if (!pathIsWithin(sourceReal, patchTarget, platform)) {
+    errors.push('brand bundle dsh.bundle patch escapes its canonical bundle directory');
+  } else if (!(await exists(patchPath))) {
+    errors.push('brand bundle dsh.bundle patch is missing or invalid');
+  }
 }
 
 /**
@@ -294,6 +327,13 @@ export async function verifyManagedWebProfile(options: ManagedWebProfileOptions 
   const workspaceBundleDir = resolve(workspaceMcpBundleDirFor(paths));
   const brandBundleDir = resolve(join(paths.programRoot, DSH_BRAND_BUNDLE_RELATIVE));
   const errors: string[] = [];
+  const dshHomeReal = await canonical(paths.dshHome);
+  const profilesRoot = resolve(join(paths.dshHome, 'profiles'));
+  const profilesRootReal = await canonical(profilesRoot);
+  const profileRootReal = await canonical(profileDir);
+  if (!pathIsWithin(dshHomeReal, profilesRootReal, platform) || !pathIsWithin(profilesRootReal, profileRootReal, platform)) {
+    errors.push(`managed ${MANAGED_WEB_PROFILE} profile root ${profileDir} escapes the app-managed profiles directory ${profilesRoot}`);
+  }
   const manifest = await readJson(join(profileDir, 'package.json'));
   if (!manifest) errors.push(`managed ${MANAGED_WEB_PROFILE} profile manifest is missing or invalid at ${join(profileDir, 'package.json')}`);
 
@@ -307,8 +347,8 @@ export async function verifyManagedWebProfile(options: ManagedWebProfileOptions 
     const found = [...dependencyNames, ...secondaryNames].join(', ');
     errors.push(`managed ${MANAGED_WEB_PROFILE} profile dependencies are not exact; expected ${desiredNames.join(', ')}, found ${found || 'none'}`);
   }
-  if (!rawBundles || rawBundles.length !== desiredNames.length || rawBundles.some((name, index) => name !== desiredNames[index])) {
-    errors.push(`managed ${MANAGED_WEB_PROFILE} profile bundle registrations are not exact; expected ${desiredNames.join(', ')}`);
+  if (!rawBundles || rawBundles.length !== MANAGED_WEB_PROFILE_BUNDLE_NAMES.length || rawBundles.some((name, index) => name !== MANAGED_WEB_PROFILE_BUNDLE_NAMES[index])) {
+    errors.push(`managed ${MANAGED_WEB_PROFILE} profile bundle registrations are not exact; expected ${MANAGED_WEB_PROFILE_BUNDLE_NAMES.join(', ')}`);
   }
 
   await verifyBrandSource(brandBundleDir, platform, paths.programRoot, errors);
@@ -418,7 +458,7 @@ async function writeManagedBundleRegistrations(profileDir: string): Promise<void
   if (!manifest) throw new Error(`Managed Web profile package manager produced no readable manifest at ${manifestPath}`);
   const dsh = asObject(manifest.dsh) ?? {};
   const profile = asObject(dsh.profile) ?? {};
-  profile.bundles = [...MANAGED_WEB_PROFILE_PACKAGE_NAMES];
+  profile.bundles = [...MANAGED_WEB_PROFILE_BUNDLE_NAMES];
   dsh.profile = profile;
   manifest.dsh = dsh;
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');

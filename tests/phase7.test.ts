@@ -12,7 +12,7 @@ import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgej
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, RELEASE_ENTRIES, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { PNPM_VERSION } from '../src/profile';
-import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, DSH_WEB_PACKAGE, DSH_WEB_VERSION } from '../src/managed-web-profile';
+import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, DSH_WEB_PACKAGE, DSH_WEB_VERSION, MANAGED_WEB_PROFILE_BUNDLE_NAMES } from '../src/managed-web-profile';
 import { findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
@@ -178,7 +178,12 @@ async function writeProfilePlugin(
   try {
     manifest = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8')) as Record<string, unknown>;
   } catch {
-    manifest = { name: 'dsh-profile-web', private: true, version: '0.1.0' };
+    manifest = {
+      name: 'dsh-profile-web',
+      private: true,
+      version: '0.1.0',
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } }
+    };
   }
   const dependencies = { ...((manifest.dependencies ?? {}) as Record<string, string>), [packageName]: source ? `file:${source}` : version };
   manifest.dependencies = dependencies;
@@ -1324,7 +1329,7 @@ describe('Windows release gate foundations', () => {
       expect(calls.some((call) => call.args.includes(`${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
       expect(calls.some((call) => call.args.includes(`file:${join(program, DSH_BRAND_BUNDLE_RELATIVE)}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
       expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', ...DSH_BRAND_PACKAGE.split('/'), 'assets', 'maker-ape-logo.png')).exists()).toBe(true);
-      expect((JSON.parse(await readFile(join(state, 'profiles', 'web', 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }).dsh?.profile?.bundles).toContain(DSH_BRAND_PACKAGE);
+      expect((JSON.parse(await readFile(join(state, 'profiles', 'web', 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }).dsh?.profile?.bundles).toEqual([...MANAGED_WEB_PROFILE_BUNDLE_NAMES]);
       expect((JSON.parse(await readFile(join(program, DSH_BRAND_BUNDLE_RELATIVE, 'package.json'), 'utf8')) as { exports?: Record<string, string> }).exports?.['./package.json']).toBe('./package.json');
       const clientSource = await readFile(join(program, DSH_BRAND_BUNDLE_RELATIVE, 'lib', 'client.js'), 'utf8');
       let registration: { id: string; factory: (require: (id: string) => unknown) => { apply?: (ctx: unknown) => unknown; inject?: unknown } } | undefined;
@@ -1419,14 +1424,15 @@ describe('Windows release gate foundations', () => {
 
       calls.length = 0;
       const webProfileManifestPath = join(state, 'profiles', 'web', 'package.json');
-      const webProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      const webProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string>; dsh?: { profile?: { bundles?: string[] } } };
       webProfileManifest.dependencies ??= {};
       webProfileManifest.dependencies['@tta-lab/dsh-web'] = '3.1.0';
       await writeFile(webProfileManifestPath, `${JSON.stringify(webProfileManifest, null, 2)}\n`);
       await install();
-      const rebuiltWebProfile = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      const rebuiltWebProfile = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string>; dsh?: { profile?: { bundles?: string[] } } };
       expect(rebuiltWebProfile.dependencies?.['@tta-lab/dsh-web']).toBeUndefined();
       expect(rebuiltWebProfile.dependencies?.[DSH_WEB_PACKAGE]).toBe(DSH_WEB_VERSION);
+      expect(rebuiltWebProfile.dsh?.profile?.bundles).toEqual([...MANAGED_WEB_PROFILE_BUNDLE_NAMES]);
       expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`))).toBe(true);
       expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
@@ -1434,14 +1440,17 @@ describe('Windows release gate foundations', () => {
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'package.json')).exists()).toBe(true);
 
       calls.length = 0;
-      const staleProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      const staleProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string>; dsh?: { profile?: { bundles?: string[] } } };
       staleProfileManifest.dependencies ??= {};
       staleProfileManifest.dependencies['@baihestudio/dsh-image-workshop'] = `file:${join(program, 'bundle', 'dsh-image-workshop')}`;
+      staleProfileManifest.dsh ??= {};
+      staleProfileManifest.dsh.profile = { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', ...MANAGED_WEB_PROFILE_BUNDLE_NAMES.slice(2), '@baihestudio/dsh-image-workshop'] };
       await writeFile(webProfileManifestPath, `${JSON.stringify(staleProfileManifest, null, 2)}\n`);
       await install();
-      const rebuiltProfile = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      const rebuiltProfile = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string>; dsh?: { profile?: { bundles?: string[] } } };
       expect(rebuiltProfile.dependencies?.['@baihestudio/dsh-image-workshop']).toBeUndefined();
       expect(rebuiltProfile.dependencies?.[DSH_WEB_PACKAGE]).toBe(DSH_WEB_VERSION);
+      expect(rebuiltProfile.dsh?.profile?.bundles).toEqual([...MANAGED_WEB_PROFILE_BUNDLE_NAMES]);
       expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`))).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });

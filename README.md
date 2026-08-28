@@ -17,7 +17,7 @@ Contributors can still run the underlying bootstrap and doctor scripts from Powe
 ./doctor.ps1
 ```
 
-The harness keeps the official DeepSeek Harness runtime in an app-owned tree and never forks or edits DSH. Installation materializes one exact app-managed `web` profile containing the pinned Web and image-generation packages plus the release-owned brand and workspace MCP bundles. Startup repairs that same profile when it is stale; Doctor reports its read-only health without changing profile state. Windows is the primary, release-blocking platform; macOS support is best effort.
+The harness keeps the official DeepSeek Harness runtime in an app-owned tree and never forks or edits DSH. Installation materializes one exact app-managed `web` profile with four direct managed package dependencies and six ordered DSH bundle layers: the in-box `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app` template layers, followed by pinned Web and image-generation packages plus the release-owned brand and workspace MCP bundles. Startup repairs that same profile when it is stale; Doctor reports its read-only health without changing profile state. Windows is the primary, release-blocking platform; macOS support is best effort.
 
 The real workspace acceptance uses only disposable state: `bun run phase2:real`
 prepares the project-neutral Host from a neutral landing directory, checks the
@@ -54,8 +54,9 @@ recent projects, writes app-owned project-selection state, or accepts
 `launch --project`. The Release ZIP carries the prebuilt
 `bundle/dsh-workspace-mcp` package and generated Xerolo manifest. Launch
 prepares and verifies the pinned DSH, pnpm 10.15.1, MCPorter 0.12.3, Xerolo
-0.1.0, the exact app-managed `web` profile (Web, image generation, brand, and
-workspace MCP), the default preset, and the effective composition before
+0.1.0, the exact app-managed `web` profile (four direct packages and six
+ordered bundle layers: the DSH base/web-app template followed by Web, image
+generation, brand, and workspace MCP), the default preset, and the effective composition before
 starting official DSH. DSH starts in
 an app-owned neutral landing directory; choose and switch RPG Maker folders in
 DSH Web. `rpgmaker` is the default preset. New Agents default to

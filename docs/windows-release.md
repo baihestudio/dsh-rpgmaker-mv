@@ -12,9 +12,9 @@
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
    - ImageMagick 7 (`ImageMagick.ImageMagick`; installed system-wide and exposed as `magick` on Windows PATH)
-4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the pinned DSH `0.1.1-rc.2` runtime with Bun (npm integrity `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==`), materializes one exact app-managed `web` profile containing `@guionai/dsh-web@0.3.1`, `@lamplitisles/dsh-imagegen@0.2.1`, the release-owned `@baihestudio/dsh-rpgmaker-brand` bundle, and the app-owned `@baihestudio/dsh-workspace-mcp` bundle, installs the exact RPG Maker MCP, then creates a per-user Start Menu shortcut named **RPG Maker Agent**. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, default preset, and neutral composition as needed.
+4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the pinned DSH `0.1.1-rc.2` runtime with Bun (npm integrity `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==`), materializes one exact app-managed `web` profile with four direct managed dependencies (`@guionai/dsh-web@0.3.1`, `@lamplitisles/dsh-imagegen@0.2.1`, the release-owned `@baihestudio/dsh-rpgmaker-brand` bundle, and the app-owned `@baihestudio/dsh-workspace-mcp` bundle) plus the six ordered DSH bundle layers beginning with `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`, installs the exact RPG Maker MCP, then creates a per-user Start Menu shortcut named **RPG Maker Agent**. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, default preset, and neutral composition as needed.
 
-The four packages belong to one DSH-managed profile state. If a package command or final verification fails after initializing that state, the installer reports the materialization failure and restores the prior working profile (and its app-owned workspace bundle); rerun `Install.cmd` to complete the profile setup. Credentials, recent workspaces, presets, caches, logs, and other mutable state remain outside this rollback boundary.
+The four direct package dependencies and six bundle layers belong to one DSH-managed profile state. DSH's `web` template layers (`@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`) remain in-box template bundles rather than profile dependencies. If a package command or final verification fails after initializing that state, the installer reports the materialization failure and restores the prior working profile (and its app-owned workspace bundle); rerun `Install.cmd` to complete the profile setup. Credentials, recent workspaces, presets, caches, logs, and other mutable state remain outside this rollback boundary.
 
 No Git clone, npm install, or manual package command is needed for this path. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported repair path; a previous runtime is retained by the staged runtime swap for recovery. If post-swap bootstrap, metadata, or shortcut creation fails, the prior program tree is restored and the failed new tree is retained as a named diagnostic/recovery directory.
 
@@ -63,7 +63,7 @@ project list, writes no app-owned project-selection state, and rejects
 launch copies it to the stable app-owned data directory before materializing
 the managed profile. Before spawning DSH, launch verifies or repairs the
 exact-pinned app-owned pnpm 10.15.1, MCPorter 0.12.3, Xerolo RPG Maker MCP
-0.1.0, and complete four-package `web` profile, installs the default preset, and verifies
+0.1.0, and the complete `web` profile with four direct packages and six ordered bundle layers, installs the default preset, and verifies
 the effective composition from the neutral landing directory. The bundle's
 profile patch inserts only the Host service entry point; each shipped preset
 composition mounts the `/agent` entry point in Agent scope. The generated

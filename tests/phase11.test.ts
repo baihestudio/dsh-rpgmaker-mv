@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +13,7 @@ import {
   DSH_WEB_PACKAGE,
   DSH_WEB_VERSION,
   ensureManagedWebProfile,
+  MANAGED_WEB_PROFILE_BUNDLE_NAMES,
   MANAGED_WEB_PROFILE_PACKAGE_NAMES,
   verifyManagedWebProfile
 } from '../src/managed-web-profile';
@@ -48,7 +49,12 @@ async function writeProfilePackage(
   try {
     manifest = JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')) as Record<string, unknown>;
   } catch {
-    manifest = { name: 'dsh-profile-web', private: true, version: '0.1.0' };
+    manifest = {
+      name: 'dsh-profile-web',
+      private: true,
+      version: '0.1.0',
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } }
+    };
   }
   const dependencies = { ...((manifest.dependencies ?? {}) as Record<string, string>), [packageName]: source ? `file:${source}` : version };
   manifest.dependencies = dependencies;
@@ -131,6 +137,10 @@ async function rollbackSnapshotNames(dshHome: string): Promise<string[]> {
   return (await readdir(dshHome)).filter((name) => name.startsWith('.managed-web-profile-rollback-')).sort();
 }
 
+function directoryLinkType(): 'dir' | 'junction' {
+  return process.platform === 'win32' ? 'junction' : 'dir';
+}
+
 async function appRoots(root: string) {
   const programRoot = join(root, 'program');
   const mutableRoot = join(root, 'mutable');
@@ -161,24 +171,31 @@ function optionsFor(
 }
 
 describe('managed Web profile materialization', () => {
-  test('converges to the exact four-package profile and removes stale dependencies', async () => {
+  test('converges to four direct packages and the exact six-layer bundle roster', async () => {
     const root = await temp('phase11-managed-profile-exact');
     try {
       const roots = await appRoots(root);
       await mkdir(dirname(roots.npmExecutable), { recursive: true });
       await writeFile(roots.npmExecutable, '@echo off\r\n');
+      const expectedBundles = [
+        '@deepseek-ai/dsh-base',
+        '@deepseek-ai/dsh-web-app',
+        ...MANAGED_WEB_PROFILE_PACKAGE_NAMES
+      ];
+      expect(MANAGED_WEB_PROFILE_BUNDLE_NAMES).toEqual(expectedBundles);
       const calls: string[] = [];
       const first = await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, calls)));
       expect(first.valid).toBe(true);
       expect(first.materialized).toBe(true);
       expect(Object.keys(first.dependencies).sort()).toEqual([...MANAGED_WEB_PROFILE_PACKAGE_NAMES].sort());
-      expect(first.bundles).toEqual([...MANAGED_WEB_PROFILE_PACKAGE_NAMES]);
+      expect(first.bundles).toEqual(expectedBundles);
       expect(calls.filter((call) => call.includes(`pnpm@${PNPM_VERSION}`))).toHaveLength(1);
       expect(await rollbackSnapshotNames(roots.dshHome)).toEqual([]);
 
       const profileManifestPath = join(roots.dshHome, 'profiles', 'web', 'package.json');
-      const staleManifest = JSON.parse(await readFile(profileManifestPath, 'utf8')) as { dependencies: Record<string, string> };
+      const staleManifest = JSON.parse(await readFile(profileManifestPath, 'utf8')) as { dependencies: Record<string, string>; dsh?: { profile?: { bundles?: unknown[] } } };
       staleManifest.dependencies['@tta-lab/dsh-web'] = '3.1.0';
+      staleManifest.dsh = { profile: { bundles: [...MANAGED_WEB_PROFILE_BUNDLE_NAMES, '@tta-lab/dsh-web'] } };
       await writeFile(profileManifestPath, `${JSON.stringify(staleManifest, null, 2)}\n`);
       const secondCalls: string[] = [];
       const second = await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, secondCalls)));
@@ -186,7 +203,7 @@ describe('managed Web profile materialization', () => {
       expect(second.materialized).toBe(true);
       expect(Object.keys(second.dependencies).sort()).toEqual([...MANAGED_WEB_PROFILE_PACKAGE_NAMES].sort());
       expect(second.dependencies['@tta-lab/dsh-web']).toBeUndefined();
-      expect(second.bundles).toEqual([...MANAGED_WEB_PROFILE_PACKAGE_NAMES]);
+      expect(second.bundles).toEqual(expectedBundles);
       expect(secondCalls.filter((call) => call.startsWith('dsh.exe plugin --profile web add'))).toHaveLength(4);
       expect(await rollbackSnapshotNames(roots.dshHome)).toEqual([]);
       expect(second.packages.map((pkg) => `${pkg.packageName}@${pkg.installedVersion}`)).toEqual([
@@ -261,6 +278,95 @@ describe('managed Web profile materialization', () => {
       expect(repaired.valid).toBe(true);
       expect(repaired.materialized).toBe(true);
       await expect(stat(patchPath)).resolves.toBeTruthy();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects managed package entrypoint and patch targets that escape the package root', async () => {
+    const root = await temp('phase11-managed-profile-package-escape');
+    try {
+      const roots = await appRoots(root);
+      await writeFile(roots.npmExecutable, '@echo off\r\n');
+      await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      const packageDir = join(roots.dshHome, 'profiles', 'web', 'node_modules', '@lamplitisles', 'dsh-imagegen');
+      const manifestPath = join(packageDir, 'package.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { main?: string; dsh?: { bundle?: { patch?: string } } };
+      const outsideMain = join(root, 'outside-main.js');
+      await writeFile(outsideMain, 'export {}\n');
+      manifest.main = relative(packageDir, outsideMain);
+      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+      const escapedMain = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      expect(escapedMain.valid).toBe(false);
+      expect(escapedMain.errors.join(' ')).toMatch(/dsh-imagegen entrypoint .*escapes its canonical package directory/i);
+
+      manifest.main = 'lib/index.js';
+      const outsidePatch = join(root, 'outside-patch');
+      await mkdir(outsidePatch);
+      await writeFile(join(outsidePatch, 'target.yml'), 'outside patch\n');
+      const patchPath = join(packageDir, 'cordis.patch.yml');
+      await rm(patchPath);
+      await symlink(outsidePatch, patchPath, directoryLinkType());
+      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+      const escapedPatch = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      expect(escapedPatch.valid).toBe(false);
+      expect(escapedPatch.errors.join(' ')).toMatch(/dsh-imagegen dsh\.bundle\.patch .*escapes its canonical package directory/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects escaped app-owned brand entrypoint and patch targets', async () => {
+    const root = await temp('phase11-managed-profile-brand-escape');
+    try {
+      const roots = await appRoots(root);
+      await writeFile(roots.npmExecutable, '@echo off\r\n');
+      await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      const brandDir = join(roots.programRoot, DSH_BRAND_BUNDLE_RELATIVE);
+      const manifestPath = join(brandDir, 'package.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { main?: string; dsh?: { bundle?: { patch?: string } } };
+      const outsideMain = join(root, 'outside-brand-main.js');
+      await writeFile(outsideMain, 'export {}\n');
+      manifest.main = relative(brandDir, outsideMain);
+      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+      const escapedMain = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      expect(escapedMain.valid).toBe(false);
+      expect(escapedMain.errors.join(' ')).toMatch(/brand bundle entrypoint .*escapes its canonical bundle directory/i);
+
+      manifest.main = 'lib/index.js';
+      const outsidePatch = join(root, 'outside-brand-patch');
+      await mkdir(outsidePatch);
+      await writeFile(join(outsidePatch, 'target.yml'), 'outside brand patch\n');
+      const patchPath = join(brandDir, 'cordis.patch.yml');
+      await rm(patchPath);
+      await symlink(outsidePatch, patchPath, directoryLinkType());
+      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+      const escapedPatch = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      expect(escapedPatch.valid).toBe(false);
+      expect(escapedPatch.errors.join(' ')).toMatch(/brand bundle dsh\.bundle patch escapes its canonical bundle directory/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a managed profile root that resolves outside the app-owned profiles directory', async () => {
+    const root = await temp('phase11-managed-profile-root-escape');
+    try {
+      const roots = await appRoots(root);
+      await writeFile(roots.npmExecutable, '@echo off\r\n');
+      await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      const profileDir = join(roots.dshHome, 'profiles', 'web');
+      const outsideProfile = join(root, 'outside-profile');
+      await rename(profileDir, outsideProfile);
+      await symlink(outsideProfile, profileDir, directoryLinkType());
+
+      const escaped = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
+      expect(escaped.valid).toBe(false);
+      expect(escaped.errors.join(' ')).toMatch(/managed web profile root .*escapes the app-managed profiles directory/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
