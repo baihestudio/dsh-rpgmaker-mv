@@ -13,7 +13,7 @@ $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($ShortcutPath)
 $shortcut.TargetPath = $TargetPath
 $shortcut.WorkingDirectory = $WorkingDirectory
-$shortcut.Description = 'DSH for RPG Maker MV'
+$shortcut.Description = 'RPG Maker Agent'
 if ($IconPath) { $shortcut.IconLocation = $IconPath }
 $shortcut.Save()
 Write-Output $ShortcutPath

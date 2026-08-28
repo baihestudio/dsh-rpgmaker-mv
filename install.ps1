@@ -37,7 +37,7 @@ function Resolve-RealPowerShell {
 # prerequisite work; command presence is never treated as consent.
 $consent = [bool] $Yes
 if (-not $consent) {
-  Write-Host 'DSH for RPG Maker MV may use WinGet to install or repair these prerequisites:'
+  Write-Host 'RPG Maker Agent may use WinGet to install or repair these prerequisites:'
   Write-Host '  - Node.js LTS/npm, Python 3.13, Bun, PowerShell 7.4+, Git for Windows, Microsoft Coreutils, ImageMagick 7'
   $answer = Read-Host 'Allow WinGet to install or repair prerequisites? [Y/N]'
   if ($answer -notmatch '^(?i)y(es)?$') {
@@ -78,5 +78,5 @@ if ($consent) { $arguments += '--yes' }
 & $bun.Source @arguments
 $code = $LASTEXITCODE
 if ($code -ne 0) { throw "DSH installation failed (exit code $code)." }
-Write-Host 'DSH for RPG Maker MV is installed. Use the Start Menu shortcut to launch it.'
+Write-Host 'RPG Maker Agent is installed. Use the Start Menu shortcut to launch it.'
 if (-not $NoPause) { Read-Host 'Press Enter to close' | Out-Null }

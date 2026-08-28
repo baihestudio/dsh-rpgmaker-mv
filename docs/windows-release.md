@@ -12,7 +12,7 @@
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
    - ImageMagick 7 (`ImageMagick.ImageMagick`; installed system-wide and exposed as `magick` on Windows PATH)
-4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the pinned DSH `0.1.1-rc.2` runtime with Bun (npm integrity `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==`), rebuilds the app-managed `web` profile with `@guionai/dsh-web@0.3.1` and `@lamplitisles/dsh-imagegen@0.2.1`, installs the exact RPG Maker MCP, then creates a per-user Start Menu shortcut named **DSH for RPG Maker MV**. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, default preset, and neutral composition as needed.
+4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the pinned DSH `0.1.1-rc.2` runtime with Bun (npm integrity `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==`), rebuilds the app-managed `web` profile with `@guionai/dsh-web@0.3.1` and `@lamplitisles/dsh-imagegen@0.2.1`, installs the exact RPG Maker MCP, then creates a per-user Start Menu shortcut named **RPG Maker Agent**. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, local workspace bundle, default preset, and neutral composition as needed.
 
 The Web package belongs to DSH-managed profile state. If its plugin command fails after initializing that state, the installer reports failure and restores its program tree/shortcut; rerun `Install.cmd` to complete the profile setup. Profile-state rollback is intentionally not part of the installer.
 
@@ -30,6 +30,16 @@ nuc-powershell dev/update-local-windows.ps1 \
 ```
 
 The helper is development-only. `-StopRunningDsh` explicitly stops DSH processes that hold the installed program tree before the atomic update; without it, the helper refuses to interrupt an active session. It extracts the ZIP into a unique local Windows Temp directory, invokes its normal `install.ps1`, and removes the extracted copy after a successful update. Pass `-KeepExtractedRelease` only when retaining diagnostics is useful.
+
+From this Mac checkout, the equivalent NUC workflow is:
+
+```bash
+just install-from-mac-to-nuc
+```
+
+It builds a fresh temporary Release ZIP, transfers it through `nuc-kep`, stops
+the installed DSH process tree, and runs the same installer on the NUC. Set
+`NUC_SSH_HOST` only when using a different SSH route.
 
 ## Installed locations
 

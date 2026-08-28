@@ -14,6 +14,7 @@ import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../s
 import { PNPM_VERSION } from '../src/profile';
 import { DSH_WEB_PACKAGE, DSH_WEB_VERSION } from '../src/dsh-web';
 import { DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION } from '../src/dsh-imagegen';
+import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE } from '../src/dsh-brand';
 import { findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
@@ -169,7 +170,8 @@ async function writeProfilePlugin(
   packageName: string,
   version: string,
   integrity: string,
-  source?: string
+  source?: string,
+  bundle = false
 ): Promise<void> {
   const profile = join(dshHome, 'profiles', 'web');
   const installed = join(profile, 'node_modules', ...packageName.split('/'));
@@ -185,7 +187,7 @@ async function writeProfilePlugin(
   const dsh = (manifest.dsh ?? {}) as Record<string, unknown>;
   const profileConfig = (dsh.profile ?? {}) as Record<string, unknown>;
   const bundles = Array.isArray(profileConfig.bundles) ? [...profileConfig.bundles] : [];
-  if (packageName === '@baihestudio/dsh-workspace-mcp') bundles.push(packageName);
+  if (bundle) bundles.push(packageName);
   profileConfig.bundles = [...new Set(bundles)];
   dsh.profile = profileConfig;
   manifest.dsh = dsh;
@@ -243,9 +245,9 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
       }
       const local = args.find((value) => value.startsWith('file:'))?.slice('file:'.length);
       if (!local) throw new Error(`unexpected plugin fixture args: ${args.join(' ')}`);
-      const localManifest = JSON.parse(await readFile(join(local, 'package.json'), 'utf8')) as { name?: string; version?: string };
+      const localManifest = JSON.parse(await readFile(join(local, 'package.json'), 'utf8')) as { name?: string; version?: string; dsh?: { bundle?: unknown } };
       if (!localManifest.name || !localManifest.version) throw new Error(`local plugin fixture has no package identity: ${local}`);
-      await writeProfilePlugin(context.dshHome, localManifest.name, localManifest.version, '', local);
+      await writeProfilePlugin(context.dshHome, localManifest.name, localManifest.version, '', local, Boolean(localManifest.dsh?.bundle));
       return { exitCode: 0, stdout: '', stderr: '' };
     }
     const name = basename(command).toLowerCase();
@@ -596,7 +598,7 @@ describe('Windows release gate foundations', () => {
       expect(paths.logsDir).toBe(join(paths.mutableRoot, 'logs'));
       expect(paths.cacheDir).toBe(join(paths.mutableRoot, 'cache'));
       expect(paths.neutralLandingDir).toBe(join(paths.programRoot, 'neutral'));
-      expect(paths.startMenuShortcutPath).toContain(join('BaiheStudio', 'DSH for RPG Maker MV.lnk'));
+      expect(paths.startMenuShortcutPath).toContain(join('BaiheStudio', 'RPG Maker Agent.lnk'));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1169,12 +1171,16 @@ describe('Windows release gate foundations', () => {
       const mutable = join(root, 'mutable');
       const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
       const state = join(mutable, 'state');
+      const appData = join(root, 'AppData', 'Roaming');
+      const legacyShortcut = join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'BaiheStudio', 'DSH for RPG Maker MV.lnk');
       await mkdir(state, { recursive: true });
+      await mkdir(dirname(legacyShortcut), { recursive: true });
       await writeFile(join(state, '.credentials.yaml'), 'provider: local\n');
+      await writeFile(legacyShortcut, 'legacy shortcut');
       let dependencyPreparations = 0;
       const result = await installWindowsRelease({
         platform: 'win32',
-        env: { ...env, DEEPSEEK_API_KEY: 'must-not-be-written' },
+        env: { ...env, APPDATA: appData, DEEPSEEK_API_KEY: 'must-not-be-written' },
         releaseRoot: REPOSITORY_ROOT,
         programRoot: program,
         mutableRoot: mutable,
@@ -1187,9 +1193,10 @@ describe('Windows release gate foundations', () => {
           expect(bunExecutable.toLowerCase()).toContain('bun');
         },
         createShortcut: async (options) => {
-          await mkdir(resolve(options.targetPath, '..'), { recursive: true });
-          await writeFile(options.targetPath + '.shortcut-test', options.targetPath);
-          return resolve(options.targetPath, '..', 'DSH for RPG Maker MV.lnk');
+          const shortcut = resolveHarnessPaths(options).startMenuShortcutPath;
+          await mkdir(dirname(shortcut), { recursive: true });
+          await writeFile(shortcut, options.targetPath);
+          return shortcut;
         }
       });
       expect(result.paths.programRoot).toBe(program);
@@ -1207,6 +1214,9 @@ describe('Windows release gate foundations', () => {
       expect(forgejoMcp.executablePath).toBe(forgejoMcpExecutablePath(program));
       expect((await stat(join(mutable, 'logs'))).isDirectory()).toBe(true);
       expect((await stat(join(mutable, 'cache'))).isDirectory()).toBe(true);
+      expect(result.shortcutPath).toBe(join(dirname(legacyShortcut), 'RPG Maker Agent.lnk'));
+      expect(await Bun.file(result.shortcutPath).exists()).toBe(true);
+      expect(await Bun.file(legacyShortcut).exists()).toBe(false);
       expect(await readFile(join(program, 'install.json'), 'utf8')).not.toContain('must-not-be-written');
       expect(await readFile(join(state, '.credentials.yaml'), 'utf8')).toContain('provider: local');
     } finally {
@@ -1268,7 +1278,7 @@ describe('Windows release gate foundations', () => {
         commandRunner,
         consent: true,
         createShortcut: async ({ targetPath }) => {
-          const shortcut = join(root, 'Start Menu', 'DSH for RPG Maker MV.lnk');
+          const shortcut = join(root, 'Start Menu', 'RPG Maker Agent.lnk');
           await mkdir(dirname(shortcut), { recursive: true });
           await writeFile(shortcut, targetPath);
           return shortcut;
@@ -1292,6 +1302,97 @@ describe('Windows release gate foundations', () => {
       expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
       expect(calls.flatMap((call) => call.args)).not.toContain('@tta-lab/dsh-web');
       expect(calls.some((call) => call.args.includes(`${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
+      expect(calls.some((call) => call.args.includes(`file:${join(program, DSH_BRAND_BUNDLE_RELATIVE)}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
+      expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', ...DSH_BRAND_PACKAGE.split('/'), 'assets', 'maker-ape-logo.png')).exists()).toBe(true);
+      expect((JSON.parse(await readFile(join(state, 'profiles', 'web', 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }).dsh?.profile?.bundles).toContain(DSH_BRAND_PACKAGE);
+      expect((JSON.parse(await readFile(join(program, DSH_BRAND_BUNDLE_RELATIVE, 'package.json'), 'utf8')) as { exports?: Record<string, string> }).exports?.['./package.json']).toBe('./package.json');
+      const clientSource = await readFile(join(program, DSH_BRAND_BUNDLE_RELATIVE, 'lib', 'client.js'), 'utf8');
+      let registration: { id: string; factory: (require: (id: string) => unknown) => { apply?: (ctx: unknown) => unknown; inject?: unknown } } | undefined;
+      new Function('window', clientSource)({ __ModuleLoader__: { load: (value: typeof registration) => { registration = value; } } });
+      const jsx = (type: string, props: Record<string, unknown>) => ({ type, props });
+      const client = registration?.factory(() => ({ jsx }));
+      expect(registration?.id).toBe(DSH_BRAND_PACKAGE);
+      expect(typeof client?.apply).toBe('function');
+      expect(client?.inject).toEqual(['slots']);
+      const registeredSlots: Array<{
+        options: { name: string; priority?: number; id?: string; order?: number };
+        component: (props: Record<string, unknown>) => { type: string; props: Record<string, unknown> } | null;
+      }> = [];
+      let quickStartStyleEffect: (() => unknown) | undefined;
+      client?.apply?.({
+        effect: (effect: () => unknown) => { quickStartStyleEffect = effect; },
+        slots: {
+          inject: (_name: string, body: () => unknown) => {
+            const result = body() as Iterable<unknown> | undefined;
+            if (result?.[Symbol.iterator]) for (const _entry of result) undefined;
+          },
+          register: (options: { name: string; priority?: number }, component: (props: Record<string, unknown>) => { type: string; props: Record<string, unknown> }) => {
+            registeredSlots.push({ options, component });
+          }
+        }
+      });
+      expect(typeof quickStartStyleEffect).toBe('function');
+      const brandSlots = registeredSlots.filter(({ options }) => options.name !== 'conversation.input.dock');
+      expect(brandSlots.map(({ options }) => options)).toEqual([
+        { name: 'sidebar.brand.mark', priority: -1 },
+        { name: 'sidebar.brand.name', priority: -1 },
+        { name: 'conversation.hero.brand.mark', priority: -1 }
+      ]);
+      expect(brandSlots[0]?.component({ size: 24 })?.props.alt).toBe('RPG Maker Agent');
+      expect(brandSlots[1]?.component({})?.props.children).toBe('RPG Maker Agent');
+      const quickStartSlots = registeredSlots.filter(({ options }) => options.name === 'conversation.input.dock');
+      expect(quickStartSlots.map(({ options }) => options)).toEqual([
+        { name: 'conversation.input.dock', id: 'quick-starts', order: 0 }
+      ]);
+      const quickStart = quickStartSlots[0]!.component({
+        session: { composerPhase: 'blank' },
+        input: { draft: '  ' },
+        inputActions: { setDraft: () => undefined }
+      });
+      expect(quickStart?.props['data-dsh-rpgmaker-quick-starts']).toBe(true);
+      const quickStartButtons = quickStart?.props.children as Array<{ props: Record<string, unknown> }>;
+      expect(quickStartButtons).toHaveLength(4);
+      expect(quickStartButtons.map((button) => button.props['data-skill'])).toEqual([
+        'game-design', 'rpgmaker-mv', 'rpgmaker-mv', 'image-assets'
+      ]);
+      expect(quickStartButtons.map((button) => (button.props.children as Array<{ props: Record<string, unknown> }>)[0]?.props.children)).toEqual([
+        '推敲剧情与玩法', '开发插件', '编辑对话与事件', '制作美术素材'
+      ]);
+
+      const draftWrites: string[] = [];
+      let submitCalls = 0;
+      const actionSurface = quickStartSlots[0]!.component({
+        session: { composerPhase: 'blank' },
+        input: { draft: '' },
+        inputActions: {
+          setDraft: (text: string) => { draftWrites.push(text); },
+          submit: () => { submitCalls += 1; }
+        }
+      });
+      const actionButtons = actionSurface?.props.children as Array<{ props: Record<string, unknown> }>;
+      for (const button of actionButtons) {
+        const writesBeforeClick = draftWrites.length;
+        (button.props.onClick as () => void)();
+        expect(draftWrites.length).toBe(writesBeforeClick + 1);
+      }
+      expect(draftWrites).toHaveLength(4);
+      expect(draftWrites.every((text) => text.length > 0)).toBe(true);
+      expect(submitCalls).toBe(0);
+      expect(quickStartSlots[0]!.component({
+        session: { composerPhase: 'blank' },
+        input: { draft: 'already typing' },
+        inputActions: { setDraft: () => undefined }
+      })).toBeNull();
+      expect(quickStartSlots[0]!.component({
+        session: { composerPhase: 'engaging' },
+        input: { draft: '' },
+        inputActions: { setDraft: () => undefined }
+      })).toBeNull();
+      expect(quickStartSlots[0]!.component({
+        session: { composerPhase: 'active' },
+        input: { draft: '' },
+        inputActions: { setDraft: () => undefined }
+      })).toBeNull();
       expect(await Bun.file(join(program, 'runtime', 'pnpm', 'node_modules', 'pnpm', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'node_modules', MCPORTER_PACKAGE, 'dist', 'index.js')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'node_modules', ...RPGMAKER_MCP_PACKAGE.split('/'), 'dist', 'index.js')).exists()).toBe(true);
@@ -1604,7 +1705,7 @@ describe('Windows release gate foundations', () => {
       };
       const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
       const runner = defaultInstallRunner({ dshHome: state }, calls);
-      const shortcut = join(root, 'Start Menu', 'DSH for RPG Maker MV.lnk');
+      const shortcut = join(root, 'Start Menu', 'RPG Maker Agent.lnk');
       await installWindowsRelease({
         platform: 'win32',
         env,

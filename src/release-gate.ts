@@ -4,7 +4,7 @@ import { basename, dirname, join, parse, relative, resolve, sep } from 'node:pat
 import { fileURLToPath } from 'node:url';
 
 import { bootstrapRuntime, findDshExecutable, type BootstrapResult } from './bootstrap';
-import { environmentPath, pathDelimiter, withEnvironmentPath, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { environmentPath, legacyStartMenuShortcutPath, pathDelimiter, withEnvironmentPath, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
 import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { FORGEJO_MCP_EXECUTABLE_NAME, FORGEJO_MCP_LICENSE_NAME, FORGEJO_MCP_MANIFEST_NAME, FORGEJO_MCP_RUNTIME_RELATIVE, forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from './forgejo-mcp';
 import { withoutCredentials, runCommand, type CommandRunner } from './process';
@@ -13,6 +13,7 @@ import { deployRpgMakerPresets, prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { prepareMcporterRuntime } from './mcport';
 import { prepareDshWebPlugin } from './dsh-web';
 import { prepareDshImagegenPlugin } from './dsh-imagegen';
+import { DSH_BRAND_BUNDLE_RELATIVE, prepareDshBrandPlugin } from './dsh-brand';
 import { preparePnpmRuntime } from './profile';
 import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
@@ -38,7 +39,8 @@ export const RELEASE_ENTRIES = [
   'presets',
   'scripts',
   FORGEJO_MCP_RUNTIME_RELATIVE,
-  WORKSPACE_MCP_BUNDLE_RELATIVE
+  WORKSPACE_MCP_BUNDLE_RELATIVE,
+  DSH_BRAND_BUNDLE_RELATIVE
 ] as const;
 
 export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteOptions {
@@ -304,6 +306,16 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           npmExecutable: context.npmExecutable,
           commandRunner: context.commandRunner
         });
+        await prepareDshBrandPlugin({
+          platform,
+          env: context.env,
+          dshHome: context.paths.dshHome,
+          programRoot: context.paths.programRoot,
+          runtimeDir: context.paths.runtimeDir,
+          dshExecutable: context.env.DSH_EXECUTABLE,
+          npmExecutable: context.npmExecutable,
+          commandRunner: context.commandRunner
+        });
       });
       await prepareAgentDependencies({
         paths,
@@ -342,6 +354,10 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         pwshExecutable: options.pwshExecutable ?? prerequisites.checks.find((check) => check.id === 'powershell')?.executable,
         commandRunner: options.commandRunner
       });
+      if (!options.startMenuShortcutPath) {
+        const legacyShortcut = legacyStartMenuShortcutPath({ env });
+        if (legacyShortcut !== paths.startMenuShortcutPath) await rm(legacyShortcut, { force: true });
+      }
     } catch (error) {
       let failedRoot: string | undefined;
       let recoveryError: string | undefined;

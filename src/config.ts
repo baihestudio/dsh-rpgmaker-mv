@@ -7,7 +7,8 @@ export const DSH_NPM_INTEGRITY = 'sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJI
 export const DSH_RUNTIME_NAME = 'dsh-rpgmaker-runtime';
 export const PRODUCT_VENDOR = 'BaiheStudio';
 export const PRODUCT_NAME = 'DSH-RPGMaker-MV';
-export const START_MENU_NAME = 'DSH for RPG Maker MV';
+export const START_MENU_NAME = 'RPG Maker Agent';
+export const LEGACY_START_MENU_NAME = 'DSH for RPG Maker MV';
 export const PROGRAM_OWNERSHIP_FILE = '.dsh-rpgmaker-owned.json';
 export const PROGRAM_OWNER = 'dsh-rpgmaker-mv';
 export const WINDOWS_DSH_HOST = '127.0.0.1';
@@ -34,6 +35,12 @@ export interface PathOptions {
   startMenuShortcutPath?: string;
   platform?: string;
   env?: Record<string, string | undefined>;
+}
+
+export function legacyStartMenuShortcutPath(options: Pick<PathOptions, 'env'> = {}): string {
+  const env = options.env ?? process.env;
+  const appData = env.APPDATA ?? join(env.USERPROFILE ?? homedir(), 'AppData', 'Roaming');
+  return resolve(join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', PRODUCT_VENDOR, `${LEGACY_START_MENU_NAME}.lnk`));
 }
 
 function defaultWindowsProgramRoot(env: Record<string, string | undefined>): string {
