@@ -141,7 +141,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     ? await resolveExecutable(join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe'), { platform, env })
     : undefined;
   const python = options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? wingetPython ?? await resolveExecutable('python', { platform, env });
-  const imageMagick = platform === 'win32' ? await resolveExecutable('magick', { platform, env }) : undefined;
+  const imageMagick = platform === 'win32' ? await resolveExecutable(options.imageMagickExecutable ?? 'magick', { platform, env }) : undefined;
 
   const checks: DoctorCheck[] = [];
   const executablePaths: Record<string, string | undefined> = {

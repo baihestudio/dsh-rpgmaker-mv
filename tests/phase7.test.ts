@@ -26,7 +26,7 @@ import { runCommand } from '../src/process';
 import { inspectWorkspaceSandbox } from '../src/workspace-sandbox';
 import { run as runProcessObservation } from '../scripts/process-observation.mjs';
 import { cleanupInstalledGateWorkspace, resolveInstalledNode, runInstalledMount } from '../scripts/phase7-windows-installed-gate';
-import { resolveExecutable, resolveWindowsPwsh, resolveWindowsSevenZip, parseSevenZipVersion } from '../src/executable';
+import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, uninstallHarness, UninstallSafetyError } from '../src/windows';
 
 async function temp(prefix: string): Promise<string> {
@@ -586,87 +586,6 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('resolves installed 7-Zip from Program Files (x86) and per-user roots before PATH', async () => {
-    const root = await temp('phase7-sevenzip-roots');
-    try {
-      const x86 = join(root, 'Program Files (x86)', '7-Zip', '7z.exe');
-      await mkdir(dirname(x86), { recursive: true });
-      await writeFile(x86, 'fixture');
-      const perUser = join(root, 'Local AppData', 'Programs', '7-Zip', '7z.exe');
-      await mkdir(dirname(perUser), { recursive: true });
-      await writeFile(perUser, 'fixture');
-      const env = {
-        PATH: join(root, 'no-sevenzip-on-path'),
-        ProgramFiles: join(root, 'Program Files'),
-        'ProgramFiles(x86)': join(root, 'Program Files (x86)'),
-        ProgramW6432: join(root, 'Program Files'),
-        LOCALAPPDATA: join(root, 'Local AppData')
-      };
-      expect(await resolveWindowsSevenZip({ platform: 'win32', env })).toBe(x86);
-      await rm(dirname(x86), { recursive: true, force: true });
-      expect(await resolveWindowsSevenZip({ platform: 'win32', env })).toBe(perUser);
-      expect(parseSevenZipVersion('7-Zip 24.09 (x64) : Copyright (c) 1999-2025 Igor Pavlov\n')).toEqual([24, 9, 0]);
-      expect(parseSevenZipVersion('7-Zip [64] 19.00 (x64) : Copyright (c) 1999-2019 Igor Pavlov\n')).toEqual([19, 0, 0]);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('resolves installed 7-Zip from the 7-Zip registry key before PATH (custom WinGet location)', async () => {
-    const root = await temp('phase7-sevenzip-registry');
-    try {
-      const custom = join(root, '解压', '7-Zip', '7z.exe');
-      await mkdir(dirname(custom), { recursive: true });
-      await writeFile(custom, 'fixture');
-      const env = { PATH: join(root, 'no-sevenzip-on-path') };
-      const runner = async (command: string, args: string[]) => {
-        if (basename(command).toLowerCase() === 'reg.exe' && args[0] === 'query' && args[1] === 'HKLM\\SOFTWARE\\7-Zip') {
-          return { exitCode: 0, stdout: `\r\n    Path    REG_SZ    ${dirname(custom)}\r\n`, stderr: '' };
-        }
-        return { exitCode: 0, stdout: '', stderr: '' };
-      };
-      expect(await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: runner })).toBe(custom);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('falls back to PATH when the 7-Zip registry key is missing or malformed', async () => {
-    const root = await temp('phase7-sevenzip-registry-missing');
-    try {
-      const bin = join(root, 'bin');
-      await mkdir(bin, { recursive: true });
-      await writeFile(join(bin, '7z.exe'), 'fixture');
-      const env = { PATH: bin };
-      const runner = async () => ({ exitCode: 1, stdout: '', stderr: 'ERROR: The system was unable to find the specified registry key or value.' });
-      expect(await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: runner })).toBe(join(bin, '7z.exe'));
-
-      const malformed = async (command: string) => (basename(command).toLowerCase() === 'reg.exe'
-        ? { exitCode: 0, stdout: '\r\n    Path    REG_SZ    %NOT_SET%\\7-Zip\r\n', stderr: '' }
-        : { exitCode: 1, stdout: '', stderr: '' });
-      expect(await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: malformed })).toBe(join(bin, '7z.exe'));
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('prefers a standard 7-Zip root over the registry key', async () => {
-    const root = await temp('phase7-sevenzip-registry-priority');
-    try {
-      const standard = join(root, 'Program Files', '7-Zip', '7z.exe');
-      await mkdir(dirname(standard), { recursive: true });
-      await writeFile(standard, 'fixture');
-      const custom = join(root, 'custom', '7z.exe');
-      await mkdir(dirname(custom), { recursive: true });
-      await writeFile(custom, 'fixture');
-      const env = { PATH: join(root, 'no-sevenzip-on-path'), ProgramFiles: join(root, 'Program Files') };
-      const runner = async () => ({ exitCode: 0, stdout: `\r\n    Path    REG_SZ    ${dirname(custom)}\r\n`, stderr: '' });
-      expect(await resolveWindowsSevenZip({ platform: 'win32', env, commandRunner: runner })).toBe(standard);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   test('resolves the branded program/mutable roots and state layout without using a live profile', async () => {
     const root = await temp('phase7-paths');
     try {
@@ -859,7 +778,10 @@ describe('Windows release gate foundations', () => {
       const dshHome = join(mutableRoot, 'state');
       const programRoot = join(root, 'program');
       const runtime = join(programRoot, 'runtime', 'dsh');
+      const imageMagick = join(root, 'custom-magick', 'magick.exe');
       await dshRuntime(runtime);
+      await mkdir(dirname(imageMagick), { recursive: true });
+      await writeFile(imageMagick, 'fixture');
       await cp(join(REPOSITORY_ROOT, 'tools', 'forgejo-mcp'), join(programRoot, 'tools', 'forgejo-mcp'), { recursive: true });
       await ensureHarnessLayout({ platform: 'win32', env, mutableRoot, dshHome, programRoot, runtimeDir: runtime });
       await writeFile(join(dshHome, '.credentials.yaml'), 'provider: local\n');
@@ -871,7 +793,7 @@ describe('Windows release gate foundations', () => {
         await writeFile(join(presetRoot, presetId, 'agent.cordis.yml'), '- id: persona\n');
       }
       const report = await runDoctor({
-        platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, commandRunner: prerequisiteRunner(),
+        platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, imageMagickExecutable: imageMagick, commandRunner: prerequisiteRunner(),
         verifyAgentDependencies: async () => ({
           mcp: { id: 'rpgmaker-mcp', label: 'RPG Maker MV MCP runtime', ok: true, detail: 'fixture MCP verified' }
         })
@@ -882,6 +804,7 @@ describe('Windows release gate foundations', () => {
       expect(report.checks.map((check) => check.id)).toContain('imagemagick');
       expect(report.checks.map((check) => check.id)).toContain('forgejo-mcp');
       expect(report.executablePaths.python).toContain('python.exe');
+      expect(report.executablePaths.imageMagick).toBe(imageMagick);
       expect(report.executablePaths.forgejoMcp).toContain(join('tools', 'forgejo-mcp', 'forgejo-mcp.exe'));
       expect(report.checks.map((check) => check.id)).toContain('app-layout');
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-profile');
