@@ -17,7 +17,7 @@ Contributors can still run the underlying bootstrap and doctor scripts from Powe
 ./doctor.ps1
 ```
 
-The harness keeps the official DeepSeek Harness runtime in an app-owned tree and never forks or edits DSH. Installation materializes one exact app-managed `web` profile with four direct managed package dependencies and six ordered DSH bundle layers: the in-box `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app` template layers, followed by pinned Web and image-generation packages plus the release-owned brand and workspace MCP bundles. Startup repairs that same profile when it is stale; Doctor reports its read-only health without changing profile state. Windows is the primary, release-blocking platform; macOS support is best effort.
+The harness keeps the official DeepSeek Harness runtime in an app-owned tree and never forks or edits DSH. Installation materializes one exact app-managed `web` profile with four direct managed package dependencies and six ordered DSH bundle layers: the in-box `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app` template layers, followed by pinned Web and image-generation packages plus the release-owned brand and workspace MCP bundles. Startup repairs that same profile when it is stale; Doctor reports its read-only health without changing profile state. Windows is the only supported product platform.
 
 The real workspace acceptance uses only disposable state: `bun run phase2:real`
 prepares the project-neutral Host from a neutral landing directory, checks the

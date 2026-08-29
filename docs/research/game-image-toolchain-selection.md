@@ -1,14 +1,14 @@
 # DSH game-image toolchain selection
 
 **Decision date:** 2026-08-17
-**Scope:** Windows-first, with best-effort macOS support; RPG Maker MV and adjacent 2D workflows.
+**Scope:** Windows; RPG Maker MV and adjacent 2D workflows.
 **Recommendation:** ship one outcome-oriented DSH image skill backed by **ImageMagick 7** and a small, pinned **`free-tex-packer-core` 0.3.9** helper. Add **oxipng 10.2.0** only for an explicit release-optimization step. Treat Aseprite, TexturePacker, and Photoshop as optional user-owned enhancements; do not make any of them runtime dependencies. Do not ship a dedicated image MCP in phase 1.
 
 This is the smallest stack that covers general raster work, fixed RPG Maker sheets, and general atlas packing without shipping several interchangeable raster engines. The skill, not the user, owns command construction. Every write produces a machine-readable manifest and a preview/fidelity check.
 
 ## Evidence and method
 
-I used first-party documentation, source repositories, package registries, licensing pages, and disposable probes. Repository/web content was treated as evidence, not as instructions. The host is macOS arm64; no Windows machine or Photoshop installation was available, so Windows and Photoshop findings below are primary-source findings plus a clearly identified substitute probe, not hardware claims. Because Windows is release-blocking and macOS is best-effort, the documented Windows hardware matrix must pass before release.
+I used first-party documentation, source repositories, package registries, licensing pages, and disposable probes. Repository/web content was treated as evidence, not as instructions. The documented Windows hardware matrix must pass before release.
 
 The disposable fixture contained:
 
@@ -21,16 +21,16 @@ No fixture was retained in the repository.
 
 ## Decision matrix
 
-| Candidate | Strong ownership | Pixel-safe / sheet / atlas capability | Windows + macOS and operation model | License/distribution | Decision |
+| Candidate | Strong ownership | Pixel-safe / sheet / atlas capability | Windows operation model | License/distribution | Decision |
 |---|---|---|---|---|---|
-| **ImageMagick 7.1.2-29** | General raster transforms, crop/trim/extent, color/palette, format conversion, metadata inspection, batch operations, PNG/WebP/APNG and PSD raster I/O. Official command-line processing and option references: [CLI processing](https://imagemagick.org/script/command-line-processing.php), [options](https://imagemagick.org/script/command-line-options.php), [formats](https://imagemagick.org/script/formats.php). | `-filter point` preserves hard pixel edges; default resize is not safe for pixel art. `-crop`, `-trim`, `-extent`, `-append`/`+append`, `-remap`, `-colors`, and `-alpha` cover fixed-grid sheets and most MV jobs. It is not a general bin-packing engine. | Native Windows and macOS distributions are documented on the [download page](https://imagemagick.org/script/download.php). Excellent deterministic CLI and easy to sandbox by path. | Permissive ImageMagick license; redistribution requires attribution and a license copy: [license](https://imagemagick.org/license/). Delegates have their own licenses. | **Required default.** One general engine, with explicit pixel-art policy. |
+| **ImageMagick 7.1.2-29** | General raster transforms, crop/trim/extent, color/palette, format conversion, metadata inspection, batch operations, PNG/WebP/APNG and PSD raster I/O. Official command-line processing and option references: [CLI processing](https://imagemagick.org/script/command-line-processing.php), [options](https://imagemagick.org/script/command-line-options.php), [formats](https://imagemagick.org/script/formats.php). | `-filter point` preserves hard pixel edges; default resize is not safe for pixel art. `-crop`, `-trim`, `-extent`, `-append`/`+append`, `-remap`, `-colors`, and `-alpha` cover fixed-grid sheets and most MV jobs. It is not a general bin-packing engine. | The native Windows distribution is documented on the [download page](https://imagemagick.org/script/download.php). Excellent deterministic CLI and easy to sandbox by path. | Permissive ImageMagick license; redistribution requires attribution and a license copy: [license](https://imagemagick.org/license/). Delegates have their own licenses. | **Required default.** One general engine, with explicit pixel-art policy. |
 | **libvips 8.18.5 / `vips`** | High-throughput, low-memory resize/convert/thumbnail pipeline; color management and alpha-aware thumbnailing are first-class in the [resampling docs](https://www.libvips.org/API/current/libvips-resample.html). | Has nearest interpolation and good raster primitives, but no game-oriented slice/atlas contract. The CLI/API is less approachable for a natural-language wrapper than ImageMagick. | Cross-platform build/install paths are documented at [libvips install](https://www.libvips.org/install.html); native library/delegate packaging is a larger surface. | LGPL-2.1: [repository](https://github.com/libvips/libvips). | **Rejected as default.** A good future bulk-processing backend, not a second engine to ship now. |
 | **Sharp 0.35.3** | Very fast Node API over libvips; explicit `nearest` resize kernel and compositing/format APIs: [resize](https://sharp.pixelplumbing.com/api-resize/), [output](https://sharp.pixelplumbing.com/api-output/). | Strong for a custom JS service, but Sharp is a Node library, not a user-facing CLI; it does not solve sheet layout or PSD/layer automation. Adding a Node wrapper duplicates the skill seam. | Prebuilt binaries and platform support are documented at [installation](https://sharp.pixelplumbing.com/install/), but a Node runtime and dependency install become part of the image path. | Apache-2.0: [package/source](https://github.com/lovell/sharp). | **Rejected for phase 1.** Use only if a later DSH service already needs an in-process JS image API. |
-| **Aseprite CLI** | Pixel-art authoring semantics, animation frames, slices, palette workflows, and sprite-sheet plus JSON export. Official [CLI reference](https://www.aseprite.org/docs/cli/) and [sprite-sheet docs](https://www.aseprite.org/docs/sprite-sheet/). | Best specialist for authored pixel art and animation metadata. It can export sheets, but fixed RPG Maker layouts still need a profile-specific contract. | Official builds target Windows/macOS/Linux; the CLI is bundled with the app. It is a local executable, not headless Photoshop. | Official releases/source are under the Aseprite EULA, with separate MIT components: [license notes](https://github.com/aseprite/aseprite#license). Do not redistribute the app binary without the applicable rights. | **Optional enhancement.** Detect a user installation for `.aseprite` files and animation/slice export; fall back to ImageMagick for PNG-only work. |
-| **TexturePacker** | Mature atlas packing, trim/rotation/padding/extrusion, JSON and engine-specific metadata, and a documented CLI: [CLI docs](https://www.codeandweb.com/texturepacker/documentation/command-line). | Strongest polished atlas UX and output-format breadth. Rotation/trim defaults must be disabled for fixed RPG Maker sheets. | Official Windows/macOS app and CLI; requires local installation/licensing. | Commercial product with trial/free-mode limits and license terms on [CodeAndWeb licensing](https://www.codeandweb.com/texturepacker/license). | **Optional enhancement, not a dependency.** Prefer it when a user already owns it or needs its exporters. |
-| **`free-tex-packer-core` 0.3.9** | A small Node library for MaxRects packing, trim, padding, extrusion, optional rotation, PNG/JPG/WebP, and JSON/engine exporters. Primary package evidence: [npm package](https://www.npmjs.com/package/free-tex-packer-core), [source](https://github.com/odrick/free-tex-packer-core). | Covers the missing atlas primitive. The skill can force `scaleMethod: NEAREST_NEIGHBOR`, `allowRotation: false`, and `allowTrim: false` for MV fixed-grid work, while allowing trim/rotation for ordinary atlases. It is not a standalone CLI, so DSH owns a tiny helper invocation. | Pure JS package; use the existing DSH Node runtime on both platforms. No native GUI or app control. | MIT, per the package metadata/README. | **Required small atlas helper.** Pin exactly and keep it behind the skill; do not expose its API to users. |
-| **oxipng 10.2.0** | Lossless PNG recompression and safe metadata handling. Primary [repository/releases](https://github.com/oxipng/oxipng). | Does not transform art or pack sheets; useful after the skill has verified pixels and dimensions. | Releases include native Windows/macOS artifacts; otherwise build with Rust. | MIT. | **Optional release post-pass.** No need to make ordinary editing depend on it. |
-| **pngquant** | Excellent lossy indexed-PNG compression and quality/size tradeoff. Primary [project site](https://pngquant.org/) and [source](https://github.com/kornelski/pngquant). | Can damage color fidelity and semi-transparent pixel-art edges if quality is not controlled. It is optimization, not editing or layout. | Windows/macOS binaries exist, but packaging/licensing must be handled carefully. | GPLv3-or-commercial according to the project site. | **Rejected for the default.** Offer only as an explicitly licensed, opt-in release tool. |
+| **Aseprite CLI** | Pixel-art authoring semantics, animation frames, slices, palette workflows, and sprite-sheet plus JSON export. Official [CLI reference](https://www.aseprite.org/docs/cli/) and [sprite-sheet docs](https://www.aseprite.org/docs/sprite-sheet/). | Best specialist for authored pixel art and animation metadata. It can export sheets, but fixed RPG Maker layouts still need a profile-specific contract. | The Windows CLI is bundled with the app. It is a local executable, not headless Photoshop. | Official releases/source are under the Aseprite EULA, with separate MIT components: [license notes](https://github.com/aseprite/aseprite#license). Do not redistribute the app binary without the applicable rights. | **Optional enhancement.** Detect a user installation for `.aseprite` files and animation/slice export; fall back to ImageMagick for PNG-only work. |
+| **TexturePacker** | Mature atlas packing, trim/rotation/padding/extrusion, JSON and engine-specific metadata, and a documented CLI: [CLI docs](https://www.codeandweb.com/texturepacker/documentation/command-line). | Strongest polished atlas UX and output-format breadth. Rotation/trim defaults must be disabled for fixed RPG Maker sheets. | The official Windows app includes a CLI and requires local installation/licensing. | Commercial product with trial/free-mode limits and license terms on [CodeAndWeb licensing](https://www.codeandweb.com/texturepacker/license). | **Optional enhancement, not a dependency.** Prefer it when a user already owns it or needs its exporters. |
+| **`free-tex-packer-core` 0.3.9** | A small Node library for MaxRects packing, trim, padding, extrusion, optional rotation, PNG/JPG/WebP, and JSON/engine exporters. Primary package evidence: [npm package](https://www.npmjs.com/package/free-tex-packer-core), [source](https://github.com/odrick/free-tex-packer-core). | Covers the missing atlas primitive. The skill can force `scaleMethod: NEAREST_NEIGHBOR`, `allowRotation: false`, and `allowTrim: false` for MV fixed-grid work, while allowing trim/rotation for ordinary atlases. It is not a standalone CLI, so DSH owns a tiny helper invocation. | Pure JS package; use the existing DSH Node runtime. No native GUI or app control. | MIT, per the package metadata/README. | **Required small atlas helper.** Pin exactly and keep it behind the skill; do not expose its API to users. |
+| **oxipng 10.2.0** | Lossless PNG recompression and safe metadata handling. Primary [repository/releases](https://github.com/oxipng/oxipng). | Does not transform art or pack sheets; useful after the skill has verified pixels and dimensions. | Releases include native Windows artifacts; otherwise build with Rust. | MIT. | **Optional release post-pass.** No need to make ordinary editing depend on it. |
+| **pngquant** | Excellent lossy indexed-PNG compression and quality/size tradeoff. Primary [project site](https://pngquant.org/) and [source](https://github.com/kornelski/pngquant). | Can damage color fidelity and semi-transparent pixel-art edges if quality is not controlled. It is optimization, not editing or layout. | Windows binaries exist, but packaging/licensing must be handled carefully. | GPLv3-or-commercial according to the project site. | **Rejected for the default.** Offer only as an explicitly licensed, opt-in release tool. |
 | **Dedicated image/Photoshop MCPs** | Model-facing discovery and, for some adapters, control of a running desktop app. A representative current adapter is [dcc-mcp-photoshop](https://github.com/dcc-mcp/dcc-mcp-photoshop), built on the [dcc-mcp control plane](https://github.com/dcc-mcp/dcc-mcp-core). | MCP does not improve interpolation, alpha, or atlas correctness. A CLI skill can validate outputs more deterministically and has fewer tools/permissions. Photoshop adapters additionally require a running app/plugin and can encounter modal UI state. | Varies by project and adapter; no stable, first-party Adobe MCP contract was found. | Varies; do not assume the repository license or maintenance is sufficient for distribution. | **Not justified in phase 1.** Reconsider only for a demonstrated Photoshop-only workflow that UXP cannot cover through a local skill bridge. |
 
 ## Workflow ownership
@@ -49,40 +49,6 @@ No fixture was retained in the repository.
 | PSD/layer/template automation | Photoshop UXP only when Photoshop is installed; ImageMagick only for rasterized preview/flattening | Never round-trip a production layered PSD through ImageMagick when layer fidelity matters. |
 
 ## Hands-on probes
-
-### ImageMagick probe (macOS arm64)
-
-Installed binary:
-
-```text
-ImageMagick 7.1.2-11 Q16-HDRI aarch64
-Delegates include lcms, png, tiff, webp, zip, zlib
-Formats report: APNG rw+, PNG rw-, PSD rw+, WEBP rw+
-```
-
-The probe commands were run in a temporary directory and removed afterward:
-
-```sh
-magick -size 4x4 xc:none \
-  -fill '#ff0000' -draw 'rectangle 0,0 1,1' \
-  -fill '#0000ff' -draw 'rectangle 2,2 3,3' pixel.png
-magick pixel.png -filter point -resize 8x8 point.png
-magick pixel.png -resize 8x8 default.png
-magick sheet.png -crop 4x4 +repage frame-%d.png
-magick pixel.png -background none -gravity center -extent 8x8 padded.png
-magick pixel.png sheet.png layers.psd
-```
-
-Observed results:
-
-- `-filter point` kept the red 2x2 block as exactly red pixels and left the transparent area alpha 0; no blended edge colors appeared. It does, however, normalize hidden RGB under alpha-0 pixels: a transparent-white source (`#FFFFFF00`) becomes `#00000000`. `-sample 8x8` performs the same integer nearest-neighbour scaling while preserving the hidden RGB (`#FFFFFF00` stays `#FFFFFF00`), which is why production pixel-safe resize uses `-sample`.
-- Default `-resize` introduced partially covered red edge pixels (for example alpha values 193 and 62) and transparent pixels retaining red RGB. That is visually/semantically unsafe as an unannounced pixel-art default.
-- `-crop 4x4 +repage` produced two 4x4 frames in source order.
-- `-background none -extent` retained transparency. A non-`none` background deliberately produced an opaque matte, proving why the skill must not choose a background implicitly. Like `-filter point -resize`, `-extent` normalizes hidden RGB under alpha-0 pixels to black (`#FFFFFF00` becomes `#00000000`), so production trim/pad composes the exact trimmed/padded grid from the decoded pixels and only asks ImageMagick to encode the raw RGBA to PNG; the full decoded-pixel check still runs against that PNG.
-- `-append`/`+append` leak a virtual-canvas page geometry into the output PNG (the page stays at the first input's size, e.g. `4x4` on an `8x8` assembled sheet). A later `-crop WxH` then treats the stale page as the crop region and emits a single tile instead of tiling the whole sheet. Adding `+repage` after the final append (and before `-crop` when slicing) clears the page so assembled sheets slice back into every frame.
-- Writing two raster inputs to PSD and reopening it produced two PSD image frames (`4x4` and `8x4`). This is useful raster-layer smoke coverage only; it does **not** establish preservation of Photoshop adjustment layers, smart objects, text, effects, masks, or color-profile semantics.
-
-A 100-file `mogrify -path out -resize 16x16` batch completed in 0.07 seconds on this host and emitted 100 files. This is a small-startup smoke measurement, not a cross-machine benchmark; it supports using ImageMagick's batch mode rather than starting one process per asset.
 
 ### Atlas probe (`free-tex-packer-core` 0.3.9)
 
@@ -103,10 +69,10 @@ In a disposable directory I ran `npm pack free-tex-packer-core`, installed that 
 
 Observed output: `probe.png` was 6x12, `probe.json` described both source rectangles, and both `rotated` and `trimmed` were `false`. This verifies the proposed fixed-grid-safe setting and the package's basic PNG+JSON contract. It is not a quality comparison against TexturePacker; it is a focused capability probe.
 
-### Unavailable platform-specific probes
+### Required Windows probes
 
-- **Windows:** no Windows host was available. The smallest safe substitute was reading the vendor Windows install/CLI documentation and exercising only platform-neutral commands on macOS. Before release, run the same fixture using the pinned Windows binary and verify PowerShell quoting, Unicode paths, exit codes, and output hashes.
-- **Photoshop:** Photoshop was not installed and no licensed layered PSD fixture was available. The substitute was a raster multi-image PSD probe plus Adobe's UXP API documentation. A Windows/macOS hardware check remains necessary for plugin installation, active-document behavior, modal prompts, save/export dialogs, and layer/template fidelity.
+- Run the image fixture using the installed Windows binary and verify PowerShell quoting, Unicode paths, exit codes, and output hashes.
+- If Photoshop integration is enabled, verify plugin installation, active-document behavior, modal prompts, save/export dialogs, and layer/template fidelity on Windows.
 
 ## Photoshop: optional enhancement only
 
@@ -139,16 +105,14 @@ free-tex-packer-core 0.3.9 # npm package, exact version
 oxipng 10.2.0              # optional release optimizer
 ```
 
-The installed macOS probe was 7.1.2-11, which is evidence of behavior only; it is not the proposed release pin.
-
 ### Base installation
 
-1. **ImageMagick:** obtain the official Windows installer/portable archive or macOS package from [ImageMagick downloads](https://imagemagick.org/script/download.php), record the exact asset URL, archive SHA-256, archived executable member, and installed executable SHA-256 in the app-owned DSH tool manifest, and verify before installation. On Windows the bootstrap uses `Get-FileHash`; on macOS it uses `shasum -a 256`. Do not use an unversioned `convert` alias. Preflight must invoke the manifest's `magick` path and require the pinned `7.1.2-29` (or fail with an upgrade message). Explicit overrides carry their expected executable checksum or fail.
-2. **Atlas helper:** install inside the versioned app-owned DSH skill runtime, not globally, with Bun. Use an exact `free-tex-packer-core@0.3.9` dependency, run the helper trust step, and verify both the Bun lock hash and the package's pinned npm integrity before use. The repository runtime does not duplicate the helper dependency. The helper is pure JS from the package's perspective and uses the existing DSH Node runtime on both operating systems.
+1. **ImageMagick:** install the Windows package and verify the resolved `magick.exe` identity and version. Do not use an unversioned `convert` alias.
+2. **Atlas helper:** install inside the versioned app-owned DSH skill runtime, not globally, with Bun. Use an exact `free-tex-packer-core@0.3.9` dependency, run the helper trust step, and verify both the Bun lock hash and the package's pinned npm integrity before use. The repository runtime does not duplicate the helper dependency. The helper is pure JS and uses the existing DSH Node runtime.
 3. **Optional oxipng:** download the `v10.2.0` artifact from [official releases](https://github.com/oxipng/oxipng/releases/tag/v10.2.0), verify the architecture-specific SHA-256 recorded in the manifest, and expose it only as `optimize_png`.
 4. **Optional Aseprite/TexturePacker/Photoshop:** detect the user-installed app/executable; never silently download or redistribute it. Record the detected version and license-dependent capability in the preflight report.
 
-A package-manager convenience path may be offered, but it is not the reproducibility path: Homebrew's `imagemagick` formula and WinGet's ImageMagick package are moving targets. If a package manager is used, install the requested version, run the exact-version preflight, and fail closed rather than silently accepting a newer or older build. The release artifact plus checksum manifest is the cross-platform source of truth.
+The installer uses WinGet and verifies the resolved executable after installation rather than trusting package-manager success alone.
 
 ### Security and command policy
 

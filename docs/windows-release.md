@@ -237,6 +237,6 @@ assets, Playtest debug, and game-design documentation through local Skills.
 
 The RPG Maker image-assets Skill uses Kepos for image generation/editing and the global `magick` CLI for deterministic preparation; no app-owned image transformation plugin is installed.
 
-The `rpgmaker` preset's Playtest debug skill can truthfully report process launch, logs, MCP stop, and post-stop status. A launched process is not a gameplay or visual assertion. Actual RPG Maker MV/NW.js Windows launch, installed MV discovery, and behavior remain Windows hardware-gate observations. macOS substitutes are reported as non-blocking and never presented as Windows evidence. Photoshop, Aseprite, and TexturePacker are optional user-owned enhancements.
+The `rpgmaker` preset's Playtest debug skill can truthfully report process launch, logs, MCP stop, and post-stop status. A launched process is not a gameplay or visual assertion. Actual RPG Maker MV/NW.js launch, installed MV discovery, and behavior remain Windows hardware-gate observations. Photoshop, Aseprite, and TexturePacker are optional user-owned enhancements.
 
 This foundation release does **not** include automatic updates, MSI authoring, signing/notarization, store uploads, generated-game installers, concurrent-writer locking for Agents sharing one project, or automated gameplay/CDP supervision. The separate automated-playtest work remains on its documented draft/hold marker until this foundation is reviewed.

@@ -53,7 +53,6 @@ function defaultWindowsMutableRoot(env: Record<string, string | undefined>): str
 
 function defaultDshHome(platform: string, env: Record<string, string | undefined>): string {
   if (platform === 'win32') return join(defaultWindowsMutableRoot(env), 'state');
-  if (platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'dsh');
   return resolve(env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'dsh');
 }
 

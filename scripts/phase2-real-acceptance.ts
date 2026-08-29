@@ -12,6 +12,8 @@ import { JS_RUNNER_ENV, MCPORTER_RUNTIME_ENV, XEROLO_RUNTIME_ENV } from '../src/
 
 const DATABASE_TYPES = ['Actors', 'Classes', 'Skills', 'Items', 'Weapons', 'Armors', 'Enemies', 'Troops', 'States', 'Animations', 'Tilesets', 'CommonEvents'];
 
+if (process.platform !== 'win32') throw new Error('Phase 2 real acceptance is supported on Windows only.');
+
 function json(value: unknown): string {
   return `${JSON.stringify(value)}\n`;
 }
@@ -52,16 +54,16 @@ safeEnv.DSH_HOME = dshHome;
 
 try {
   const project = await makeFixture(root);
-  const boot = await bootstrapRuntime({ platform: process.platform, env: safeEnv, dshHome, programRoot, mutableRoot: root, runtimeDir });
+  const boot = await bootstrapRuntime({ platform: 'win32', env: safeEnv, dshHome, programRoot, mutableRoot: root, runtimeDir });
   assert.equal(boot.verification.dshPackageVersion, DSH_VERSION);
-  const dshExecutable = await findDshExecutable(runtimeDir, process.platform);
+  const dshExecutable = await findDshExecutable(runtimeDir, 'win32');
   if (!dshExecutable) throw new Error('Pinned DSH executable was not found after bootstrap.');
 
   // This is the project-neutral launch preparation path: it receives no project
   // argument, prepares the local bundle, and validates the composition from the
   // app-owned neutral landing directory before a Host is started.
   const preparation = await prepareRpgMakerLaunch({
-    platform: process.platform,
+    platform: 'win32',
     env: safeEnv,
     dshHome,
     programRoot,
@@ -86,7 +88,7 @@ try {
   launchedChild.exitCode = null;
   launchedChild.signalCode = null;
   const launched = await launchRpgmakerProject({
-    platform: process.platform,
+    platform: 'win32',
     env: safeEnv,
     dshHome,
     programRoot,
@@ -126,7 +128,7 @@ try {
       WORKSPACE_HOST_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js'),
       WORKSPACE_AGENT_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'agent.js')
     },
-    platform: process.platform,
+    platform: 'win32',
     timeoutMs: 120_000
   });
   if (mountProbe.exitCode !== 0) throw new Error(`project-neutral DSH/Xerolo workspace acceptance failed: ${diagnosticText(mountProbe.stderr || mountProbe.stdout)}`);

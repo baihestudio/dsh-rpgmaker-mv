@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 
 import { bootstrapRuntime, findDshExecutable, verifyRuntime } from '../src/bootstrap';
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION } from '../src/config';
-import { runDoctor } from '../src/doctor';
 import { launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
 import { executeCommand, prepareProcessInvocation, ProcessTerminationError } from '../src/process';
@@ -92,6 +91,7 @@ function makeTrackedChild(pid = 1234): EventEmitter & { pid: number; exitCode: n
       let caught: unknown;
       try {
         await bootstrapRuntime({
+          platform: 'win32',
           runtimeDir: join(root, 'runtime'),
           bunExecutable: 'bun',
           commandRunner: async (_command, args) => {
@@ -141,6 +141,7 @@ describe('staged DSH runtime bootstrap', () => {
       await makeRuntime(runtime);
       const calls: string[][] = [];
       const result = await bootstrapRuntime({
+        platform: 'win32',
         runtimeDir: runtime,
         bunExecutable: 'bun',
         commandRunner: async (_command, args) => {
@@ -185,6 +186,7 @@ describe('staged DSH runtime bootstrap', () => {
       const runtime = join(root, 'runtime');
       const calls: string[][] = [];
       const result = await bootstrapRuntime({
+        platform: 'win32',
         runtimeDir: runtime,
         bunExecutable: 'bun',
         commandRunner: async (_command, args, options) => {
@@ -222,6 +224,7 @@ describe('staged DSH runtime bootstrap', () => {
       const oldPackage = await readFile(join(runtime, 'package.json'), 'utf8');
       const calls: Array<{ args: string[]; cwd?: string }> = [];
       const result = await bootstrapRuntime({
+        platform: 'win32',
         runtimeDir: runtime,
         bunExecutable: 'bun',
         commandRunner: async (_command, args, options) => {
@@ -255,6 +258,7 @@ describe('staged DSH runtime bootstrap', () => {
       let caught: unknown;
       try {
         await bootstrapRuntime({
+          platform: 'win32',
           runtimeDir: join(root, 'runtime'),
           bunExecutable: 'bun',
           env: { DEEPSEEK_API_KEY: secret },
@@ -284,6 +288,7 @@ describe('staged DSH runtime bootstrap', () => {
       let evalCalls = 0;
       await expect(
         bootstrapRuntime({
+          platform: 'win32',
           runtimeDir: runtime,
           bunExecutable: 'bun',
           commandRunner: async (_command, args, options) => {
@@ -311,6 +316,7 @@ describe('staged DSH runtime bootstrap', () => {
       let caught: unknown;
       try {
         await bootstrapRuntime({
+          platform: 'win32',
           runtimeDir: runtime,
           bunExecutable: 'bun',
           renamePath: async (from, to) => {
@@ -346,6 +352,7 @@ describe('staged DSH runtime bootstrap', () => {
       const oldPackage = await readFile(join(runtime, 'package.json'), 'utf8');
       await expect(
         bootstrapRuntime({
+          platform: 'win32',
           runtimeDir: runtime,
           bunExecutable: 'bun',
           commandRunner: async (_command, args, options) => {
@@ -377,7 +384,7 @@ describe('runtime access lock', () => {
       await writeFile(join(sessionLeaseDir, 'owner.json'), `${JSON.stringify({ pid: 999999, token: 'stale', startedAt: new Date().toISOString() })}\n`);
 
       const result = await bootstrapRuntime({
-        platform: 'darwin',
+        platform: 'win32',
         runtimeDir: runtime,
         dshHome,
         bunExecutable: 'bun',
@@ -403,7 +410,7 @@ describe('runtime access lock', () => {
       await makeRuntime(runtime, '0.1.0-rc.5');
       await expect(
         launchProject({
-          platform: 'darwin',
+          platform: 'win32',
           runtimeDir: runtime,
           dshHome,
           env: { DSH_HOME: dshHome },
@@ -412,7 +419,7 @@ describe('runtime access lock', () => {
       ).rejects.toThrow(/spawn failed/i);
 
       const result = await bootstrapRuntime({
-        platform: 'darwin',
+        platform: 'win32',
         runtimeDir: runtime,
         dshHome,
         bunExecutable: 'bun',
@@ -429,7 +436,7 @@ describe('runtime access lock', () => {
     }
   });
 
-  test('doctor and launcher wait while bootstrap owns the swap transaction', async () => {
+  test('launcher waits while bootstrap owns the swap transaction', async () => {
     const root = await disposableDirectory('runtime-lock');
     try {
       const runtime = join(root, 'runtime');
@@ -464,6 +471,7 @@ describe('runtime access lock', () => {
       };
 
       const installing = bootstrapRuntime({
+        platform: 'win32',
         runtimeDir: runtime,
         dshHome,
         env: { PATH: bin, DSH_HOME: dshHome },
@@ -474,20 +482,10 @@ describe('runtime access lock', () => {
       });
       await bootstrapHoldStarted;
 
-      let doctorFinished = false;
       let launched = false;
       const launchChild = makeTrackedChild(99);
-      const doctor = runDoctor({
-        platform: 'darwin',
-        runtimeDir: runtime,
-        dshHome,
-        env: { PATH: bin, DSH_HOME: dshHome },
-        commandRunner,
-        lockTimeoutMs: 1000,
-        lockRetryMs: 5
-      }).then((report) => { doctorFinished = true; return report; });
       const launch = launchProject({
-        platform: 'darwin',
+        platform: 'win32',
         runtimeDir: runtime,
         dshHome,
         env: { PATH: bin, DSH_HOME: dshHome },
@@ -498,14 +496,11 @@ describe('runtime access lock', () => {
       });
 
       await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(doctorFinished).toBe(false);
       expect(launched).toBe(false);
       releaseBootstrapHold?.();
 
       await installing;
-      const report = await doctor;
       const launchResult = await launch;
-      expect(report.runtime.valid).toBe(true);
       expect(launched).toBe(true);
       launchChild.exitCode = 0;
       launchChild.emit('exit', 0);
@@ -523,37 +518,16 @@ describe('runtime access lock', () => {
       await makeRuntime(runtime, '0.1.0-rc.5');
       const child = makeTrackedChild(701);
       const launch = await launchProject({
-        platform: 'darwin',
+        platform: 'win32',
         runtimeDir: runtime,
         dshHome,
         env: { DSH_HOME: dshHome },
         spawnInteractive: () => child
       });
 
-      const bin = join(root, 'bin');
-      await mkdir(bin, { recursive: true });
-      for (const name of ['pwsh', 'coreutils-manager', 'find', 'grep', 'git', 'bun']) await writeFile(join(bin, name), '');
-      const doctor = await runDoctor({
-        platform: 'darwin',
-        runtimeDir: runtime,
-        dshHome,
-        env: { PATH: bin, DSH_HOME: dshHome },
-        commandRunner: async (command, args) => {
-          const name = command.split(/[\\\\/]/).pop();
-          if (name === 'pwsh') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
-          if (name === 'bun') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
-          if (name === 'git') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
-          if (name === 'coreutils-manager' && args[0] === '--help') return { exitCode: 0, stdout: 'manager help', stderr: '' };
-          if (name === 'coreutils-manager' && args[0] === 'status') return { exitCode: 0, stdout: 'find enabled\\ngrep enabled', stderr: '' };
-          if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
-          return { exitCode: 0, stdout: `${name ?? ''} 0.1.0`, stderr: '' };
-        }
-      });
-      expect(doctor.platform).toBe('darwin');
-
       let swapStarted = false;
       const installing = bootstrapRuntime({
-        platform: 'darwin',
+        platform: 'win32',
         runtimeDir: runtime,
         dshHome,
         bunExecutable: 'bun',
@@ -584,66 +558,6 @@ describe('runtime access lock', () => {
   });
 });
 describe('doctor and launcher seams', () => {
-  test('doctor reports prerequisites and never echoes the credential value', async () => {
-    const root = await disposableDirectory('doctor');
-    try {
-      const bin = join(root, 'bin');
-      await mkdir(bin, { recursive: true });
-      for (const name of ['pwsh', 'coreutils-manager', 'find', 'grep', 'git', 'bun']) {
-        await writeFile(join(bin, name), '');
-      }
-      const runtime = join(root, 'runtime');
-      await makeRuntime(runtime);
-      const dshHome = join(root, 'dsh-home');
-      await mkdir(dshHome, { recursive: true });
-      await writeFile(join(dshHome, '.credentials.yaml'), 'provider: local\n');
-      const secret = 'test-secret-must-not-appear';
-      const report = await runDoctor({
-        platform: 'darwin',
-        env: { PATH: bin, DSH_HOME: dshHome, DEEPSEEK_API_KEY: secret },
-        runtimeDir: runtime,
-        commandRunner: async (command, args) => {
-          const name = command.split(/[\\/]/).pop();
-          if (name === 'pwsh') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
-          if (name === 'bun') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
-          if (name === 'git') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
-          if (name === 'coreutils-manager' && args[0] === '--help') return { exitCode: 0, stdout: "coreutils-manager 0.1.0\nManage coreutils utilities and PowerShell profiles\nUsage: coreutils-manager <COMMAND>\nCommands:\n  enable    Enable one or more utilities\n  disable   Disable one or more utilities\n  status    List all utilities with their status\n", stderr: '' };
-          if (name === 'coreutils-manager' && args[0] === 'status') return { exitCode: 0, stdout: "find            enabled\ngrep            enabled\n", stderr: '' };
-          if (name === 'find') return { exitCode: 0, stdout: 'find 0.1.0', stderr: '' };
-          if (name === 'grep') return { exitCode: 0, stdout: 'grep 0.1.0', stderr: '' };
-          if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
-          return { exitCode: 0, stdout: '', stderr: '' };
-        }
-      });
-      expect(report.ok).toBe(true);
-      expect(report.credentials.configured).toBe(true);
-      expect(JSON.stringify(report)).not.toContain(secret);
-      expect(report.checks.map((check) => check.id)).toEqual(expect.arrayContaining(['powershell', 'coreutils', 'git', 'bun', 'dsh-runtime', 'credentials']));
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('doctor rejects non-Microsoft uutils/coreutils lookalikes', async () => {
-    const root = await disposableDirectory('doctor-coreutils-identity');
-    try {
-      const bin = join(root, 'bin');
-      await mkdir(bin, { recursive: true });
-      for (const name of ['coreutils-manager', 'find', 'grep']) await writeFile(join(bin, name), '');
-      const report = await runDoctor({
-        platform: 'darwin',
-        env: { PATH: bin },
-        commandRunner: async (command) => {
-          const name = command.split(/[\\/]/).pop();
-          return { exitCode: 0, stdout: `${name} (uutils/coreutils) 0.1.0`, stderr: '' };
-        }
-      });
-      expect(report.checks.find((check) => check.id === 'coreutils')?.ok).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   test('project-neutral launcher uses the app-owned landing cwd without project validation', async () => {
     const root = await disposableDirectory('launcher');
     try {
@@ -720,6 +634,20 @@ describe('doctor and launcher seams', () => {
     }
   });
 
+  test('CLI rejects Release ZIP commands outside Windows', async () => {
+    let stdout = '';
+    let stderr = '';
+    const code = await runCli(['release-zip'], {
+      platform: 'linux',
+      io: {
+        stdout: { write: (text) => { stdout += text; } },
+        stderr: { write: (text) => { stderr += text; } }
+      }
+    });
+    expect(code).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('supported on Windows only');
+  });
 
   test('Windows .cmd DSH shims are invoked through cmd.exe without using the project path as command text', () => {
     const command = String.raw`C:\Program Files\DSH\dsh.cmd`;

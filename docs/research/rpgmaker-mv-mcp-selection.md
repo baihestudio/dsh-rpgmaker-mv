@@ -1,8 +1,6 @@
 # RPG Maker MV MCP selection for DSH
 
-**Decision:** ship `@xerolo44/rpgmaker-mv-mcp@0.1.0` first, pinned to npm version `0.1.0` (published artifact `gitHead` `51efd5360a2658b4064d2501597b0d1bec61520f`). It is the best **Windows-first DSH choice**: its advertised schemas pass the official DSH schema subset, it covers the required MV editing surface, and it has the only credible Windows Playtest path with status, stdout/stderr capture, and stop controls.
-
-Windows is release-blocking. macOS is best effort and does not overturn this decision.
+**Decision:** ship `@xerolo44/rpgmaker-mv-mcp@0.1.0` first, pinned to npm version `0.1.0` (published artifact `gitHead` `51efd5360a2658b4064d2501597b0d1bec61520f`). It is the best **Windows DSH choice**: its advertised schemas pass the official DSH schema subset, it covers the required MV editing surface, and it has the only credible Windows Playtest path with status, stdout/stderr capture, and stop controls.
 
 > Integration note: the original DSH MCP-client examples later in this research
 > record describe the pre-workspace integration. The shipped Host bundle now
@@ -39,7 +37,7 @@ Direct live `tools/list` results from the three built servers:
 | Xerolo 0.1.0 | 41 | No union, type-array, nullable, or `$ref` nodes in any input schema. |
 | HeroLink | 27 | Three `oneOf` input schemas; no nullable/type-array nodes. `oneOf` is allowed by DSH, but the server lacks Playtest launch. |
 
-This was a source-backed compatibility probe, not an assumed OpenAI/Claude schema compatibility claim. The official DSH checkout was not built on this macOS host because no DSH binary or installed dependency tree was present; the exact validator source was inspected and the live candidate schemas were collected from each server. The smallest follow-up after any candidate update is to run DSH's own MCP composition test with the server and confirm `mcp__<serverName>__query_database` appears before shipping.
+This was a source-backed compatibility probe, not an assumed OpenAI/Claude schema compatibility claim. The exact validator source was inspected and the live candidate schemas were collected from each server. The smallest follow-up after any candidate update is to run DSH's own MCP composition test with the server and confirm `mcp__<serverName>__query_database` appears before shipping.
 
 ## Reproducible probes and results
 
@@ -81,19 +79,6 @@ HeroLink:listTools=27; get_project_status=OK; list_project_data=OK;
 
 The upstream Xerolo `scripts/smoke.mjs` is the reproducible fixture and end-to-end probe. The equivalent direct probe used `@modelcontextprotocol/sdk` `Client` + `StdioClientTransport`, sent `tools/list`, then `tools/call` requests, and shut down with `client.close()`; all three stdio children shut down cleanly from the client harness.
 
-### Windows Playtest wrapper substitute probe
-
-A real Windows NW.js executable cannot run on this macOS host. The smallest safe substitute was an executable temporary shell script supplied as Xerolo's `runtimePath`. The probe verified the wrapper's observable contract without opening a game or touching live state:
-
-```text
-playtest_start(mode=nwjs, runtimePath=fake): returned pid and mode=nwjs
-fake runtime received: <fixture-project> test
-playtest_log: captured fake stdout and fake stderr
-playtest_stop: returned the tracked nwjs pid
-```
-
-The real Windows verification still required is listed below. The fake shell also exposed a general process-tree caveat: killing a shell wrapper can leave its child `sleep` process behind. A real MV `Game.exe` should be tested directly, not through a shell wrapper; the installer/profile must not introduce one.
-
 ## Recommended installation and exact Cordis entries
 
 ### Pinned installation
@@ -128,26 +113,6 @@ Put this in the profile's `cordis.patch.yml` (or equivalent profile composition 
 
 The `!!js process.cwd()` argument is evaluated by Cordis and becomes the project path string. If the profile must launch from a fixed project directory instead, replace both `cwd` and the argument with the same absolute path. The command must resolve to the installed `.cmd` shim; an absolute path is safest on machines with multiple Node installations.
 
-### macOS (best effort, non-blocking)
-
-Use the same pinned install and profile entry, but use the non-shim executable:
-
-```yaml
-- insert:
-    - id: mcp-rpgmaker-mv
-      name: '@deepseek-ai/dsh-mcp-client'
-      config:
-        serverName: rpgmaker_mv
-        transport: stdio
-        command: rpgmaker-mv-mcp
-        args: ['--project', !!js process.cwd()]
-        cwd: !!js process.cwd()
-        toolCallTimeoutMs: 60000
-        failOnStartupError: true
-```
-
-The MCP editing surface and browser Playtest path work on macOS in the disposable probe. The NW.js candidate path in the source is `/Applications/RPG Maker MV/RPG Maker MV.app/Contents/MacOS/nwjs-osx-test/Game.app/Contents/MacOS/Game`; it was not verified against installed macOS RPG Maker hardware here. Do not make macOS runtime launch a release gate.
-
 ### DSH-side operational notes
 
 - `serverName: rpgmaker_mv` produces model-facing names such as `mcp__rpgmaker_mv__list_records`; the raw wire names remain Xerolo's names.
@@ -166,7 +131,6 @@ The MCP editing surface and browser Playtest path work on macOS in the disposabl
 | Modify plugins | `list_plugins` → `configure_plugin` or `create_plugin`/`write_plugin` | Works with MV `js/plugins.js`; close the editor first. |
 | Diagnose | `validate_project`, `search_records`, `search_map_events`, `event_command_reference` | Static reference checks and text/command searches work. |
 | Windows Playtest | `playtest_start {"mode":"nwjs"}` → `playtest_status`/`playtest_log` → `playtest_stop` | Wrapper supports launch/status/log/stop. Real Windows NW.js/game verification remains mandatory. |
-| macOS fallback | `playtest_start {"mode":"browser"}` and return URL | Browser server worked on macOS; console remains in browser devtools, not MCP output. |
 
 ## What “agent tests its own fix” means
 
@@ -176,7 +140,6 @@ With Xerolo alone:
 2. **Windows launch verification:** supported by the MCP wrapper once the real MV runtime is installed: launch in test mode, inspect captured NW.js stdout/stderr, check status, and stop it.
 3. **Crash/console verification:** supported only to the extent that the real NW.js build emits useful stdout/stderr. It is not a browser-console or game-state oracle.
 4. **Screenshot/input/scripted gameplay:** not provided by this MCP. A successful process launch does not prove a player can reach the changed event or that the visual/gameplay behavior is correct.
-5. **macOS:** browser launch is the safe fallback; native NW.js and editor launch are best effort only.
 
 ### Smallest supplement
 
@@ -198,7 +161,7 @@ If product later requires unattended in-game assertions, the smallest new capabi
 
 ## Remaining verification before release
 
-The macOS host could not run a real Windows MV installation. A Windows release gate must run, on a disposable project with paths containing spaces and preferably CJK characters:
+A Windows release gate must run on a disposable project with paths containing spaces and preferably CJK characters:
 
 1. install the pinned npm package and start it through the exact Cordis entry;
 2. verify DSH discovers `mcp__rpgmaker_mv__list_records` and the remaining tools;
@@ -209,4 +172,4 @@ The macOS host could not run a real Windows MV installation. A Windows release g
 7. edit a file externally while a draft/change is pending and verify the documented stale/conflict behavior;
 8. close the DSH session and verify the MCP child and Playtest process both terminate.
 
-The current research is complete for the decision and install design; these are hardware/runtime acceptance checks, not reasons to delay the Windows-first selection.
+The current research is complete for the decision and install design; these are hardware/runtime acceptance checks, not reasons to delay the Windows selection.

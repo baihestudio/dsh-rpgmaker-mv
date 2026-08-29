@@ -260,8 +260,11 @@ async function restoreAfterPostSwapFailure(runtimeDir: string, rollbackDir: stri
 }
 
 export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<BootstrapResult> {
-  const paths: HarnessPaths = resolveHarnessPaths(options);
-  return withHarnessOperationLock(paths.lockDir, paths.sessionLeaseDir, () => bootstrapRuntimeUnlocked(options, paths), {
+  const platform = options.platform ?? process.platform;
+  if (platform !== 'win32') throw new BootstrapError('DSH runtime bootstrap is supported on Windows only.');
+  const windowsOptions = { ...options, platform };
+  const paths: HarnessPaths = resolveHarnessPaths(windowsOptions);
+  return withHarnessOperationLock(paths.lockDir, paths.sessionLeaseDir, () => bootstrapRuntimeUnlocked(windowsOptions, paths), {
     timeoutMs: options.lockTimeoutMs ?? 15 * 60_000,
     retryMs: options.lockRetryMs
   });

@@ -270,7 +270,6 @@ describe('Windows release gate foundations', () => {
     expect(out.PATH).toBe('x;y');
     expect(Object.prototype.hasOwnProperty.call(out, 'Path')).toBe(false);
     expect(out.DSH_HOME).toBe('c');
-    expect(withEnvironmentPath({ PATH: 'a' }, 'x', 'darwin').PATH).toBe('x');
   });
 
   test('waits for process observation cleanup after a timeout', async () => {
@@ -798,7 +797,13 @@ describe('Windows release gate foundations', () => {
         await mkdir(join(presetRoot, presetId), { recursive: true });
         await writeFile(join(presetRoot, presetId, 'agent.cordis.yml'), '- id: persona\n');
       }
-      const report = await runDoctor({
+      const prerequisites = await verifyWindowsPrerequisites({
+        platform: 'win32',
+        env: { ...env, DEEPSEEK_API_KEY: 'never-report' },
+        imageMagickExecutable: imageMagick,
+        commandRunner: prerequisiteRunner()
+      });
+      const doctorOptions = {
         platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, imageMagickExecutable: imageMagick, commandRunner: prerequisiteRunner(),
         verifyAgentDependencies: async () => ({
           mcp: { id: 'rpgmaker-mcp', label: 'RPG Maker MV MCP runtime', ok: true, detail: 'fixture MCP verified' }
@@ -812,7 +817,8 @@ describe('Windows release gate foundations', () => {
           bundles: [],
           packages: []
         })
-      });
+      };
+      const report = await runDoctor(doctorOptions);
       expect(report.ok).toBe(true);
       expect(report.checks.map((check) => check.id)).toContain('node');
       expect(report.checks.map((check) => check.id)).toContain('python');
@@ -821,9 +827,64 @@ describe('Windows release gate foundations', () => {
       expect(report.executablePaths.python).toContain('python.exe');
       expect(report.executablePaths.imageMagick).toBe(imageMagick);
       expect(report.executablePaths.forgejoMcp).toContain(join('tools', 'forgejo-mcp', 'forgejo-mcp.exe'));
+      expect(prerequisites.executablePaths).toMatchObject({
+        node: expect.stringContaining('node.exe'),
+        npm: expect.stringContaining('npm.cmd'),
+        python: expect.stringContaining('python.exe'),
+        bun: expect.stringContaining('bun.exe'),
+        powershell: expect.stringContaining('pwsh.exe'),
+        git: expect.stringContaining('git.exe'),
+        coreutilsManager: expect.stringContaining('coreutils-manager.exe'),
+        coreutilsFind: expect.stringContaining('find.exe'),
+        coreutilsGrep: expect.stringContaining('grep.exe'),
+        imageMagick: expect.stringContaining('magick.exe')
+      });
       expect(report.checks.map((check) => check.id)).toContain('app-layout');
       expect(report.checks.map((check) => check.id)).toContain('managed-web-profile');
       expect(report.checks.find((check) => check.id === 'managed-web-profile')?.ok).toBe(true);
+      for (const prerequisite of prerequisites.checks) {
+        expect(report.checks.find((check) => check.id === prerequisite.id)).toEqual({
+          id: prerequisite.id,
+          label: prerequisite.label,
+          ok: prerequisite.ok,
+          detail: prerequisite.detail,
+          ...(prerequisite.executable ? { path: prerequisite.executable } : {})
+        });
+      }
+      expect(report.executablePaths).toMatchObject(prerequisites.executablePaths);
+      const brokenNodeRunnerBase = prerequisiteRunner();
+      const brokenNodeRunner = async (command: string, args: string[], options: { cwd?: string }) => {
+        if (basename(command).toLowerCase() === 'node.exe' && args[0] === '--version') return { exitCode: 0, stdout: 'v16.20.0', stderr: '' };
+        if (basename(command).toLowerCase() === 'node.exe' && args[0] === '-p') return { exitCode: 0, stdout: 'false', stderr: '' };
+        return brokenNodeRunnerBase(command, args, options);
+      };
+      const failedPrerequisites = await verifyWindowsPrerequisites({ ...doctorOptions, commandRunner: brokenNodeRunner });
+      const failedDoctor = await runDoctor({ ...doctorOptions, commandRunner: brokenNodeRunner });
+      const failedNode = failedPrerequisites.checks.find((check) => check.id === 'node');
+      expect(failedNode?.ok).toBe(false);
+      expect(failedDoctor.checks.find((check) => check.id === 'node')).toEqual({
+        id: failedNode!.id,
+        label: failedNode!.label,
+        ok: failedNode!.ok,
+        detail: failedNode!.detail,
+        path: failedNode!.executable
+      });
+      const system32 = join(root, 'System32');
+      await mkdir(system32, { recursive: true });
+      await unlink(join(env.PATH, 'find.exe'));
+      await writeFile(join(system32, 'find.exe'), 'shadowed fixture');
+      const shadowedEnv = { ...doctorOptions.env, PATH: `${system32};${env.PATH}` };
+      const failedCoreutilsPrerequisites = await verifyWindowsPrerequisites({ ...doctorOptions, env: shadowedEnv });
+      const failedCoreutilsDoctor = await runDoctor({ ...doctorOptions, env: shadowedEnv });
+      const failedCoreutils = failedCoreutilsPrerequisites.checks.find((check) => check.id === 'coreutils');
+      expect(failedCoreutils?.ok).toBe(false);
+      expect(failedCoreutilsDoctor.checks.find((check) => check.id === 'coreutils')).toEqual({
+        id: failedCoreutils!.id,
+        label: failedCoreutils!.label,
+        ok: failedCoreutils!.ok,
+        detail: failedCoreutils!.detail,
+        path: failedCoreutils!.executable
+      });
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-profile');
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-provider');
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-activation');
@@ -992,6 +1053,7 @@ describe('Windows release gate foundations', () => {
     const output: string[] = [];
     const errors: string[] = [];
     const exitCode = await runCli(['doctor', '--sandbox-probe'], {
+      platform: 'win32',
       io: {
         stdout: { write: (text) => output.push(String(text)) },
         stderr: { write: (text) => errors.push(String(text)) }
