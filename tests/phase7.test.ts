@@ -12,13 +12,11 @@ import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgej
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, RELEASE_ENTRIES, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { PNPM_VERSION } from '../src/profile';
-import { DSH_WEB_PACKAGE, DSH_WEB_VERSION } from '../src/dsh-web';
-import { DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION } from '../src/dsh-imagegen';
-import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE } from '../src/dsh-brand';
+import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, DSH_WEB_PACKAGE, DSH_WEB_VERSION, MANAGED_WEB_PROFILE_BUNDLE_NAMES, verifyManagedWebProfile } from '../src/managed-web-profile';
 import { findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
-import { JS_RUNNER_ENV, XEROLO_RUNTIME_ENV, verifyWorkspaceMcpBundle, WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
+import { JS_RUNNER_ENV, XEROLO_RUNTIME_ENV, WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
 import { installWindowsPrerequisites, PrerequisiteConsentError, verifyWindowsPrerequisites } from '../src/prerequisites';
 import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
@@ -180,7 +178,12 @@ async function writeProfilePlugin(
   try {
     manifest = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8')) as Record<string, unknown>;
   } catch {
-    manifest = { name: 'dsh-profile-web', private: true, version: '0.1.0' };
+    manifest = {
+      name: 'dsh-profile-web',
+      private: true,
+      version: '0.1.0',
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } }
+    };
   }
   const dependencies = { ...((manifest.dependencies ?? {}) as Record<string, string>), [packageName]: source ? `file:${source}` : version };
   manifest.dependencies = dependencies;
@@ -204,6 +207,7 @@ async function writeProfilePlugin(
       dsh: { bundle: { patch: './cordis.patch.yml' } }
     }));
     await writeFile(join(installed, 'lib', 'index.js'), 'export {}\n');
+    await writeFile(join(installed, 'cordis.patch.yml'), '# fixture patch\n');
   }
   await mkdir(profile, { recursive: true });
   await writeFile(join(profile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -798,6 +802,15 @@ describe('Windows release gate foundations', () => {
         platform: 'win32', env: { ...env, DEEPSEEK_API_KEY: 'never-report' }, mutableRoot, dshHome, programRoot, runtimeDir: runtime, imageMagickExecutable: imageMagick, commandRunner: prerequisiteRunner(),
         verifyAgentDependencies: async () => ({
           mcp: { id: 'rpgmaker-mcp', label: 'RPG Maker MV MCP runtime', ok: true, detail: 'fixture MCP verified' }
+        }),
+        managedWebProfileVerifier: async () => ({
+          valid: true,
+          errors: [],
+          profile: 'web',
+          profileDir: join(dshHome, 'profiles', 'web'),
+          dependencies: {},
+          bundles: [],
+          packages: []
         })
       });
       expect(report.ok).toBe(true);
@@ -809,6 +822,8 @@ describe('Windows release gate foundations', () => {
       expect(report.executablePaths.imageMagick).toBe(imageMagick);
       expect(report.executablePaths.forgejoMcp).toContain(join('tools', 'forgejo-mcp', 'forgejo-mcp.exe'));
       expect(report.checks.map((check) => check.id)).toContain('app-layout');
+      expect(report.checks.map((check) => check.id)).toContain('managed-web-profile');
+      expect(report.checks.find((check) => check.id === 'managed-web-profile')?.ok).toBe(true);
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-profile');
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-provider');
       expect(report.checks.map((check) => check.id)).not.toContain('vision-toolkit-activation');
@@ -1304,7 +1319,7 @@ describe('Windows release gate foundations', () => {
       expect(calls.some((call) => call.args.includes(`${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
       expect(calls.some((call) => call.args.includes(`file:${join(program, DSH_BRAND_BUNDLE_RELATIVE)}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
       expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', ...DSH_BRAND_PACKAGE.split('/'), 'assets', 'maker-ape-logo.png')).exists()).toBe(true);
-      expect((JSON.parse(await readFile(join(state, 'profiles', 'web', 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }).dsh?.profile?.bundles).toContain(DSH_BRAND_PACKAGE);
+      expect((JSON.parse(await readFile(join(state, 'profiles', 'web', 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }).dsh?.profile?.bundles).toEqual([...MANAGED_WEB_PROFILE_BUNDLE_NAMES]);
       expect((JSON.parse(await readFile(join(program, DSH_BRAND_BUNDLE_RELATIVE, 'package.json'), 'utf8')) as { exports?: Record<string, string> }).exports?.['./package.json']).toBe('./package.json');
       const clientSource = await readFile(join(program, DSH_BRAND_BUNDLE_RELATIVE, 'lib', 'client.js'), 'utf8');
       let registration: { id: string; factory: (require: (id: string) => unknown) => { apply?: (ctx: unknown) => unknown; inject?: unknown } } | undefined;
@@ -1399,14 +1414,15 @@ describe('Windows release gate foundations', () => {
 
       calls.length = 0;
       const webProfileManifestPath = join(state, 'profiles', 'web', 'package.json');
-      const webProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      const webProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string>; dsh?: { profile?: { bundles?: string[] } } };
       webProfileManifest.dependencies ??= {};
       webProfileManifest.dependencies['@tta-lab/dsh-web'] = '3.1.0';
       await writeFile(webProfileManifestPath, `${JSON.stringify(webProfileManifest, null, 2)}\n`);
       await install();
-      const rebuiltWebProfile = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      const rebuiltWebProfile = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string>; dsh?: { profile?: { bundles?: string[] } } };
       expect(rebuiltWebProfile.dependencies?.['@tta-lab/dsh-web']).toBeUndefined();
       expect(rebuiltWebProfile.dependencies?.[DSH_WEB_PACKAGE]).toBe(DSH_WEB_VERSION);
+      expect(rebuiltWebProfile.dsh?.profile?.bundles).toEqual([...MANAGED_WEB_PROFILE_BUNDLE_NAMES]);
       expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`))).toBe(true);
       expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
@@ -1414,14 +1430,17 @@ describe('Windows release gate foundations', () => {
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'package.json')).exists()).toBe(true);
 
       calls.length = 0;
-      const staleProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      const staleProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string>; dsh?: { profile?: { bundles?: string[] } } };
       staleProfileManifest.dependencies ??= {};
       staleProfileManifest.dependencies['@baihestudio/dsh-image-workshop'] = `file:${join(program, 'bundle', 'dsh-image-workshop')}`;
+      staleProfileManifest.dsh ??= {};
+      staleProfileManifest.dsh.profile = { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', ...MANAGED_WEB_PROFILE_BUNDLE_NAMES.slice(2), '@baihestudio/dsh-image-workshop'] };
       await writeFile(webProfileManifestPath, `${JSON.stringify(staleProfileManifest, null, 2)}\n`);
       await install();
-      const rebuiltProfile = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string> };
+      const rebuiltProfile = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string>; dsh?: { profile?: { bundles?: string[] } } };
       expect(rebuiltProfile.dependencies?.['@baihestudio/dsh-image-workshop']).toBeUndefined();
       expect(rebuiltProfile.dependencies?.[DSH_WEB_PACKAGE]).toBe(DSH_WEB_VERSION);
+      expect(rebuiltProfile.dsh?.profile?.bundles).toEqual([...MANAGED_WEB_PROFILE_BUNDLE_NAMES]);
       expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`))).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -1768,18 +1787,22 @@ describe('Windows release gate foundations', () => {
       } as const;
 
       const firstPreparation = await prepareRpgMakerLaunch(launchOptions);
-      expect(firstPreparation.workspaceMcpBundle.valid).toBe(true);
+      expect(firstPreparation.managedWebProfile.valid).toBe(true);
+      expect(firstPreparation.managedWebProfile.packages).toHaveLength(4);
+      expect(firstPreparation.managedWebProfile.materialized).toBe(false);
       expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
       expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', '@anionex', 'dsh-vision-toolkit')).exists()).toBe(false);
       const profilePackage = join(state, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
       await rm(profilePackage, { recursive: true, force: true });
-      const broken = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') });
+      const broken = await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') });
       expect(broken.valid).toBe(false);
       expect(broken.errors.join(' ')).toMatch(/installed profile package/i);
 
       const repairedPreparation = await prepareRpgMakerLaunch(launchOptions);
-      expect(repairedPreparation.workspaceMcpBundle.valid).toBe(true);
-      expect((await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') })).valid).toBe(true);
+      expect(repairedPreparation.managedWebProfile.valid).toBe(true);
+      expect(repairedPreparation.managedWebProfile.materialized).toBe(true);
+      expect(repairedPreparation.managedWebProfile.packages).toHaveLength(4);
+      expect((await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') })).valid).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

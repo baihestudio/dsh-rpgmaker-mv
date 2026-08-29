@@ -11,10 +11,7 @@ import { withoutCredentials, runCommand, type CommandRunner } from './process';
 import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
 import { deployRpgMakerPresets, prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { prepareMcporterRuntime } from './mcport';
-import { prepareDshWebPlugin } from './dsh-web';
-import { prepareDshImagegenPlugin } from './dsh-imagegen';
-import { DSH_BRAND_BUNDLE_RELATIVE, prepareDshBrandPlugin } from './dsh-brand';
-import { preparePnpmRuntime } from './profile';
+import { DSH_BRAND_BUNDLE_RELATIVE, ensureManagedWebProfile } from './managed-web-profile';
 import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
@@ -262,17 +259,6 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
       });
       const bunExecutable = options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE ?? 'bun';
       const prepareAgentDependencies = options.prepareAgentDependencies ?? (async (context) => {
-        await preparePnpmRuntime({
-          platform,
-          env: context.env,
-          dshHome: context.paths.dshHome,
-          programRoot: context.paths.programRoot,
-          mutableRoot: context.paths.mutableRoot,
-          runtimeDir: context.paths.runtimeDir,
-          npmExecutable: context.npmExecutable,
-          useAppOwnedPnpm: true,
-          commandRunner: context.commandRunner
-        }, context.paths);
         const mcporter = await prepareMcporterRuntime({
           platform,
           env: context.env,
@@ -286,36 +272,20 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         if (!mcporter.valid) throw new Error(`MCPorter runtime is not usable: ${mcporter.errors.join('; ')}`);
         const mcp = await prepareRpgMakerMcpRuntime({ platform, env: context.env, bunExecutable: context.bunExecutable, commandRunner: context.commandRunner }, join(context.paths.programRoot, 'runtime', 'mcp'));
         if (!mcp.valid) throw new Error(`RPG Maker MCP is not usable: ${mcp.errors.join('; ')}`);
-        await prepareDshWebPlugin({
+        const dshExecutable = bootstrap.verification.dshExecutable ?? await findDshExecutable(context.paths.runtimeDir, platform);
+        if (!dshExecutable) throw new Error('Pinned DSH executable was not found before managed Web profile materialization.');
+        const managed = await ensureManagedWebProfile({
           platform,
           env: context.env,
           dshHome: context.paths.dshHome,
           programRoot: context.paths.programRoot,
+          mutableRoot: context.paths.mutableRoot,
           runtimeDir: context.paths.runtimeDir,
-          dshExecutable: context.env.DSH_EXECUTABLE,
+          dshExecutable,
           npmExecutable: context.npmExecutable,
           commandRunner: context.commandRunner
         });
-        await prepareDshImagegenPlugin({
-          platform,
-          env: context.env,
-          dshHome: context.paths.dshHome,
-          programRoot: context.paths.programRoot,
-          runtimeDir: context.paths.runtimeDir,
-          dshExecutable: context.env.DSH_EXECUTABLE,
-          npmExecutable: context.npmExecutable,
-          commandRunner: context.commandRunner
-        });
-        await prepareDshBrandPlugin({
-          platform,
-          env: context.env,
-          dshHome: context.paths.dshHome,
-          programRoot: context.paths.programRoot,
-          runtimeDir: context.paths.runtimeDir,
-          dshExecutable: context.env.DSH_EXECUTABLE,
-          npmExecutable: context.npmExecutable,
-          commandRunner: context.commandRunner
-        });
+        if (!managed.valid) throw new Error(`Managed Web profile is not usable: ${managed.errors.join('; ')}`);
       });
       await prepareAgentDependencies({
         paths,
@@ -466,8 +436,8 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'src/mcport.ts',
     'src/workspace-mcp.ts',
     'src/profile.ts',
+    'src/managed-web-profile.ts',
     'presets/rpgmaker/preset.yml',
-    'src/dsh-web.ts',
     `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_EXECUTABLE_NAME}`,
     `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_MANIFEST_NAME}`,
     `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_LICENSE_NAME}`,

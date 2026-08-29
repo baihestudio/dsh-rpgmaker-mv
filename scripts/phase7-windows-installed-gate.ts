@@ -9,6 +9,7 @@ import { DSH_VERSION, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, withEnvironmentPath } 
 import { verifyRuntime } from '../src/bootstrap';
 import { prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, type CommandRunner, withoutCredentials } from '../src/process';
 import { verifyMcpRuntime } from '../src/rpgmaker';
+import { verifyManagedWebProfile } from '../src/managed-web-profile';
 import { verifyMcporterRuntime } from '../src/mcport';
 import { PNPM_VERSION } from '../src/profile';
 import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
@@ -17,8 +18,8 @@ import { WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
-  XEROLO_RUNTIME_ENV,
-  verifyWorkspaceMcpBundle
+  WORKSPACE_MCP_PACKAGE,
+  XEROLO_RUNTIME_ENV
 } from '../src/workspace-mcp';
 import { probeLoopbackPort } from '../src/windows';
 import { observeLauncherProcesses } from './process-observation.mjs';
@@ -471,7 +472,7 @@ async function main(): Promise<void> {
     const firstStarted = startInstalledLaunch(launchCmd, installedRoot, env);
     active.push(firstStarted);
     const firstLaunch = await waitForLaunchReady(firstStarted, installedRoot, neutralLanding, env);
-    const firstProfile = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
+    const firstProfile = await verifyManagedWebProfile({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
     assert.equal(firstProfile.valid, true, 'first installed workspace MCP bundle verification failed');
     const firstPortClosed = await stopInstalledLaunch(firstStarted, env);
     assert.equal(firstPortClosed, true, 'first installed Launch.cmd teardown did not terminate its process tree and close the fixed web port');
@@ -479,13 +480,13 @@ async function main(): Promise<void> {
 
     const profilePackage = join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
     await rm(profilePackage, { recursive: true, force: true });
-    const brokenProfile = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
+    const brokenProfile = await verifyManagedWebProfile({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
     assert.equal(brokenProfile.valid, false, 'deliberate workspace MCP bundle break was not detected');
 
     const repairStarted = startInstalledLaunch(launchCmd, installedRoot, env);
     active.push(repairStarted);
     const repairLaunch = await waitForLaunchReady(repairStarted, installedRoot, neutralLanding, env);
-    const repairedProfile = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
+    const repairedProfile = await verifyManagedWebProfile({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
     assert.equal(repairedProfile.valid, true, 'repaired installed workspace MCP bundle verification failed');
     const repairPortClosed = await stopInstalledLaunch(repairStarted, env);
     assert.equal(repairPortClosed, true, 'repair installed Launch.cmd teardown did not terminate its process tree and close the fixed web port');
@@ -517,7 +518,7 @@ async function main(): Promise<void> {
         durationMs: firstLaunch.durationMs,
         port: firstLaunch.port,
         launcher: firstLaunch.launcher,
-        profile: { valid: firstProfile.valid, bundleOccurrences: firstProfile.bundleOccurrences }
+        profile: { valid: firstProfile.valid, bundleOccurrences: firstProfile.bundles.filter((name) => name === WORKSPACE_MCP_PACKAGE).length }
       },
       repair: {
         linkBroken: !brokenProfile.valid,
@@ -526,7 +527,7 @@ async function main(): Promise<void> {
         durationMs: repairLaunch.durationMs,
         port: repairLaunch.port,
         launcher: repairLaunch.launcher,
-        profile: { valid: repairedProfile.valid, bundleOccurrences: repairedProfile.bundleOccurrences }
+        profile: { valid: repairedProfile.valid, bundleOccurrences: repairedProfile.bundles.filter((name) => name === WORKSPACE_MCP_PACKAGE).length }
       },
       agentEvidence,
       shutdown: { firstPortClosed, repairPortClosed },

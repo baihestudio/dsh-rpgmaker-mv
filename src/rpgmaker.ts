@@ -13,11 +13,9 @@ import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
   XEROLO_RUNTIME_ENV,
-  prepareWorkspaceMcpBundle,
-  WORKSPACE_MCP_AGENT_ROW_ID,
-  type WorkspaceMcpBundleOptions,
-  type WorkspaceMcpBundleVerification
+  WORKSPACE_MCP_AGENT_ROW_ID
 } from './workspace-mcp';
+import { ensureManagedWebProfile, type ManagedWebProfileOptions, type ManagedWebProfileResult } from './managed-web-profile';
 
 export const RPGMAKER_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
 export const RPGMAKER_MCP_VERSION = '0.1.0';
@@ -49,7 +47,7 @@ export type RpgMakerLaunchOptions = LaunchOptions & {
   dshRuntimePreparer?: (options: BootstrapOptions) => Promise<BootstrapResult>;
   mcporterRuntimePreparer?: (options: McporterRuntimeOptions, runtimeDir: string) => Promise<McporterRuntimeVerification>;
   mcpRuntimePreparer?: typeof prepareRpgMakerMcpRuntime;
-  workspaceMcpBundlePreparer?: (options: WorkspaceMcpBundleOptions) => Promise<WorkspaceMcpBundleVerification>;
+  managedWebProfilePreparer?: (options: ManagedWebProfileOptions) => Promise<ManagedWebProfileResult>;
 };
 
 export interface RpgMakerLaunchPreparation {
@@ -63,7 +61,7 @@ export interface RpgMakerLaunchPreparation {
   codePresetPath: string;
   compositionPath: string;
   agentPreset: string;
-  workspaceMcpBundle: WorkspaceMcpBundleVerification;
+  managedWebProfile: ManagedWebProfileResult;
 }
 
 export interface RpgMakerPresetDeploymentOptions extends PathOptions {
@@ -695,8 +693,7 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   if (!mcp.valid || !mcp.executable) throw new RpgMakerStartupError(`Pinned RPG Maker MCP runtime is not usable: ${mcp.errors.join('; ')}`);
   const jsRunner = await resolveMcpRunner(options, platform, withoutCredentials(env));
 
-  const prepareBundle = options.workspaceMcpBundlePreparer ?? prepareWorkspaceMcpBundle;
-  const workspaceMcpBundle = await prepareBundle({
+  const managedWebProfileOptions: ManagedWebProfileOptions = {
     platform,
     env,
     dshHome: paths.dshHome,
@@ -707,9 +704,16 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
     npmExecutable: options.npmExecutable,
     pnpmExecutable: options.pnpmExecutable,
     pnpmRuntimeDir: options.pnpmRuntimeDir,
-    commandRunner: options.commandRunner
-  });
-  if (!workspaceMcpBundle.valid) throw new RpgMakerStartupError(`App-owned workspace MCP bundle is not usable: ${workspaceMcpBundle.errors.join('; ')}`);
+    nodeExecutable: options.jsExecutable,
+    bunExecutable: options.bunExecutable,
+    commandRunner: options.commandRunner,
+    lockTimeoutMs: options.lockTimeoutMs,
+    lockRetryMs: options.lockRetryMs
+  };
+  const managedWebProfile = options.managedWebProfilePreparer
+    ? await options.managedWebProfilePreparer(managedWebProfileOptions)
+    : await ensureManagedWebProfile(managedWebProfileOptions);
+  if (!managedWebProfile.valid) throw new RpgMakerStartupError(`Managed Web profile is not usable: ${managedWebProfile.errors.join('; ')}`);
 
   const presets = await deployRpgMakerPresets({
     platform,
@@ -731,7 +735,7 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
     xeroloScript: mcp.executable,
     jsRunner,
     ...presets,
-    workspaceMcpBundle
+    managedWebProfile
   };
 }
 
