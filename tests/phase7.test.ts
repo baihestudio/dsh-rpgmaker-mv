@@ -15,8 +15,8 @@ import { PNPM_VERSION } from '../src/profile';
 import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, DSH_WEB_PACKAGE, DSH_WEB_VERSION, MANAGED_WEB_PROFILE_BUNDLE_NAMES, verifyManagedWebProfile } from '../src/managed-web-profile';
 import { findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
-import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
-import { JS_RUNNER_ENV, XEROLO_RUNTIME_ENV, WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
+import { RPGMAKER_MV_MCP_INTEGRITY, RPGMAKER_MV_MCP_PACKAGE, RPGMAKER_MV_MCP_VERSION, RPGMAKER_MZ_MCP_INTEGRITY, RPGMAKER_MZ_MCP_PACKAGE, RPGMAKER_MZ_MCP_VERSION } from '../src/rpgmaker';
+import { JS_RUNNER_ENV, RPGMAKER_MCP_RUNTIME_ENV, WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
 import { installWindowsPrerequisites, PrerequisiteConsentError, verifyWindowsPrerequisites } from '../src/prerequisites';
 import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
@@ -138,12 +138,17 @@ async function writePinnedPackageRuntime(
 ): Promise<void> {
   const packageDir = join(runtime, 'node_modules', ...packageName.split('/'));
   await mkdir(packageDir, { recursive: true });
-  await writeFile(join(runtime, 'package.json'), JSON.stringify({ private: true, dependencies: { [packageName]: version } }));
-  await writeFile(join(runtime, 'bun.lock'), JSON.stringify({
-    lockfileVersion: 1,
-    workspaces: { '': { dependencies: { [packageName]: version } } },
-    packages: { [packageName]: [`${packageName}@${version}`, '', lockMetadata, integrity] }
-  }));
+  let rootPackage: { private?: boolean; dependencies?: Record<string, string> } = { private: true, dependencies: {} };
+  try { rootPackage = JSON.parse(await readFile(join(runtime, 'package.json'), 'utf8')) as typeof rootPackage; } catch { /* first package in the fake runtime */ }
+  rootPackage.dependencies = { ...(rootPackage.dependencies ?? {}), [packageName]: version };
+  await writeFile(join(runtime, 'package.json'), JSON.stringify(rootPackage));
+  let lock: { lockfileVersion?: number; workspaces?: Record<string, { dependencies?: Record<string, string> }>; packages?: Record<string, unknown[]> } = { lockfileVersion: 1, workspaces: {}, packages: {} };
+  try { lock = JSON.parse(await readFile(join(runtime, 'bun.lock'), 'utf8')) as typeof lock; } catch { /* first package in the fake runtime */ }
+  const workspace = lock.workspaces?.[''] ?? {};
+  workspace.dependencies = { ...(workspace.dependencies ?? {}), [packageName]: version };
+  lock.workspaces = { ...(lock.workspaces ?? {}), '': workspace };
+  lock.packages = { ...(lock.packages ?? {}), [packageName]: [`${packageName}@${version}`, '', lockMetadata, integrity] };
+  await writeFile(join(runtime, 'bun.lock'), JSON.stringify(lock));
   await writeFile(join(packageDir, 'package.json'), JSON.stringify(packageManifest));
   const entry = typeof packageManifest.main === 'string'
     ? packageManifest.main
@@ -228,8 +233,12 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
       await writePinnedPackageRuntime(cwd!, MCPORTER_PACKAGE, MCPORTER_VERSION, MCPORTER_NPM_INTEGRITY, { version: MCPORTER_VERSION, main: 'dist/index.js' });
       return { exitCode: 0, stdout: '', stderr: '' };
     }
-    if (args[0] === 'add' && packageSpec === `${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`) {
-      await writePinnedPackageRuntime(cwd!, RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==', { version: RPGMAKER_MCP_VERSION, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } });
+    if (args[0] === 'add' && packageSpec === `${RPGMAKER_MV_MCP_PACKAGE}@${RPGMAKER_MV_MCP_VERSION}`) {
+      await writePinnedPackageRuntime(cwd!, RPGMAKER_MV_MCP_PACKAGE, RPGMAKER_MV_MCP_VERSION, RPGMAKER_MV_MCP_INTEGRITY, { name: RPGMAKER_MV_MCP_PACKAGE, version: RPGMAKER_MV_MCP_VERSION, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } });
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'add' && packageSpec === `${RPGMAKER_MZ_MCP_PACKAGE}@${RPGMAKER_MZ_MCP_VERSION}`) {
+      await writePinnedPackageRuntime(cwd!, RPGMAKER_MZ_MCP_PACKAGE, RPGMAKER_MZ_MCP_VERSION, RPGMAKER_MZ_MCP_INTEGRITY, { name: RPGMAKER_MZ_MCP_PACKAGE, version: RPGMAKER_MZ_MCP_VERSION, bin: { 'rpgmaker-mz-mcp': 'dist/index.js' } }, { bin: { 'rpgmaker-mz-mcp': 'dist/index.js' } });
       return { exitCode: 0, stdout: '', stderr: '' };
     }
     if (args[0] === 'add' && packageSpec === `${DSH_PACKAGE_NAME}@${DSH_VERSION}`) {
@@ -481,11 +490,19 @@ describe('Windows release gate foundations', () => {
       const mcpRuntime = join(installedRoot, 'runtime', 'mcp');
       await writePinnedPackageRuntime(
         mcpRuntime,
-        RPGMAKER_MCP_PACKAGE,
-        RPGMAKER_MCP_VERSION,
-        'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==',
-        { version: RPGMAKER_MCP_VERSION, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } },
+        RPGMAKER_MV_MCP_PACKAGE,
+        RPGMAKER_MV_MCP_VERSION,
+        RPGMAKER_MV_MCP_INTEGRITY,
+        { name: RPGMAKER_MV_MCP_PACKAGE, version: RPGMAKER_MV_MCP_VERSION, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } },
         { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }
+      );
+      await writePinnedPackageRuntime(
+        mcpRuntime,
+        RPGMAKER_MZ_MCP_PACKAGE,
+        RPGMAKER_MZ_MCP_VERSION,
+        RPGMAKER_MZ_MCP_INTEGRITY,
+        { name: RPGMAKER_MZ_MCP_PACKAGE, version: RPGMAKER_MZ_MCP_VERSION, bin: { 'rpgmaker-mz-mcp': 'dist/index.js' } },
+        { bin: { 'rpgmaker-mz-mcp': 'dist/index.js' } }
       );
       const mountScript = join(installedRoot, 'scripts', 'phase2-real-mount.mjs');
       await mkdir(dirname(mountScript), { recursive: true });
@@ -509,7 +526,7 @@ describe('Windows release gate foundations', () => {
       expect(invocation?.args).toEqual([mountScript]);
       expect(invocation?.cwd).toBe(neutralLanding);
       expect(invocation?.env?.[JS_RUNNER_ENV]).toBe(bun);
-      expect(invocation?.env?.[XEROLO_RUNTIME_ENV]).toBe(mcpRuntime);
+      expect(invocation?.env?.[RPGMAKER_MCP_RUNTIME_ENV]).toBe(mcpRuntime);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1375,7 +1392,8 @@ describe('Windows release gate foundations', () => {
       expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', '@anionex', 'dsh-vision-toolkit')).exists()).toBe(false);
       expect(await Bun.file(join(state, 'cache', 'dsh-vision-toolkit')).exists()).toBe(false);
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
-      expect(calls.some((call) => call.args.includes(`${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`))).toBe(true);
+      expect(calls.some((call) => call.args.includes(`${RPGMAKER_MV_MCP_PACKAGE}@${RPGMAKER_MV_MCP_VERSION}`))).toBe(true);
+      expect(calls.some((call) => call.args.includes(`${RPGMAKER_MZ_MCP_PACKAGE}@${RPGMAKER_MZ_MCP_VERSION}`))).toBe(true);
       expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
       expect(calls.flatMap((call) => call.args)).not.toContain('@tta-lab/dsh-web');
       expect(calls.some((call) => call.args.includes(`${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
@@ -1430,12 +1448,11 @@ describe('Windows release gate foundations', () => {
       const quickStartButtons = quickStart?.props.children as Array<{ props: Record<string, unknown> }>;
       expect(quickStartButtons).toHaveLength(4);
       expect(quickStartButtons.map((button) => button.props['data-skill'])).toEqual([
-        'game-design', 'rpgmaker-mv', 'rpgmaker-mv', 'image-assets'
+        'game-design', 'rpgmaker (当前引擎)', 'rpgmaker (当前引擎)', 'image-assets'
       ]);
       expect(quickStartButtons.map((button) => (button.props.children as Array<{ props: Record<string, unknown> }>)[0]?.props.children)).toEqual([
         '推敲剧情与玩法', '开发插件', '编辑对话与事件', '制作美术素材'
       ]);
-
       const draftWrites: string[] = [];
       let submitCalls = 0;
       const actionSurface = quickStartSlots[0]!.component({
@@ -1454,6 +1471,9 @@ describe('Windows release gate foundations', () => {
       }
       expect(draftWrites).toHaveLength(4);
       expect(draftWrites.every((text) => text.length > 0)).toBe(true);
+      expect(draftWrites[1]).toContain('当前工作空间选择的 RPG Maker 引擎');
+      expect(draftWrites[2]).toContain('当前工作空间选择的 RPG Maker 引擎');
+      expect(draftWrites.every((text) => !text.includes('RPG Maker MV'))).toBe(true);
       expect(submitCalls).toBe(0);
       expect(quickStartSlots[0]!.component({
         session: { composerPhase: 'blank' },
@@ -1472,7 +1492,8 @@ describe('Windows release gate foundations', () => {
       })).toBeNull();
       expect(await Bun.file(join(program, 'runtime', 'pnpm', 'node_modules', 'pnpm', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'node_modules', MCPORTER_PACKAGE, 'dist', 'index.js')).exists()).toBe(true);
-      expect(await Bun.file(join(program, 'runtime', 'mcp', 'node_modules', ...RPGMAKER_MCP_PACKAGE.split('/'), 'dist', 'index.js')).exists()).toBe(true);
+      expect(await Bun.file(join(program, 'runtime', 'mcp', 'node_modules', ...RPGMAKER_MV_MCP_PACKAGE.split('/'), 'dist', 'index.js')).exists()).toBe(true);
+      expect(await Bun.file(join(program, 'runtime', 'mcp', 'node_modules', ...RPGMAKER_MZ_MCP_PACKAGE.split('/'), 'dist', 'index.js')).exists()).toBe(true);
 
       calls.length = 0;
       const webProfileManifestPath = join(state, 'profiles', 'web', 'package.json');
@@ -1490,6 +1511,8 @@ describe('Windows release gate foundations', () => {
       expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'package.json')).exists()).toBe(true);
+      expect(calls.some((call) => call.args.includes(`${RPGMAKER_MV_MCP_PACKAGE}@${RPGMAKER_MV_MCP_VERSION}`))).toBe(false);
+      expect(calls.some((call) => call.args.includes(`${RPGMAKER_MZ_MCP_PACKAGE}@${RPGMAKER_MZ_MCP_VERSION}`))).toBe(false);
 
       calls.length = 0;
       const staleProfileManifest = JSON.parse(await readFile(webProfileManifestPath, 'utf8')) as { dependencies?: Record<string, string>; dsh?: { profile?: { bundles?: string[] } } };
@@ -1840,7 +1863,7 @@ describe('Windows release gate foundations', () => {
         mutableRoot: mutable,
         runtimeDir: join(program, 'runtime', 'dsh'),
         mcporterRuntimeDir: join(program, 'runtime', 'mcporter'),
-        mcpRuntimeDir: join(program, 'runtime', 'mcp'),
+        rpgmakerRuntimeDir: join(program, 'runtime', 'mcp'),
         dshExecutable,
         bunExecutable: bun,
         npmExecutable: npm,

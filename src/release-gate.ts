@@ -452,7 +452,11 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/mcport-host.js`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/tools.js`,
     `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/workspace.js`,
-    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/xerolo-manifest.js`
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/xerolo-manifest.js`,
+    `${WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE}/lib/mz-manifest.js`,
+    'presets/rpgmaker/skills/rpgmaker-mz/SKILL.md',
+    'docs/research/rpgmaker-mz-mcp-selection.md',
+    'docs/research/rpgmaker-mz-enhancement-roadmap.md'
   ];
   const missing = requiredEntries.filter((entry) => !entries.includes(entry) && !entries.some((candidate) => candidate.startsWith(`${entry}/`)));
   return { path: zipPath, entries, requiredEntries, valid: missing.length === 0, missing };

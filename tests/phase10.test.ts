@@ -8,9 +8,9 @@ import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION, verifyMcpor
 import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
-  XEROLO_RUNTIME_ENV
+  RPGMAKER_MCP_RUNTIME_ENV
 } from '../src/workspace-mcp';
-import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
+import { RPGMAKER_MV_MCP_PACKAGE, RPGMAKER_MV_MCP_VERSION } from '../src/rpgmaker';
 import { redactSensitive, withoutCredentials } from '../src/process';
 import { HarnessScope, createHarnessAgent, type HarnessAgent } from './fixtures/dsh-agent-harness';
 
@@ -67,8 +67,8 @@ function harnessPaths(root: string) {
 const BUNDLE_LIB = join(process.cwd(), 'bundle', 'dsh-workspace-mcp', 'lib');
 const FIXTURE_SERVER = join(process.cwd(), 'tests', 'fixtures', 'deterministic-mcp-server.mjs');
 const FAKE_MCPORTER = join(process.cwd(), 'tests', 'fixtures', 'fake-mcporter.mjs');
-const XEROLO_SERVER_TEMPLATE = join(process.cwd(), 'tests', 'fixtures', 'xerolo-fixture-server.mjs');
-const XEROLO_PACKAGE_DIR = join('node_modules', RPGMAKER_MCP_PACKAGE);
+const RPGMAKER_SERVER_TEMPLATE = join(process.cwd(), 'tests', 'fixtures', 'xerolo-fixture-server.mjs');
+const RPGMAKER_MV_PACKAGE_DIR = join('node_modules', RPGMAKER_MV_MCP_PACKAGE);
 
 /**
  * Install the test-owned fake MCPorter runtime in the exact pinned shape
@@ -95,15 +95,15 @@ async function writeFixtureMcporterRuntime(runtimeDir: string): Promise<void> {
  * an external install. The server template is a generated test double, not a
  * second manifest.
  */
-async function writeFixtureXeroloRuntime(runtimeDir: string, manifest: unknown): Promise<void> {
-  const packageDir = join(runtimeDir, XEROLO_PACKAGE_DIR);
+async function writeFixtureRpgMakerRuntime(runtimeDir: string, manifest: unknown): Promise<void> {
+  const packageDir = join(runtimeDir, RPGMAKER_MV_PACKAGE_DIR);
   await mkdir(join(packageDir, 'dist'), { recursive: true });
   await writeFile(join(packageDir, 'package.json'), JSON.stringify({
-    name: RPGMAKER_MCP_PACKAGE,
-    version: RPGMAKER_MCP_VERSION,
+    name: RPGMAKER_MV_MCP_PACKAGE,
+    version: RPGMAKER_MV_MCP_VERSION,
     bin: { 'rpgmaker-mv-mcp': 'dist/index.js' }
   }));
-  const template = await readFile(XEROLO_SERVER_TEMPLATE, 'utf8');
+  const template = await readFile(RPGMAKER_SERVER_TEMPLATE, 'utf8');
   await writeFile(
     join(packageDir, 'dist', 'index.js'),
     template.replace(
@@ -114,20 +114,20 @@ async function writeFixtureXeroloRuntime(runtimeDir: string, manifest: unknown):
 }
 
 /** Lazy test-owned fixture runtimes shared by the probe and the Agent seam. */
-let sharedFixturesPromise: Promise<{ root: string; mcporter: string; xerolo: string }> | undefined;
+let sharedFixturesPromise: Promise<{ root: string; mcporter: string; rpgmakerRuntime: string }> | undefined;
 let sharedRootForCleanup: string | undefined;
 
-function sharedFixtureRuntimes(): Promise<{ root: string; mcporter: string; xerolo: string }> {
+function sharedFixtureRuntimes(): Promise<{ root: string; mcporter: string; rpgmakerRuntime: string }> {
   sharedFixturesPromise ??= (async () => {
     const root = await temp('ws-mcp-fixture');
     sharedRootForCleanup = root;
     const paths = harnessPaths(root);
     const mcporter = join(paths.programRoot, 'runtime', 'mcporter');
     await writeFixtureMcporterRuntime(mcporter);
-    const xerolo = join(paths.programRoot, 'runtime', 'mcp');
+    const rpgmakerRuntime = join(paths.programRoot, 'runtime', 'mcp');
     const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
-    await writeFixtureXeroloRuntime(xerolo, contract.XEROLO_MANIFEST);
-    return { root, mcporter, xerolo };
+    await writeFixtureRpgMakerRuntime(rpgmakerRuntime, contract.XEROLO_MANIFEST);
+    return { root, mcporter, rpgmakerRuntime };
   })();
   return sharedFixturesPromise;
 }
@@ -280,38 +280,53 @@ class TrackedAbortSignal {
 }
 
 describe('Xerolo tool contract fail-closed', () => {
+  test('requires an explicit engine and never infers MV or MZ from a manifest argument', async () => {
+    const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
+    const tools = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/tools.js')>('tools.js');
+    const rawTool = contract.XEROLO_MANIFEST.tools[0];
+    const capability = { init: async () => { throw new Error('not executed'); } };
+    expect(() => Reflect.apply(contract.manifestFor, undefined, [])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(contract.manifestFor, undefined, [contract.MZ_MANIFEST])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(contract.contractFor, undefined, [])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(contract.missingCriticalTools, undefined, [contract.XEROLO_TOOL_NAMES])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(contract.verifyManifest, undefined, [])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(contract.verifyManifest, undefined, [contract.XEROLO_MANIFEST])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(contract.validateDiscoveredTools, undefined, [rawTool ? [rawTool] : []])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(tools.createMcpTool, undefined, [rawTool, capability])).toThrow(/unsupported RPG Maker engine/);
+  });
+
   test('accepts the complete fixed set and rejects missing, unknown, and duplicate names', async () => {
     const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
     expect(contract.XEROLO_MANIFEST.tools.length).toBe(41);
     const full = contract.XEROLO_MANIFEST.tools.map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema }));
-    expect(contract.validateDiscoveredTools(full).errors).toEqual([]);
-    expect(contract.validateDiscoveredTools([]).errors.join(' ')).toContain('no tools');
-    expect(contract.validateDiscoveredTools([{ name: '', inputSchema: {} }]).errors.join(' ')).toContain('without a name');
-    expect(contract.validateDiscoveredTools([{ name: 'echo' }, { name: 'echo' }]).errors.join(' ')).toContain('duplicate');
+    expect(contract.validateDiscoveredTools(full, 'mv').errors).toEqual([]);
+    expect(contract.validateDiscoveredTools([], 'mv').errors.join(' ')).toContain('no tools');
+    expect(contract.validateDiscoveredTools([{ name: '', inputSchema: {} }], 'mv').errors.join(' ')).toContain('without a name');
+    expect(contract.validateDiscoveredTools([{ name: 'echo' }, { name: 'echo' }], 'mv').errors.join(' ')).toContain('duplicate');
     const withUnknown = [...full.slice(0, 10), { name: 'not_in_contract', inputSchema: { type: 'object' } }];
-    expect(contract.validateDiscoveredTools(withUnknown).errors.join(' ')).toContain('outside the fixed Xerolo contract');
+    expect(contract.validateDiscoveredTools(withUnknown, 'mv').errors.join(' ')).toContain('outside the fixed Xerolo contract');
     const missingOne = full.slice(1);
-    expect(contract.validateDiscoveredTools(missingOne).errors.join(' ')).toContain('missing required RPG Maker tools');
+    expect(contract.validateDiscoveredTools(missingOne, 'mv').errors.join(' ')).toContain('missing required RPG Maker tools');
   });
 
   test('verifies the pinned manifest digest and rejects tampering and live schema drift', async () => {
     const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
     expect(contract.manifestDigest()).toBe(contract.XEROLO_MANIFEST_SHA256);
-    expect(contract.verifyManifest().errors).toEqual([]);
+    expect(contract.verifyManifest('mv').errors).toEqual([]);
 
     const tampered = {
       ...contract.XEROLO_MANIFEST,
       tools: [{ ...contract.XEROLO_MANIFEST.tools[0], description: 'edited by hand' }, ...contract.XEROLO_MANIFEST.tools.slice(1)]
     };
-    expect(contract.verifyManifest(tampered).errors.join(' ')).toContain('digest mismatch');
+    expect(contract.verifyManifest('mv', tampered).errors.join(' ')).toContain('digest mismatch');
 
     const noTools = { ...contract.XEROLO_MANIFEST, tools: [] };
-    expect(contract.verifyManifest(noTools).errors.join(' ')).toContain('no tools');
+    expect(contract.verifyManifest('mv', noTools).errors.join(' ')).toContain('no tools');
 
     // A live set with the right names but unsupported schemas drifts from the
     // pinned manifest and must fail closed before any execution.
     const drifted = contract.XEROLO_MANIFEST.tools.map((tool) => ({ name: tool.name, inputSchema: { type: 'object', properties: {} } }));
-    expect(contract.validateDiscoveredTools(drifted).errors.join(' ')).toContain('drifted');
+    expect(contract.validateDiscoveredTools(drifted, 'mv').errors.join(' ')).toContain('drifted');
   });
 
   test('rejects schemas outside the DSH vocabulary and invalid generated names', async () => {
@@ -335,15 +350,15 @@ describe('Xerolo tool contract fail-closed', () => {
   test('requires the critical editing, validation, backup/restore, and Playtest subset in the manifest and live set', async () => {
     const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
     // The pinned manifest itself carries every critical contract tool.
-    expect(contract.missingCriticalTools(contract.XEROLO_TOOL_NAMES)).toEqual([]);
-    expect(contract.validateDiscoveredTools(contract.XEROLO_MANIFEST.tools.map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema }))).errors).toEqual([]);
+    expect(contract.missingCriticalTools(contract.XEROLO_TOOL_NAMES, 'mv')).toEqual([]);
+    expect(contract.validateDiscoveredTools(contract.XEROLO_MANIFEST.tools.map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema })), 'mv').errors).toEqual([]);
 
     // Removing any critical tool fails the live set before execution.
     const withoutPlaytestStop = contract.XEROLO_MANIFEST.tools
       .filter((tool) => tool.name !== 'playtest_stop')
       .map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema }));
-    expect(contract.missingCriticalTools(withoutPlaytestStop.map((tool) => tool.name))).toEqual(['playtest_stop']);
-    const liveErrors = contract.validateDiscoveredTools(withoutPlaytestStop).errors.join(' ');
+    expect(contract.missingCriticalTools(withoutPlaytestStop.map((tool) => tool.name), 'mv')).toEqual(['playtest_stop']);
+    const liveErrors = contract.validateDiscoveredTools(withoutPlaytestStop, 'mv').errors.join(' ');
     expect(liveErrors).toContain('missing critical RPG Maker tools');
     expect(liveErrors).toContain('playtest_stop');
 
@@ -353,7 +368,7 @@ describe('Xerolo tool contract fail-closed', () => {
       ...contract.XEROLO_MANIFEST,
       tools: contract.XEROLO_MANIFEST.tools.filter((tool) => tool.name !== 'restore_backup')
     };
-    const manifestErrors = contract.verifyManifest(regressed).errors.join(' ');
+    const manifestErrors = contract.verifyManifest('mv', regressed).errors.join(' ');
     expect(manifestErrors).toContain('missing critical RPG Maker tools');
     expect(manifestErrors).toContain('restore_backup');
   });
@@ -422,8 +437,8 @@ describe('disposable MCPorter probe', () => {
 
         // Single-flight per-workspace acquisition: registration + listing once.
         const [acquiredA, acquiredB] = await Promise.all([
-          host.acquireWorkspaceServer(paths, canonical, definition),
-          host.acquireWorkspaceServer(paths, canonical, definition)
+          host.acquireWorkspaceServer(paths, 'mv', canonical, definition),
+          host.acquireWorkspaceServer(paths, 'mv', canonical, definition)
         ]);
         expect(acquiredA).toBe(acquiredB);
         expect(runtime.listServers()).toEqual(['rpgmaker-ws-probe']);
@@ -435,15 +450,15 @@ describe('disposable MCPorter probe', () => {
         expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(1);
 
         // Pooled calls share one process.
-        const call1 = host.canonicalMcpValue(await host.callWorkspaceTool(paths, canonical, 'shared_state', {})) as { count: number; pid: number };
-        const call2 = host.canonicalMcpValue(await host.callWorkspaceTool(paths, canonical, 'shared_state', {})) as { count: number; pid: number };
+        const call1 = host.canonicalMcpValue(await host.callWorkspaceTool(paths, 'mv', canonical, 'shared_state', {})) as { count: number; pid: number };
+        const call2 = host.canonicalMcpValue(await host.callWorkspaceTool(paths, 'mv', canonical, 'shared_state', {})) as { count: number; pid: number };
         expect(call1.count).toBe(1);
         expect(call2.count).toBe(2);
         expect(call2.pid).toBe(call1.pid);
         expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(1);
 
         // The spawned child observed the exact argv, cwd, and neutralized env.
-        await host.callWorkspaceTool(paths, canonical, 'dump_context', {});
+        await host.callWorkspaceTool(paths, 'mv', canonical, 'dump_context', {});
         const dumped = JSON.parse(await readFile(join(contextDir, 'context.json'), 'utf8')) as { argv: string[]; cwd: string; env: Record<string, string> };
         expect(dumped.argv.slice(1)).toEqual([FIXTURE_SERVER, '--context', contextDir]);
         expect(dumped.cwd).toBe(await realpath(serverCwd));
@@ -459,30 +474,30 @@ describe('disposable MCPorter probe', () => {
         expect(dumped.env.PATH).toBe(syntheticEnv.PATH);
 
         // Result normalization and MCP errors as failures.
-        const echo = await host.callWorkspaceTool(paths, canonical, 'echo', { message: 'hi' });
+        const echo = await host.callWorkspaceTool(paths, 'mv', canonical, 'echo', { message: 'hi' });
         expect(echo).toEqual({ content: [{ type: 'text', text: 'hi' }] });
         expect(host.normalizeMcpResult(echo)).toEqual({ text: 'hi', content: [{ type: 'text', text: 'hi' }], structuredContent: null });
         expect(host.canonicalMcpValue(echo)).toBe('hi');
         // MCP error results surface as failures through the normalization layer
         // the tool factory uses, while the raw pooled call resolves with them.
-        const errorRaw = await host.callWorkspaceTool(paths, canonical, 'error_tool', {});
+        const errorRaw = await host.callWorkspaceTool(paths, 'mv', canonical, 'error_tool', {});
         expect(() => host.normalizeMcpResult(errorRaw)).toThrow(/boom/);
 
         // Cancellation containment closes that server (killing its child); the
         // next call reconnects without restarting the Host runtime.
         const controller = new AbortController();
-        const slow = host.callWorkspaceTool(paths, canonical, 'slow_tool', { ms: 10_000 }, { signal: controller.signal });
+        const slow = host.callWorkspaceTool(paths, 'mv', canonical, 'slow_tool', { ms: 10_000 }, { signal: controller.signal });
         await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
         controller.abort();
         await expect(slow).rejects.toThrow(/cancelled/);
-        const reconnected = await host.callWorkspaceTool(paths, canonical, 'echo', { message: 'again' });
+        const reconnected = await host.callWorkspaceTool(paths, 'mv', canonical, 'echo', { message: 'again' });
         expect(host.canonicalMcpValue(reconnected)).toBe('again');
         expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(2);
 
         // Per-server close keeps the definition registered; the next call reconnects.
-        await host.closeWorkspaceServer(paths, canonical);
+        await host.closeWorkspaceServer(paths, 'mv', canonical);
         expect(runtime.listServers()).toEqual(['rpgmaker-ws-probe']);
-        const afterClose = await host.callWorkspaceTool(paths, canonical, 'echo', { message: 'x' });
+        const afterClose = await host.callWorkspaceTool(paths, 'mv', canonical, 'echo', { message: 'x' });
         expect(host.canonicalMcpValue(afterClose)).toBe('x');
         expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(3);
 
@@ -703,7 +718,7 @@ describe('disposable MCPorter probe', () => {
 
       host.resetHostState();
       let shutdown: Promise<void> | undefined;
-      const acquisition = host.acquireWorkspaceServer(paths, canonical, definition);
+      const acquisition = host.acquireWorkspaceServer(paths, 'mv', canonical, definition);
       try {
         // Hold the fixture immediately before it establishes its child, then
         // prove Host shutdown's first Runtime close has already happened.
@@ -744,7 +759,7 @@ describe('real DSH Agent seam', () => {
       const hostBundle = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/index.js')>('index.js');
       const agentBundle = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/agent.js')>('agent.js');
       await withBundleEnv(
-        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [XEROLO_RUNTIME_ENV]: shared.xerolo, [JS_RUNNER_ENV]: process.execPath },
+        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [RPGMAKER_MCP_RUNTIME_ENV]: shared.rpgmakerRuntime, [JS_RUNNER_ENV]: process.execPath },
         async () => {
           const hostCtx = new HarnessScope('host-apply-lifecycle');
           hostBundle.apply(hostCtx);
@@ -775,7 +790,7 @@ describe('real DSH Agent seam', () => {
       await withBundleEnv(
         {
           [MCPORTER_RUNTIME_ENV]: shared.mcporter,
-          [XEROLO_RUNTIME_ENV]: shared.xerolo,
+          [RPGMAKER_MCP_RUNTIME_ENV]: shared.rpgmakerRuntime,
           [JS_RUNNER_ENV]: process.execPath,
           XEROLO_FIXTURE_TRACE: tracePath
         },
@@ -836,7 +851,7 @@ describe('real DSH Agent seam', () => {
       const expectedNames = contract.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort();
 
       await withBundleEnv(
-        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [XEROLO_RUNTIME_ENV]: shared.xerolo, [JS_RUNNER_ENV]: process.execPath },
+        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [RPGMAKER_MCP_RUNTIME_ENV]: shared.rpgmakerRuntime, [JS_RUNNER_ENV]: process.execPath },
         async () => {
           const hostCtx = new HarnessScope('host');
           hostBundle.apply(hostCtx);
@@ -953,7 +968,7 @@ describe('real DSH Agent seam', () => {
       await withBundleEnv(
         {
           [MCPORTER_RUNTIME_ENV]: shared.mcporter,
-          [XEROLO_RUNTIME_ENV]: shared.xerolo,
+          [RPGMAKER_MCP_RUNTIME_ENV]: shared.rpgmakerRuntime,
           [JS_RUNNER_ENV]: process.execPath,
           XEROLO_FIXTURE_TRACE: tracePath
         },
@@ -1051,7 +1066,7 @@ describe('real DSH Agent seam', () => {
       await withBundleEnv(
         {
           [MCPORTER_RUNTIME_ENV]: shared.mcporter,
-          [XEROLO_RUNTIME_ENV]: shared.xerolo,
+          [RPGMAKER_MCP_RUNTIME_ENV]: shared.rpgmakerRuntime,
           [JS_RUNNER_ENV]: process.execPath,
           XEROLO_FIXTURE_TRACE: tracePath,
           XEROLO_FIXTURE_FAIL_PROJECT: canonicalFailed
@@ -1115,7 +1130,7 @@ describe('real DSH Agent seam', () => {
       expect(hostBundle.inject).toEqual([]);
       expect(agentBundle.inject).toEqual(['tools']);
       await withBundleEnv(
-        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [XEROLO_RUNTIME_ENV]: shared.xerolo, [JS_RUNNER_ENV]: process.execPath },
+        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [RPGMAKER_MCP_RUNTIME_ENV]: shared.rpgmakerRuntime, [JS_RUNNER_ENV]: process.execPath },
         async () => {
           const noLoggerScope = new HarnessScope('host-without-logger');
           try {

@@ -64,7 +64,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 function helpText(): string {
   return [
-    'DSH RPG Maker MV harness',
+    'RPG Maker Agent — workspace-selected MV/MZ harness',
     '',
     'Commands:',
     '  bootstrap   Install or repair the pinned DSH runtime using Bun',

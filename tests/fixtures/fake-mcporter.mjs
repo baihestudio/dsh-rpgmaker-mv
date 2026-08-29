@@ -15,7 +15,6 @@
  */
 import { spawn } from 'node:child_process'
 import { access, appendFile } from 'node:fs/promises'
-import { createInterface } from 'node:readline'
 
 async function waitForRelease(path) {
   while (true) {
@@ -74,8 +73,8 @@ class FixtureServer {
     const childClose = new Promise((resolve) => child.once('close', resolve))
     this.childClose = childClose
     child.stderr?.resume()
-    const readline = createInterface({ input: child.stdout, crlfDelay: Infinity })
-    readline.on('line', (line) => {
+    let outputBuffer = ''
+    const handleLine = (line) => {
       let message
       try {
         message = JSON.parse(line)
@@ -89,6 +88,16 @@ class FixtureServer {
           pending.resolve(message)
         }
       }
+    }
+    child.stdout?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk) => {
+      outputBuffer += chunk
+      let newline
+      while ((newline = outputBuffer.indexOf('\n')) >= 0) {
+        const line = outputBuffer.slice(0, newline).replace(/\r$/, '')
+        outputBuffer = outputBuffer.slice(newline + 1)
+        if (line.trim()) handleLine(line)
+      }
     })
     const failPending = (error) => {
       for (const pending of this.pending.values()) pending.reject(error)
@@ -99,7 +108,6 @@ class FixtureServer {
     })
     child.once('close', (code, signal) => {
       failPending(new Error(`dsh-workspace-mcp fixture: ${command.command} exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`))
-      readline.close()
       if (this.child === child) {
         this.child = null
         this.childClose = null

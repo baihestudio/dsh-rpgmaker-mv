@@ -12,13 +12,17 @@ import { prepareMcporterRuntime, mcporterRuntimeDirFor, type McporterRuntimeOpti
 import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
-  XEROLO_RUNTIME_ENV,
+  RPGMAKER_MCP_RUNTIME_ENV,
   WORKSPACE_MCP_AGENT_ROW_ID
 } from './workspace-mcp';
 import { ensureManagedWebProfile, type ManagedWebProfileOptions, type ManagedWebProfileResult } from './managed-web-profile';
 
-export const RPGMAKER_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
-export const RPGMAKER_MCP_VERSION = '0.1.0';
+export const RPGMAKER_MV_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
+export const RPGMAKER_MV_MCP_VERSION = '0.1.0';
+export const RPGMAKER_MZ_MCP_PACKAGE = 'rpgmaker-mz-mcp';
+export const RPGMAKER_MZ_MCP_VERSION = '1.3.0';
+export const RPGMAKER_MZ_MCP_INTEGRITY = 'sha512-m4JIWdOi3WC5oodfAzPWpgXDUN9MBEl9AcJxoNBtCAD/gMhEM1ju1XD3WjLQkoylIDspSoqVxaGyRsNfQVupJw==';
+export const RPGMAKER_MV_MCP_INTEGRITY = 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==';
 export const RPGMAKER_PRESET_ID = 'rpgmaker';
 export const RPGMAKER_DSH_PROFILE = 'web';
 export const DEEPSEEK_VISION_MODEL = 'deepseek-v4-flash-vision-exp';
@@ -28,11 +32,11 @@ export const FORGEJO_MCP_CLIENT_ROW_ID = 'forgejo-mcp-client';
 export const CUSTOM_AGENT_PRESET_IDS = [RPGMAKER_PRESET_ID] as const;
 const REMOVED_PRESET_IDS = ['game-design', 'asset-workshop', 'build-release'] as const;
 const PRESET_OWNERSHIP_FILE = '.dsh-rpgmaker-owned.json';
-const MCP_LOCK_INTEGRITY = 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA==';
 const MCP_LOCK_BIN = 'dist/index.js';
 
 export type RpgMakerLaunchOptions = LaunchOptions & {
-  mcpRuntimeDir?: string;
+  /** Generic spelling for the shared MV/MZ runtime; the on-disk path is unchanged. */
+  rpgmakerRuntimeDir?: string;
   mcporterRuntimeDir?: string;
   dshExecutable?: string;
   bunExecutable?: string;
@@ -53,8 +57,8 @@ export type RpgMakerLaunchOptions = LaunchOptions & {
 export interface RpgMakerLaunchPreparation {
   dshExecutable: string;
   mcporterRuntimeDir: string;
-  xeroloRuntimeDir: string;
-  xeroloScript: string;
+  rpgmakerRuntimeDir: string;
+  rpgmakerScripts: RpgMakerScripts;
   jsRunner: string;
   presetRoot: string;
   presetDir: string;
@@ -62,6 +66,11 @@ export interface RpgMakerLaunchPreparation {
   compositionPath: string;
   agentPreset: string;
   managedWebProfile: ManagedWebProfileResult;
+}
+
+export interface RpgMakerScripts {
+  mv: string;
+  mz: string;
 }
 
 export interface RpgMakerPresetDeploymentOptions extends PathOptions {
@@ -82,6 +91,22 @@ export interface RpgMakerPresetDeployment {
 }
 
 export interface McpVerification {
+  valid: boolean;
+  errors: string[];
+  engines: RpgMakerEngineVerificationMap;
+}
+
+export interface RpgMakerEngineVerificationMap {
+  mv: EngineMcpVerification;
+  mz: EngineMcpVerification;
+}
+
+export interface EngineMcpVerification {
+  engine: 'mv' | 'mz';
+  package: string;
+  version: string;
+  integrity: string;
+  bin: string;
   valid: boolean;
   errors: string[];
   packageVersion?: string;
@@ -182,16 +207,16 @@ async function readBunLock(path: string): Promise<Record<string, unknown> | unde
   }
 }
 
-function packageDirectory(runtimeDir: string): string {
-  return join(runtimeDir, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp');
+function packageDirectory(runtimeDir: string, packageName: string): string {
+  return join(runtimeDir, 'node_modules', ...packageName.split('/'));
 }
 
-async function findMcpScript(runtimeDir: string): Promise<string | undefined> {
-  const packageDir = packageDirectory(runtimeDir);
+async function findMcpScript(runtimeDir: string, packageName: string, binName: string): Promise<string | undefined> {
+  const packageDir = packageDirectory(runtimeDir, packageName);
   const packageJson = await readJson(join(packageDir, 'package.json'));
   const bin = packageJson?.bin;
   const bins = asRecord(bin);
-  const entry = typeof bin === 'string' ? bin : bins?.['rpgmaker-mv-mcp'] ?? Object.values(bins ?? {}).find((value): value is string => typeof value === 'string');
+  const entry = typeof bin === 'string' ? bin : bins?.[binName] ?? Object.values(bins ?? {}).find((value): value is string => typeof value === 'string');
   if (typeof entry !== 'string' || !/\.(?:c?m?js)$/i.test(entry)) return undefined;
   const candidate = resolve(packageDir, entry);
   if (!(await pathExists(candidate))) return undefined;
@@ -207,34 +232,86 @@ async function findMcpScript(runtimeDir: string): Promise<string | undefined> {
   return candidate;
 }
 
+export const MCP_ENGINE_RECORDS = {
+  mv: { engine: 'mv' as const, package: RPGMAKER_MV_MCP_PACKAGE, version: RPGMAKER_MV_MCP_VERSION, integrity: RPGMAKER_MV_MCP_INTEGRITY, bin: 'rpgmaker-mv-mcp', entry: MCP_LOCK_BIN },
+  mz: { engine: 'mz' as const, package: RPGMAKER_MZ_MCP_PACKAGE, version: RPGMAKER_MZ_MCP_VERSION, integrity: RPGMAKER_MZ_MCP_INTEGRITY, bin: 'rpgmaker-mz-mcp', entry: MCP_LOCK_BIN }
+} as const;
 
-export async function verifyMcpRuntime(runtimeDirInput: string, platform: string = process.platform): Promise<McpVerification> {
+export async function verifyEngineMcpRuntime(runtimeDirInput: string, engine: 'mv' | 'mz', _platform: string = process.platform): Promise<EngineMcpVerification> {
   const runtimeDir = resolve(runtimeDirInput);
+  const record = MCP_ENGINE_RECORDS[engine];
   const errors: string[] = [];
   const rootPackage = await readJson(join(runtimeDir, 'package.json'));
   const dependencies = asRecord(rootPackage?.dependencies);
-  if (dependencies?.[RPGMAKER_MCP_PACKAGE] !== RPGMAKER_MCP_VERSION) errors.push(`MCP dependency ${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION} is not pinned`);
+  if (dependencies?.[record.package] !== record.version) errors.push(`${record.engine.toUpperCase()} MCP dependency ${record.package}@${record.version} is not pinned`);
   const lock = await readBunLock(join(runtimeDir, 'bun.lock'));
   const workspace = asRecord(asRecord(lock?.workspaces)?.['']);
   const lockedDependencies = asRecord(workspace?.dependencies);
-  const lockedPackage = asRecord(lock?.packages)?.[RPGMAKER_MCP_PACKAGE];
+  const lockedPackage = asRecord(lock?.packages)?.[record.package];
   const lockMetadata = Array.isArray(lockedPackage) ? asRecord(lockedPackage[2]) : undefined;
   const lockBin = asRecord(lockMetadata?.bin);
-  if (!lock) errors.push('MCP bun.lock is missing or invalid');
-  else if (lockedDependencies?.[RPGMAKER_MCP_PACKAGE] !== RPGMAKER_MCP_VERSION
+  if (!lock) errors.push('RPG Maker MCP bun.lock is missing or invalid');
+  else if (lockedDependencies?.[record.package] !== record.version
     || !Array.isArray(lockedPackage)
-    || lockedPackage[0] !== `${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`
-    || lockBin?.['rpgmaker-mv-mcp'] !== MCP_LOCK_BIN
-    || lockedPackage[3] !== MCP_LOCK_INTEGRITY) errors.push('MCP bun.lock does not match the pinned package version, bin, and npm integrity');
-  const packageJson = await readJson(join(packageDirectory(runtimeDir), 'package.json'));
+    || lockedPackage[0] !== `${record.package}@${record.version}`
+    || lockBin?.[record.bin] !== record.entry
+    || lockedPackage[3] !== record.integrity) errors.push(`${record.engine.toUpperCase()} MCP bun.lock does not match the pinned package version, bin, and npm integrity`);
+  const packageJson = await readJson(join(packageDirectory(runtimeDir, record.package), 'package.json'));
+  const packageName = typeof packageJson?.name === 'string' ? packageJson.name : undefined;
   const packageVersion = typeof packageJson?.version === 'string' ? packageJson.version : undefined;
   const packageBins = asRecord(packageJson?.bin);
-  const packageBin = typeof packageJson?.bin === 'string' ? packageJson.bin : packageBins?.['rpgmaker-mv-mcp'];
-  if (packageVersion !== RPGMAKER_MCP_VERSION) errors.push(`installed MCP version is ${packageVersion ?? 'missing'}, expected ${RPGMAKER_MCP_VERSION}`);
-  if (packageBin !== MCP_LOCK_BIN) errors.push(`installed MCP bin metadata is ${String(packageBin ?? 'missing')}, expected ${MCP_LOCK_BIN}`);
-  const executable = await findMcpScript(runtimeDir);
-  if (!executable) errors.push('installed RPG Maker MCP JavaScript entry was not found inside the app-owned runtime');
-  return { valid: errors.length === 0, errors, packageVersion, executable };
+  const packageBin = typeof packageJson?.bin === 'string' ? packageJson.bin : packageBins?.[record.bin];
+  if (packageName !== record.package) errors.push(`installed ${record.engine.toUpperCase()} MCP package identity is ${packageName ?? 'missing'}, expected ${record.package}`);
+  if (packageVersion !== record.version) errors.push(`installed ${record.engine.toUpperCase()} MCP version is ${packageVersion ?? 'missing'}, expected ${record.version}`);
+  if (packageBin !== record.entry) errors.push(`installed ${record.engine.toUpperCase()} MCP bin metadata is ${String(packageBin ?? 'missing')}, expected ${record.entry}`);
+  const executable = await findMcpScript(runtimeDir, record.package, record.bin);
+  if (!executable) errors.push(`installed RPG Maker ${record.engine.toUpperCase()} MCP JavaScript entry was not found inside the app-owned runtime`);
+  return { ...record, valid: errors.length === 0, errors, packageVersion, executable };
+}
+
+/** Strict dual-engine verification used by install/repair, launch, and Doctor. */
+export async function verifyRpgMakerMcpRuntime(runtimeDirInput: string, platform: string = process.platform): Promise<McpVerification> {
+  const [mv, mz] = await Promise.all([
+    verifyEngineMcpRuntime(runtimeDirInput, 'mv', platform),
+    verifyEngineMcpRuntime(runtimeDirInput, 'mz', platform)
+  ]);
+  const errors = [...mv.errors, ...mz.errors];
+  return { valid: errors.length === 0, errors, engines: { mv, mz } };
+}
+
+/** Keep the two exact top-level dependency/lock entries when a fake or
+ * single-package runner rewrites the staging manifest between additions. */
+async function mergeMcpRuntimeMetadata(runtimeDir: string, preservedPackages: Record<string, unknown> = {}): Promise<void> {
+  const packagePath = join(runtimeDir, 'package.json');
+  const packageJson = (await readJson(packagePath)) ?? { name: 'dsh-rpgmaker-mcp-runtime', private: true };
+  packageJson.dependencies = {
+    ...(asRecord(packageJson.dependencies) ?? {}),
+    [RPGMAKER_MV_MCP_PACKAGE]: RPGMAKER_MV_MCP_VERSION,
+    [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION
+  };
+  await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+
+  const lockPath = join(runtimeDir, 'bun.lock');
+  const lock = (await readBunLock(lockPath)) ?? { lockfileVersion: 1, workspaces: {}, packages: {} };
+  const workspaces = asRecord(lock.workspaces) ?? {};
+  const workspace = asRecord(workspaces['']) ?? {};
+  workspace.dependencies = {
+    ...(asRecord(workspace.dependencies) ?? {}),
+    [RPGMAKER_MV_MCP_PACKAGE]: RPGMAKER_MV_MCP_VERSION,
+    [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION
+  };
+  workspaces[''] = workspace;
+  lock.workspaces = workspaces;
+  const packages = asRecord(lock.packages) ?? {};
+  // A single-package fixture (and some package-manager wrappers) may rewrite
+  // the lockfile on each add. Preserve only package records that were already
+  // present before the current command; never invent a lock entry or integrity
+  // for a package the runner did not actually record.
+  for (const [packageName, packageRecord] of Object.entries(preservedPackages)) {
+    if (packages[packageName] === undefined) packages[packageName] = packageRecord;
+  }
+  lock.packages = packages;
+  await writeFile(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
 }
 
 async function runRequired(
@@ -262,7 +339,7 @@ export async function prepareRpgMakerMcpRuntime(
   const env = withoutCredentials(options.env ?? process.env);
   const runner = options.commandRunner ?? runCommand;
   const bun = options.bunExecutable ?? (options.env ?? process.env).BUN_EXECUTABLE ?? 'bun';
-  const current = await verifyMcpRuntime(runtimeDir, platform);
+  const current = await verifyRpgMakerMcpRuntime(runtimeDir, platform);
   if (current.valid) return current;
 
   const parent = dirname(runtimeDir);
@@ -272,11 +349,22 @@ export async function prepareRpgMakerMcpRuntime(
   await writeFile(join(staging, 'package.json'), `${JSON.stringify({
     name: 'dsh-rpgmaker-mcp-runtime',
     private: true,
-    dependencies: { [RPGMAKER_MCP_PACKAGE]: RPGMAKER_MCP_VERSION }
+    dependencies: {
+      [RPGMAKER_MV_MCP_PACKAGE]: RPGMAKER_MV_MCP_VERSION,
+      [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION
+    }
   }, null, 2)}\n`);
   try {
-    await runRequired(runner, bun, ['add', '--exact', '--ignore-scripts', `${RPGMAKER_MCP_PACKAGE}@${RPGMAKER_MCP_VERSION}`], staging, env, 'RPG Maker MCP installation');
-    const staged = await verifyMcpRuntime(staging, platform);
+    // Install each exact package into the same staging runtime. Doing this in
+    // two bounded commands also works with package runners that only accept a
+    // single package spec; metadata is merged after each command.
+    for (const record of Object.values(MCP_ENGINE_RECORDS)) {
+      const previousLock = await readBunLock(join(staging, 'bun.lock'));
+      const previousPackages = asRecord(previousLock?.packages) ?? {};
+      await runRequired(runner, bun, ['add', '--exact', '--ignore-scripts', `${record.package}@${record.version}`], staging, env, `${record.engine.toUpperCase()} RPG Maker MCP installation`);
+      await mergeMcpRuntimeMetadata(staging, previousPackages);
+    }
+    const staged = await verifyRpgMakerMcpRuntime(staging, platform);
     if (!staged.valid) throw new RpgMakerStartupError(`RPG Maker MCP verification failed: ${staged.errors.join('; ')}`);
     if (await pathExists(runtimeDir)) {
       const rollback = `${runtimeDir}.rollback-${Date.now()}`;
@@ -290,7 +378,7 @@ export async function prepareRpgMakerMcpRuntime(
     } else {
       await fsRename(staging, runtimeDir);
     }
-    return await verifyMcpRuntime(runtimeDir, platform);
+    return await verifyRpgMakerMcpRuntime(runtimeDir, platform);
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     if (error instanceof RpgMakerStartupError) throw error;
@@ -683,15 +771,17 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   }, mcporterRuntimeDir);
   if (!mcporter.valid) throw new RpgMakerStartupError(`Pinned MCPorter runtime is not usable: ${mcporter.errors.join('; ')}`);
 
-  const xeroloRuntimeDir = resolve(options.mcpRuntimeDir ?? join(paths.programRoot, 'runtime', 'mcp'));
+  const rpgmakerRuntimeDir = resolve(options.rpgmakerRuntimeDir ?? join(paths.programRoot, 'runtime', 'mcp'));
   const prepareMcp = options.mcpRuntimePreparer ?? prepareRpgMakerMcpRuntime;
   const mcp = await prepareMcp({
     platform,
     env,
     bunExecutable: options.bunExecutable,
     commandRunner: options.commandRunner
-  }, xeroloRuntimeDir);
-  if (!mcp.valid || !mcp.executable) throw new RpgMakerStartupError(`Pinned RPG Maker MCP runtime is not usable: ${mcp.errors.join('; ')}`);
+  }, rpgmakerRuntimeDir);
+  const mvScript = mcp.engines.mv.executable;
+  const mzScript = mcp.engines.mz.executable;
+  if (!mcp.valid || !mvScript || !mzScript) throw new RpgMakerStartupError(`Pinned RPG Maker MCP runtime is not usable: ${mcp.errors.join('; ')}`);
   const jsRunner = await resolveMcpRunner(options, platform, withoutCredentials(env));
 
   const managedWebProfileOptions: ManagedWebProfileOptions = {
@@ -732,8 +822,8 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   return {
     dshExecutable,
     mcporterRuntimeDir,
-    xeroloRuntimeDir,
-    xeroloScript: mcp.executable,
+    rpgmakerRuntimeDir,
+    rpgmakerScripts: { mv: mvScript, mz: mzScript },
     jsRunner,
     ...presets,
     managedWebProfile
@@ -758,7 +848,7 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
   const env = { ...(options.env ?? process.env), DSH_HOME: paths.dshHome };
   const ownedEnvironment = {
     [MCPORTER_RUNTIME_ENV]: deployment.mcporterRuntimeDir,
-    [XEROLO_RUNTIME_ENV]: deployment.xeroloRuntimeDir,
+    [RPGMAKER_MCP_RUNTIME_ENV]: deployment.rpgmakerRuntimeDir,
     [JS_RUNNER_ENV]: deployment.jsRunner
   };
   const result = await launchProject({
