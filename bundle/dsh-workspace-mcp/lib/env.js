@@ -15,10 +15,8 @@
  */
 
 export const MCPORTER_RUNTIME_ENV = 'DSH_RPGMAKER_MCPORTER_RUNTIME'
-export const XEROLO_RUNTIME_ENV = 'DSH_RPGMAKER_XEROLO_RUNTIME'
 /** Shared app-owned runtime containing both the MV and MZ server packages. */
 export const RPGMAKER_MCP_RUNTIME_ENV = 'DSH_RPGMAKER_MCP_RUNTIME'
-export const RPGMAKER_RUNTIME_ENV = RPGMAKER_MCP_RUNTIME_ENV
 export const JS_RUNNER_ENV = 'DSH_RPGMAKER_JS_RUNNER'
 
 /** Constant non-empty non-secret value that replaces every neutralized key. */
@@ -46,16 +44,16 @@ function isNeutralizedKey(key) {
 /** Resolve the fixed owned runtime paths the harness pinned for this Host. */
 export function resolveRuntimePaths(env = process.env) {
   const mcporterRuntime = env[MCPORTER_RUNTIME_ENV]
-  const xeroloRuntime = env[RPGMAKER_RUNTIME_ENV] ?? env[XEROLO_RUNTIME_ENV]
+  const rpgmakerRuntime = env[RPGMAKER_MCP_RUNTIME_ENV]
   const runner = env[JS_RUNNER_ENV]
   const missing = []
   if (!mcporterRuntime) missing.push(MCPORTER_RUNTIME_ENV)
-  if (!xeroloRuntime) missing.push(`${RPGMAKER_RUNTIME_ENV} (or ${XEROLO_RUNTIME_ENV})`)
+  if (!rpgmakerRuntime) missing.push(RPGMAKER_MCP_RUNTIME_ENV)
   if (!runner) missing.push(JS_RUNNER_ENV)
   if (missing.length > 0) {
     throw new Error(`dsh-workspace-mcp: the app-owned runtime environment is incomplete; missing ${missing.join(', ')}`)
   }
-  return { mcporterRuntime, xeroloRuntime, rpgmakerRuntime: xeroloRuntime, runner }
+  return { mcporterRuntime, rpgmakerRuntime, runner }
 }
 
 /**

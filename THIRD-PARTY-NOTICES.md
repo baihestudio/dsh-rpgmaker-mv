@@ -1,5 +1,13 @@
 # Third-party notices
 
+## `@deepseek-ai/dsh-tools@0.1.1-rc.2`
+
+The workspace Agent uses the official DeepSeek Harness TypeScript SDK renderer
+from `@deepseek-ai/dsh-tools@0.1.1-rc.2` so Code Mode prompt sections retain the
+typed `ToolArgsMap`/`tools` contract. The package is distributed under the MIT
+License; its source and license are available from the
+[DeepSeek Harness repository](https://github.com/deepseek-ai/deepseek-harness).
+
 ## `pnpm@10.15.1`
 
 When no system `pnpm` is available, the installer keeps an app-owned exact `pnpm@10.15.1` runtime so DSH's standard plugin manager can run without modifying a user's global package manager. npm integrity: `sha512-NOU4wym1VTAUyo6PRTWZf5YYCh0PYUM5NXRJk1NQ2STiL4YUaCGRJk7DPRRirCFWGv+X9rsYBlNRwWLH6PbeZw==`. pnpm is distributed under the MIT License: https://github.com/pnpm/pnpm/blob/main/LICENSE.

@@ -102,6 +102,19 @@ async function writeMZFixture(runtime: string, manifest: unknown): Promise<void>
   await writeFile(join(packageDir, 'dist', 'index.js'), source);
 }
 
+async function writeMVFixture(runtime: string, manifest: unknown): Promise<void> {
+  const packageDir = join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp');
+  await mkdir(join(packageDir, 'dist'), { recursive: true });
+  await writeFile(join(packageDir, 'package.json'), JSON.stringify({
+    name: RPGMAKER_MV_MCP_PACKAGE,
+    version: RPGMAKER_MV_MCP_VERSION,
+    bin: { 'rpgmaker-mv-mcp': 'dist/index.js' }
+  }));
+  let source = await readFile(join(process.cwd(), 'tests', 'fixtures', 'xerolo-fixture-server.mjs'), 'utf8');
+  source = source.replace('const XEROLO_MANIFEST = __XEROLO_MANIFEST__', `const XEROLO_MANIFEST = ${JSON.stringify(manifest)}`);
+  await writeFile(join(packageDir, 'dist', 'index.js'), source);
+}
+
 async function withBundleEnv(values: Record<string, string>, run: () => Promise<void>): Promise<void> {
   const saved = Object.entries(values).map(([key]) => [key, process.env[key]] as const);
   for (const [key, value] of Object.entries(values)) process.env[key] = value;
@@ -175,17 +188,17 @@ describe('dual-engine RPG Maker seams', () => {
       const runtime = await writeDualRuntime(root);
       const valid = await verifyRpgMakerMcpRuntime(runtime, 'linux');
       expect(valid.valid).toBe(true);
-      expect(valid.engines?.mv.valid).toBe(true);
-      expect(valid.engines?.mz.valid).toBe(true);
+      expect(valid.engines.mv.valid).toBe(true);
+      expect(valid.engines.mz.valid).toBe(true);
       const lockPath = join(runtime, 'bun.lock');
       const lock = JSON.parse(await readFile(lockPath, 'utf8')) as { packages: Record<string, unknown[]> };
       lock.packages[RPGMAKER_MZ_MCP_PACKAGE][3] = 'sha512-tampered';
       await writeFile(lockPath, `${JSON.stringify(lock)}\n`);
       const tampered = await verifyRpgMakerMcpRuntime(runtime, 'linux');
       expect(tampered.valid).toBe(false);
-      expect(tampered.engines?.mv.valid).toBe(true);
-      expect(tampered.engines?.mz.valid).toBe(false);
-      expect(tampered.engines?.mz.errors.join(' ')).toMatch(/MZ MCP bun\.lock/i);
+      expect(tampered.engines.mv.valid).toBe(true);
+      expect(tampered.engines.mz.valid).toBe(false);
+      expect(tampered.engines.mz.errors.join(' ')).toMatch(/MZ MCP bun\.lock/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -196,7 +209,7 @@ describe('dual-engine RPG Maker seams', () => {
     const hostCtx = new HarnessScope('mz-agent-host');
     try {
       const mcporter = join(root, 'mcporter');
-      const runtime = join(root, 'mcp');
+      const runtime = await writeDualRuntime(root);
       const projectRoot = join(root, 'MZ project');
       const trace = join(root, 'starts.jsonl');
       await mkdir(join(projectRoot, 'data'), { recursive: true });
@@ -205,12 +218,6 @@ describe('dual-engine RPG Maker seams', () => {
       await writeFile(join(projectRoot, 'data', 'System.json'), '{"gameTitle":"MZ fixture"}\n');
       await writeFixtureMcporter(mcporter);
       await writeMZFixture(runtime, contract.MZ_MANIFEST);
-      await writeFile(join(runtime, 'package.json'), JSON.stringify({ private: true, dependencies: { [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION } }));
-      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({
-        lockfileVersion: 1,
-        workspaces: { '': { dependencies: { [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION } } },
-        packages: { [RPGMAKER_MZ_MCP_PACKAGE]: [`${RPGMAKER_MZ_MCP_PACKAGE}@${RPGMAKER_MZ_MCP_VERSION}`, '', { bin: { 'rpgmaker-mz-mcp': 'dist/index.js' } }, RPGMAKER_MZ_MCP_INTEGRITY] }
-      }));
       const hostBundle = await import('../bundle/dsh-workspace-mcp/lib/index.js');
       const agentBundle = await import('../bundle/dsh-workspace-mcp/lib/agent.js');
       hostBundle.apply(hostCtx);
@@ -224,7 +231,12 @@ describe('dual-engine RPG Maker seams', () => {
         agentBundle.apply(agent.ctx);
         const assembly = await agent.ctx.assemble();
         const names = assembly.tools.map((tool) => tool.name).sort();
-        expect(names).toEqual(contract.MZ_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort());
+        expect(names).toEqual(['run_code']);
+        const sdkText = (assembly.sections.find((section) => (section as { name?: string })?.name === 'tools:sdk') as { text?: string } | undefined)?.text ?? '';
+        expect(sdkText).toContain('interface ToolArgsMap');
+        expect(sdkText).toContain('declare const tools');
+        expect(sdkText).toContain('rpgmaker_update_game_title');
+        expect(sdkText).not.toContain('rpgmaker_get_project_info');
         expect(names).not.toContain('rpgmaker_get_project_info');
         const getProject = agent.ctx.tools.get('rpgmaker_get_project');
         expect(getProject).toBeDefined();
@@ -247,6 +259,60 @@ describe('dual-engine RPG Maker seams', () => {
         expect(start.cwd).toBe(start.projectRoot);
         expect(start.argv).not.toContain('--project');
         await agent.ctx.dispose();
+      });
+    } finally {
+      await Promise.resolve(hostCtx.dispose()).catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('mounts concurrent MV and MZ Agents in one Host with isolated pair state and presentations', async () => {
+    const root = await temp('dual-concurrent-agent');
+    const hostCtx = new HarnessScope('dual-concurrent-host');
+    try {
+      const runtime = await writeDualRuntime(root);
+      const mcporter = join(root, 'mcporter');
+      await writeFixtureMcporter(mcporter);
+      const contract = await import('../bundle/dsh-workspace-mcp/lib/contract.js');
+      await writeMVFixture(runtime, contract.XEROLO_MANIFEST);
+      await writeMZFixture(runtime, contract.MZ_MANIFEST);
+      const mvProject = join(root, 'mv-project');
+      const mzProject = join(root, 'mz-project');
+      for (const [project, marker, title] of [[mvProject, 'Game.rpgproject', 'MV concurrent'], [mzProject, 'game.rmmzproject', 'MZ concurrent']] as const) {
+        await mkdir(join(project, 'data'), { recursive: true });
+        await mkdir(join(project, 'js'), { recursive: true });
+        await writeFile(join(project, marker), '{}\n');
+        await writeFile(join(project, 'data', 'System.json'), JSON.stringify({ gameTitle: title }));
+        await writeFile(join(project, 'js', 'plugins.js'), '[]\n');
+      }
+      const hostBundle = await import('../bundle/dsh-workspace-mcp/lib/index.js');
+      const agentBundle = await import('../bundle/dsh-workspace-mcp/lib/agent.js');
+      hostBundle.apply(hostCtx);
+      await withBundleEnv({ [MCPORTER_RUNTIME_ENV]: mcporter, [RPGMAKER_MCP_RUNTIME_ENV]: runtime, [JS_RUNNER_ENV]: process.execPath }, async () => {
+        const mvAgent = createHarnessAgent('mv-concurrent', { cwd: mvProject, agentPreset: 'rpgmaker' }, hostCtx.root);
+        const mzAgent = createHarnessAgent('mz-concurrent', { cwd: mzProject, agentPreset: 'rpgmaker' }, hostCtx.root);
+        agentBundle.apply(mvAgent.ctx);
+        agentBundle.apply(mzAgent.ctx);
+        const [mvAssembly, mzAssembly] = await Promise.all([mvAgent.ctx.assemble(), mzAgent.ctx.assemble()]);
+        expect(mvAssembly.tools.map((tool) => tool.name)).toContain('rpgmaker_get_project_info');
+        expect(mvAssembly.tools.map((tool) => tool.name)).not.toContain('run_code');
+        expect(mzAssembly.tools.map((tool) => tool.name)).toEqual(['run_code']);
+        const mzSdk = (mzAssembly.sections.find((section) => (section as { name?: string })?.name === 'tools:sdk') as { text?: string } | undefined)?.text ?? '';
+        expect(mzSdk).toContain('interface ToolArgsMap');
+        expect(mzSdk).toContain('rpgmaker_update_game_title');
+        expect(mzSdk).not.toContain('rpgmaker_get_project_info');
+        const state = hostBundle.hostState(hostCtx);
+        expect(state.workspacePairs).toEqual(expect.arrayContaining([
+          expect.objectContaining({ engine: 'mv', canonical: await realpath(mvProject) }),
+          expect.objectContaining({ engine: 'mz', canonical: await realpath(mzProject) })
+        ]));
+        const mvInfo = await mvAgent.ctx.tools.get('rpgmaker_get_project_info')!.execute({}, { agent: mvAgent, signal: new AbortController().signal });
+        const mzInfo = await mzAgent.ctx.tools.get('rpgmaker_get_project')!.execute({}, { agent: mzAgent, signal: new AbortController().signal });
+        expect(mvInfo).toMatchObject({ gameTitle: 'MV concurrent' });
+        expect(mzInfo).toMatchObject({ gameTitle: 'MZ concurrent' });
+        await expect(mzAgent.ctx.tools.get('rpgmaker_set_project')!.execute({ path: mvProject }, { agent: mzAgent, signal: new AbortController().signal })).rejects.toThrow(/cannot retarget.*workspace/i);
+        expect(hostBundle.hostState(hostCtx).workspacePairs).toHaveLength(2);
+        await Promise.all([mvAgent.ctx.dispose(), mzAgent.ctx.dispose()]);
       });
     } finally {
       await Promise.resolve(hostCtx.dispose()).catch(() => undefined);

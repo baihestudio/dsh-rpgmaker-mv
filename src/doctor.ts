@@ -18,6 +18,18 @@ import {
 import { verifyManagedWebProfile, type ManagedWebProfileOptions, type ManagedWebProfileVerification } from './managed-web-profile';
 import { inspectWorkspaceSandbox } from './workspace-sandbox';
 
+export interface DoctorDependencyVerificationContext {
+  platform: string;
+  env: Record<string, string | undefined>;
+  paths: ReturnType<typeof resolveHarnessPaths>;
+  commandRunner: CommandRunner;
+}
+
+export interface DoctorDependencyVerification {
+  mcp: DoctorCheck;
+  checks?: DoctorCheck[];
+}
+
 export interface DoctorOptions extends PathOptions {
   workspace?: string;
   sandboxProbe?: boolean;
@@ -30,7 +42,7 @@ export interface DoctorOptions extends PathOptions {
   npmExecutable?: string;
   pythonExecutable?: string;
   imageMagickExecutable?: string;
-  verifyAgentDependencies?: (context: { platform: string; env: Record<string, string | undefined>; paths: ReturnType<typeof resolveHarnessPaths>; commandRunner: CommandRunner }) => Promise<{ mcp: DoctorCheck; checks?: DoctorCheck[] }>;
+  verifyAgentDependencies?: (context: DoctorDependencyVerificationContext) => Promise<DoctorDependencyVerification>;
   managedWebProfileVerifier?: (options: ManagedWebProfileOptions) => Promise<ManagedWebProfileVerification>;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
@@ -127,13 +139,13 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   const verifyAgentDependencies = options.verifyAgentDependencies ?? (async (context) => {
     const mcpRuntime = join(context.paths.programRoot, 'runtime', 'mcp');
     const dual = await verifyRpgMakerMcpRuntime(mcpRuntime, context.platform);
-    const mv = dual.engines?.mv;
-    const mz = dual.engines?.mz;
+    const mv = dual.engines.mv;
+    const mz = dual.engines.mz;
     return {
-      mcp: check('rpgmaker-mcp', 'RPG Maker MCP runtime', dual.valid, dual.valid ? 'Pinned RPG Maker MV and MZ MCP packages are verified' : dual.errors.join('; '), dual.executable ?? mcpRuntime),
+      mcp: check('rpgmaker-mcp', 'RPG Maker MCP runtime', dual.valid, dual.valid ? 'Pinned RPG Maker MV and MZ MCP packages are verified' : dual.errors.join('; '), mcpRuntime),
       checks: [
-        check('rpgmaker-mv-mcp', 'RPG Maker MV MCP runtime', Boolean(mv?.valid), mv?.valid ? `Pinned RPG Maker MV MCP ${mv.packageVersion} is verified` : (mv?.errors.join('; ') ?? 'MV runtime verification unavailable'), mv?.executable ?? mcpRuntime),
-        check('rpgmaker-mz-mcp', 'RPG Maker MZ MCP runtime', Boolean(mz?.valid), mz?.valid ? `Pinned RPG Maker MZ MCP ${mz.packageVersion} is verified` : (mz?.errors.join('; ') ?? 'MZ runtime verification unavailable'), mz?.executable ?? mcpRuntime)
+        check('rpgmaker-mv-mcp', 'RPG Maker MV MCP runtime', mv.valid, mv.valid ? `Pinned RPG Maker MV MCP ${mv.packageVersion} is verified` : mv.errors.join('; '), mv.executable ?? mcpRuntime),
+        check('rpgmaker-mz-mcp', 'RPG Maker MZ MCP runtime', mz.valid, mz.valid ? `Pinned RPG Maker MZ MCP ${mz.packageVersion} is verified` : mz.errors.join('; '), mz.executable ?? mcpRuntime)
       ]
     };
   });

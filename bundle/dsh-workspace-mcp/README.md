@@ -37,12 +37,12 @@ published into the Cordis ROOT realm.
   and neutralized environment. Agents sharing a pair reuse its pooled child;
   different engines or workspaces remain isolated.
 - Generates stable Agent-scoped names `rpgmaker_<raw tool name>` from the
-  machine-generated, content-digest-pinned MV (41 tools) or MZ (119 tools)
-  manifest. Registration is
+  machine-generated, pinned MV (41 tools) or MZ (119 tools) manifest.
+  Registration is
   synchronous in the mounted composition row, before DSH's pre-waterfall
   schema collection, and uses one registration factory rather than
-  hand-written wrappers. Workspace hashes, session ids, and MCP transport
-  details never enter model-facing names.
+  hand-written wrappers. Session ids and MCP transport details never enter
+  model-facing names.
 - Verifies the pinned manifest before acquiring a workspace server, then
   compares live `tools/list` names and supported schemas against it before any
   execution. Missing, duplicate, drifted, invalid, or unsupported definitions
@@ -50,6 +50,11 @@ published into the Cordis ROOT realm.
 - Gates `system-prompt/assemble` on initialization, so the first request
   carries the complete validated tool set or fails visibly. An invalid
   workspace registers no server and reports the missing direct-child markers.
+  MZ Code Mode keeps only DSH's native `run_code` transport and renders the
+  selected manifest through the official `@deepseek-ai/dsh-tools` SDK renderer,
+  including typed `ToolArgsMap`/`tools` declarations. The Redseb `set_project`
+  operation is rejected because the acquired `(mz, canonical workspace)` pair
+  is immutable.
 - Neutralizes every present credential key and ambient `DSH_*` key in the child
   definition with one constant non-secret marker. MCPorter's ambient merge
   therefore cannot carry an original value into the deterministic child.

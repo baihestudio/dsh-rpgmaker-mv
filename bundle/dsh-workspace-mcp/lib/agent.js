@@ -4,7 +4,8 @@
  * Agent session cwd during the first assembly/call; only that engine's
  * generated manifest remains visible to the Agent.
  */
-import { resolveRuntimePaths, MCPORTER_RUNTIME_ENV, XEROLO_RUNTIME_ENV, JS_RUNNER_ENV } from './env.js'
+import { resolveRuntimePaths } from './env.js'
+import { renderToolsSdk } from '@deepseek-ai/dsh-tools'
 import { hostForRoot } from './index.js'
 import {
   ENGINE_CONTRACTS,
@@ -104,14 +105,21 @@ export function apply(ctx) {
 
 function replaceAssemblyTools(assembly, manifest) {
   if (!assembly || typeof assembly !== 'object' || !manifest) return
-  const tools = manifest.tools.map((tool) => ({ name: toModelName(tool.name), description: tool.description, parameters: tool.inputSchema }))
+  const sdkSchemas = manifest.tools.map((tool) => ({
+    name: toModelName(tool.name),
+    description: tool.description,
+    parameters: tool.inputSchema,
+    output: tool.outputSchema ?? {}
+  }))
+  const sdkText = renderToolsSdk(sdkSchemas)
   if (Array.isArray(assembly.tools)) {
-    assembly.tools.splice(0, assembly.tools.length, ...tools)
+    const runCode = assembly.tools.filter((tool) => tool && typeof tool === 'object' && tool.name === RESERVED_DSH_TOOL_NAME)
+    assembly.tools.splice(0, assembly.tools.length, ...runCode)
   }
   if (Array.isArray(assembly.sections)) {
     for (const section of assembly.sections) {
       if (section && typeof section === 'object' && (section.name === 'tools:sdk' || section.id === 'tools:sdk')) {
-        if ('text' in section) section.text = tools.map((tool) => tool.name).join('\n')
+        if ('text' in section) section.text = sdkText
       }
     }
   }
@@ -129,7 +137,7 @@ async function initializeAgent(host, ctx, agent, registrations) {
   if (manifestCheck.errors.length > 0) throw new Error(`Pinned RPG Maker ${engine.toUpperCase()} manifest is not trustworthy: ${manifestCheck.errors.join('; ')}`)
   registrations.register(engine)
   const paths = resolveRuntimePaths(process.env)
-  const definition = await buildWorkspaceDefinition(engine, canonical, { ...paths, rpgmakerRuntime: paths.xeroloRuntime }, process.env)
+  const definition = await buildWorkspaceDefinition(engine, canonical, paths, process.env)
   const acquired = await host.acquireWorkspaceServer(paths, engine, canonical, definition)
   const contract = validateDiscoveredTools(acquired.tools, engine)
   if (contract.errors.length > 0) throw new Error(`RPG Maker ${engine.toUpperCase()} tools/list does not match its pinned manifest: ${contract.errors.join('; ')}`)
@@ -180,8 +188,6 @@ export {
   SECRET_MARKER,
   MCPORTER_RUNTIME_ENV,
   RPGMAKER_MCP_RUNTIME_ENV,
-  RPGMAKER_RUNTIME_ENV,
-  XEROLO_RUNTIME_ENV,
   JS_RUNNER_ENV
 } from './env.js'
 export {
@@ -192,7 +198,6 @@ export {
   validateWorkspace,
   privateServerName,
   resolveEngineEntry,
-  resolveXeroloEntry,
   buildWorkspaceDefinition,
   MV_PROJECT_MARKER,
   MV_REQUIRED_DIRECTORIES,

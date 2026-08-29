@@ -39,5 +39,5 @@ export declare function toModelName(rawName: string): string;
 export declare function createMcpTool(
   rawTool: DiscoveredTool,
   capability: AgentInitializer,
-  engine?: RpgMakerEngine
+  engine: RpgMakerEngine
 ): McpToolDefinition;

@@ -84,3 +84,15 @@ The estimate assumes the current Host/MCPorter pooling, result normalization, ru
 - The selected MZ package and alternative-source review are recorded in `docs/research/rpgmaker-mz-mcp-selection.md`. That note is orientation evidence; the pinned generated manifest and runtime verification are the machine-consumed contract.
 - Current DSH rc.8 documentation states that Agent-scoped registrations are disposed with `Agent.ctx`, Code Mode's `tools:sdk` section lazily renders the calling scope's visible capabilities during assembly, and an assembly listener may authoritatively change registry contributions. The real DSH Agent test must prove same-first-request registration before this implementation is accepted.
 - Existing installed users are external consumers of the current directory and Start Menu identity. Preserving those paths avoids turning dual-engine support into an unrelated migration; no old/new runtime compatibility layer is required inside the atomically replaced app-owned tree.
+
+## Whole-spec review remediation (2026-08-29)
+
+Status: implemented; deterministic review blockers closed.
+
+- [x] MZ Code Mode now keeps only native `run_code` in the assembly tool list and renders the selected typed SDK/instructions through the official `@deepseek-ai/dsh-tools` contract on that same first assembly; MV retains its existing surface.
+- [x] MZ `set_project` cannot retarget the acquired `(engine, canonical workspace)` pair, and one Host test mounts MV and MZ Agents concurrently with isolated pair state and tool presentations.
+- [x] The approval-gated real acceptance script has a dual-mount, one-Host probe; the real and Windows gates remain intentionally unrun.
+- [x] Active branding and quick-start prompts are workspace/engine-neutral, with runtime assertions covering the absence of MV-only prompt claims.
+- [x] Repo-owned legacy aliases, overloads, single-engine staging, and compatibility fixtures were removed; owned installation fakes cover exact MV/MZ package install, repair, and reuse.
+- [x] Public doctor and RPG Maker callback/result shapes use explicit exported interfaces.
+- [x] The private workspace bundle no longer carries an internal SHA-256 pin or profile hash validation; third-party package and manifest integrity pins remain authoritative.

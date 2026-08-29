@@ -13,13 +13,11 @@ import { pathToFileURL } from 'node:url';
 
 import { redactSensitive, withoutCredentials } from '../src/process';
 import { RPGMAKER_MZ_MCP_INTEGRITY, RPGMAKER_MZ_MCP_PACKAGE, RPGMAKER_MZ_MCP_VERSION } from '../src/rpgmaker';
-import { workspaceMcpBundleDigest } from '../src/workspace-mcp';
 
 const repo = join(import.meta.dir, '..');
 const lib = join(repo, 'bundle', 'dsh-workspace-mcp', 'lib');
 const manifestPath = join(lib, 'mz-manifest.js');
 const contractPath = join(lib, 'contract.js');
-const workspacePath = join(repo, 'src', 'workspace-mcp.ts');
 const expectedToolCount = 119;
 
 interface Tool { name: string; description?: string; inputSchema?: unknown }
@@ -144,13 +142,7 @@ async function main(): Promise<void> {
     const loaded = await import(`${pathToFileURL(contractPath).href}?generated=${Date.now()}`);
     const verification = loaded.verifyManifest('mz');
     if (verification.errors.length > 0) throw new Error(`generated MZ manifest failed verification: ${verification.errors.join('; ')}`);
-    const bundleDigest = await workspaceMcpBundleDigest(join(repo, 'bundle', 'dsh-workspace-mcp'));
-    const workspace = await readFile(workspacePath, 'utf8');
-    const patchedWorkspace = workspace.replace(/export const WORKSPACE_MCP_SHA256 = '[0-9a-f]{64}'/, `export const WORKSPACE_MCP_SHA256 = '${bundleDigest}'`);
-    if (patchedWorkspace === workspace && !workspace.includes(`export const WORKSPACE_MCP_SHA256 = '${bundleDigest}'`)) throw new Error('could not locate workspace bundle digest pin');
-    if (patchedWorkspace !== workspace) await writeFile(workspacePath, patchedWorkspace);
     console.log(`generate-mz-manifest: MZ_MANIFEST_SHA256=${digest}`);
-    console.log(`generate-mz-manifest: WORKSPACE_MCP_SHA256=${bundleDigest}`);
     console.log(`generate-mz-manifest: npm integrity=${RPGMAKER_MZ_MCP_INTEGRITY}`);
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -39,6 +39,9 @@ export function createMcpTool(rawTool, capability, engine = 'mv') {
       const agent = exec?.agent
       if (!agent) throw new Error(`dsh-workspace-mcp: ${name} execution supplied no Agent`)
       const { host, engine, canonical, paths } = await capability.init(agent)
+      if (engine === 'mz' && rawTool.name === 'set_project') {
+        throw new Error(`dsh-workspace-mcp: ${name} cannot retarget the acquired MZ workspace; the pair is bound to ${canonical}`)
+      }
       const result = await host.callWorkspaceTool(paths, engine, canonical, rawTool.name, args ?? {}, {
         signal: exec.signal
       })

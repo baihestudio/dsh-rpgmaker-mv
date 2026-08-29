@@ -69,8 +69,8 @@ or automated gameplay capture.
 The workspace bundle validates either `Game.rpgproject` (MV) or
 `game.rmmzproject` (MZ), plus `data` and `js`, directly under the DSH Web
 workspace. Each Agent receives stable names such as
-`rpgmaker_validate_project`; workspace hashes, session identifiers, and MCP
-transport names never appear in prompts or history. Agents in one workspace
+`rpgmaker_validate_project`; session identifiers and MCP transport names never
+appear in prompts or history. Agents in one workspace
 share one warm connection for the selected engine, while different
 engine/workspace pairs remain isolated. The
 workspace server is Host-lifetime: it stays warm after its last Agent leaves and

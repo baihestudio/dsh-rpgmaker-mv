@@ -18,7 +18,7 @@ import {
   verifyManagedWebProfile
 } from '../src/managed-web-profile';
 import { PNPM_VERSION } from '../src/profile';
-import { WORKSPACE_MCP_PACKAGE, WORKSPACE_MCP_VERSION, workspaceMcpBundleDigest, workspaceMcpBundleDirFor } from '../src/workspace-mcp';
+import { WORKSPACE_MCP_PACKAGE, WORKSPACE_MCP_VERSION, workspaceMcpBundleDirFor } from '../src/workspace-mcp';
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -235,7 +235,6 @@ describe('managed Web profile materialization', () => {
       const workspaceBundleDir = workspaceMcpBundleDirFor({ dshHome: roots.dshHome });
       const priorProfileTree = await snapshotTree(profileDir);
       const priorWorkspaceTree = await snapshotTree(workspaceBundleDir);
-      const priorWorkspaceDigest = await workspaceMcpBundleDigest(workspaceBundleDir);
 
       const failingCalls: string[] = [];
       await expect(ensureManagedWebProfile(optionsFor(
@@ -247,7 +246,6 @@ describe('managed Web profile materialization', () => {
       expect(restoredManifest.dependencies).toEqual(priorManifest.dependencies);
       expect(await snapshotTree(profileDir)).toEqual(priorProfileTree);
       expect(await snapshotTree(workspaceBundleDir)).toEqual(priorWorkspaceTree);
-      expect(await workspaceMcpBundleDigest(workspaceBundleDir)).toBe(priorWorkspaceDigest);
       expect(await rollbackSnapshotNames(roots.dshHome)).toEqual([]);
       expect(await readFile(marker, 'utf8')).toContain('prior profile remains recoverable');
       expect(await readFile(mutableMarker, 'utf8')).toContain('mutable state must survive');

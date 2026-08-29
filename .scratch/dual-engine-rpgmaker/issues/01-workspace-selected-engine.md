@@ -13,3 +13,9 @@ Status: done
 - [x] An MV Agent's first Code Mode assembly contains exactly the existing MV surface, while an MZ Agent's first assembly contains exactly the pinned Redseb surface; neither sees the other engine's unique tools or pair identity.
 - [x] Representative MV behavior remains unchanged, and a disposable MZ tool call routes through the selected child with canonical cwd, fixed environment, credential neutralization, and preserved MCP result/error/cancellation behavior.
 - [x] Focused workspace, runtime, manifest, Host, and real DSH Agent-seam tests pass using only test-owned roots, fixtures, and processes.
+
+## Whole-spec review remediation (2026-08-29)
+
+- [x] MZ Code Mode uses the official typed SDK renderer while retaining only native `run_code`; MV presentation is preserved.
+- [x] MZ `set_project` is rejected for any path other than the acquired canonical workspace, and a same-Host MV/MZ concurrency regression proves pair isolation.
+- [x] The private workspace bundle hash pin and profile hash validation were removed; exact engine package and manifest integrity pins remain.

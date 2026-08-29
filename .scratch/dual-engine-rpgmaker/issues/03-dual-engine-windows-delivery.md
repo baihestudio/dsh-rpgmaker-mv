@@ -12,3 +12,9 @@ Status: done
 - [x] Current README, user guide, Windows release documentation, preset metadata, and bundle documentation explain workspace-selected MV/MZ editing and the explicit MZ Playtest/build limitations.
 - [x] Focused release/install tests, the ordinary `bun test` suite, `bun run check`, and `git diff --check` pass using disposable roots and fake dependencies.
 - [x] Real package-download, native Windows, clean-machine, and other `phase*:real` gates remain unrun unless separately authorized, and the implementation report lists them as unverified.
+
+## Whole-spec review remediation (2026-08-29)
+
+- [x] Owned install fakes now model both exact engine packages and assert MZ install, repair, and verified-runtime reuse alongside MV.
+- [x] Obsolete single-engine fixtures, aliases, fallback verifier paths, and legacy workspace/Host overloads were removed from owned callers and tests.
+- [x] The private workspace bundle no longer uses `WORKSPACE_MCP_SHA256`, `workspaceMcpBundleDigest`, or internal profile hash checks; Redseb, Xerolo, and Forgejo integrity pins remain.

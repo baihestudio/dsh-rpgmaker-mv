@@ -13,15 +13,12 @@ import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
   RPGMAKER_MCP_RUNTIME_ENV,
-  XEROLO_RUNTIME_ENV,
   WORKSPACE_MCP_AGENT_ROW_ID
 } from './workspace-mcp';
 import { ensureManagedWebProfile, type ManagedWebProfileOptions, type ManagedWebProfileResult } from './managed-web-profile';
 
-export const RPGMAKER_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
-export const RPGMAKER_MCP_VERSION = '0.1.0';
-export const RPGMAKER_MV_MCP_PACKAGE = RPGMAKER_MCP_PACKAGE;
-export const RPGMAKER_MV_MCP_VERSION = RPGMAKER_MCP_VERSION;
+export const RPGMAKER_MV_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
+export const RPGMAKER_MV_MCP_VERSION = '0.1.0';
 export const RPGMAKER_MZ_MCP_PACKAGE = 'rpgmaker-mz-mcp';
 export const RPGMAKER_MZ_MCP_VERSION = '1.3.0';
 export const RPGMAKER_MZ_MCP_INTEGRITY = 'sha512-m4JIWdOi3WC5oodfAzPWpgXDUN9MBEl9AcJxoNBtCAD/gMhEM1ju1XD3WjLQkoylIDspSoqVxaGyRsNfQVupJw==';
@@ -39,7 +36,6 @@ const MCP_LOCK_BIN = 'dist/index.js';
 export const RPGMAKER_ENGINE_IDS = ['mv', 'mz'] as const;
 
 export type RpgMakerLaunchOptions = LaunchOptions & {
-  mcpRuntimeDir?: string;
   /** Generic spelling for the shared MV/MZ runtime; the on-disk path is unchanged. */
   rpgmakerRuntimeDir?: string;
   mcporterRuntimeDir?: string;
@@ -62,11 +58,8 @@ export type RpgMakerLaunchOptions = LaunchOptions & {
 export interface RpgMakerLaunchPreparation {
   dshExecutable: string;
   mcporterRuntimeDir: string;
-  xeroloRuntimeDir: string;
-  xeroloScript: string;
-  mzScript?: string;
   rpgmakerRuntimeDir: string;
-  rpgmakerScripts: { mv: string; mz?: string };
+  rpgmakerScripts: RpgMakerScripts;
   jsRunner: string;
   presetRoot: string;
   presetDir: string;
@@ -74,6 +67,11 @@ export interface RpgMakerLaunchPreparation {
   compositionPath: string;
   agentPreset: string;
   managedWebProfile: ManagedWebProfileResult;
+}
+
+export interface RpgMakerScripts {
+  mv: string;
+  mz: string;
 }
 
 export interface RpgMakerPresetDeploymentOptions extends PathOptions {
@@ -96,11 +94,12 @@ export interface RpgMakerPresetDeployment {
 export interface McpVerification {
   valid: boolean;
   errors: string[];
-  packageVersion?: string;
-  executable?: string;
-  mzPackageVersion?: string;
-  mzExecutable?: string;
-  engines?: Record<'mv' | 'mz', EngineMcpVerification>;
+  engines: RpgMakerEngineVerificationMap;
+}
+
+export interface RpgMakerEngineVerificationMap {
+  mv: EngineMcpVerification;
+  mz: EngineMcpVerification;
 }
 
 export interface EngineMcpVerification {
@@ -209,11 +208,11 @@ async function readBunLock(path: string): Promise<Record<string, unknown> | unde
   }
 }
 
-function packageDirectory(runtimeDir: string, packageName = RPGMAKER_MCP_PACKAGE): string {
+function packageDirectory(runtimeDir: string, packageName: string): string {
   return join(runtimeDir, 'node_modules', ...packageName.split('/'));
 }
 
-async function findMcpScript(runtimeDir: string, packageName = RPGMAKER_MCP_PACKAGE, binName = 'rpgmaker-mv-mcp'): Promise<string | undefined> {
+async function findMcpScript(runtimeDir: string, packageName: string, binName: string): Promise<string | undefined> {
   const packageDir = packageDirectory(runtimeDir, packageName);
   const packageJson = await readJson(join(packageDir, 'package.json'));
   const bin = packageJson?.bin;
@@ -239,7 +238,7 @@ export const MCP_ENGINE_RECORDS = {
   mz: { engine: 'mz' as const, package: RPGMAKER_MZ_MCP_PACKAGE, version: RPGMAKER_MZ_MCP_VERSION, integrity: RPGMAKER_MZ_MCP_INTEGRITY, bin: 'rpgmaker-mz-mcp', entry: MCP_LOCK_BIN }
 } as const;
 
-export async function verifyEngineMcpRuntime(runtimeDirInput: string, engine: 'mv' | 'mz', _platform: string = process.platform, strictIdentity = true): Promise<EngineMcpVerification> {
+export async function verifyEngineMcpRuntime(runtimeDirInput: string, engine: 'mv' | 'mz', _platform: string = process.platform): Promise<EngineMcpVerification> {
   const runtimeDir = resolve(runtimeDirInput);
   const record = MCP_ENGINE_RECORDS[engine];
   const errors: string[] = [];
@@ -263,18 +262,12 @@ export async function verifyEngineMcpRuntime(runtimeDirInput: string, engine: 'm
   const packageVersion = typeof packageJson?.version === 'string' ? packageJson.version : undefined;
   const packageBins = asRecord(packageJson?.bin);
   const packageBin = typeof packageJson?.bin === 'string' ? packageJson.bin : packageBins?.[record.bin];
-  if (strictIdentity && packageName !== record.package) errors.push(`installed ${record.engine.toUpperCase()} MCP package identity is ${packageName ?? 'missing'}, expected ${record.package}`);
+  if (packageName !== record.package) errors.push(`installed ${record.engine.toUpperCase()} MCP package identity is ${packageName ?? 'missing'}, expected ${record.package}`);
   if (packageVersion !== record.version) errors.push(`installed ${record.engine.toUpperCase()} MCP version is ${packageVersion ?? 'missing'}, expected ${record.version}`);
   if (packageBin !== record.entry) errors.push(`installed ${record.engine.toUpperCase()} MCP bin metadata is ${String(packageBin ?? 'missing')}, expected ${record.entry}`);
   const executable = await findMcpScript(runtimeDir, record.package, record.bin);
   if (!executable) errors.push(`installed RPG Maker ${record.engine.toUpperCase()} MCP JavaScript entry was not found inside the app-owned runtime`);
   return { ...record, valid: errors.length === 0, errors, packageVersion, executable };
-}
-
-/** Legacy MV-only verification surface retained for callers that only inspect Xerolo. */
-export async function verifyMcpRuntime(runtimeDirInput: string, platform: string = process.platform): Promise<McpVerification> {
-  const mv = await verifyEngineMcpRuntime(runtimeDirInput, 'mv', platform, false);
-  return { valid: mv.valid, errors: mv.errors, packageVersion: mv.packageVersion, executable: mv.executable, engines: { mv, mz: { ...MCP_ENGINE_RECORDS.mz, valid: false, errors: ['MZ runtime was not requested by the legacy verifier'] } } };
 }
 
 /** Strict dual-engine verification used by install/repair, launch, and Doctor. */
@@ -284,7 +277,7 @@ export async function verifyRpgMakerMcpRuntime(runtimeDirInput: string, platform
     verifyEngineMcpRuntime(runtimeDirInput, 'mz', platform)
   ]);
   const errors = [...mv.errors, ...mz.errors];
-  return { valid: errors.length === 0, errors, packageVersion: mv.packageVersion, executable: mv.executable, mzPackageVersion: mz.packageVersion, mzExecutable: mz.executable, engines: { mv, mz } };
+  return { valid: errors.length === 0, errors, engines: { mv, mz } };
 }
 
 /** Keep the two exact top-level dependency/lock entries when a fake or
@@ -362,7 +355,6 @@ export async function prepareRpgMakerMcpRuntime(
       [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION
     }
   }, null, 2)}\n`);
-  let legacySingleEngineFixture = false;
   try {
     // Install each exact package into the same staging runtime. Doing this in
     // two bounded commands also works with package runners that only accept a
@@ -370,27 +362,10 @@ export async function prepareRpgMakerMcpRuntime(
     for (const record of Object.values(MCP_ENGINE_RECORDS)) {
       const previousLock = await readBunLock(join(staging, 'bun.lock'));
       const previousPackages = asRecord(previousLock?.packages) ?? {};
-      try {
-        await runRequired(runner, bun, ['add', '--exact', '--ignore-scripts', `${record.package}@${record.version}`], staging, env, `${record.engine.toUpperCase()} RPG Maker MCP installation`);
-      } catch (error) {
-        // Older repository-owned disposable runners only model the original
-        // MV addition and deliberately throw for unknown dependency specs.
-        // Keep those fixtures usable while still failing closed for every real
-        // installer error (the exact package runner is required in production).
-        const mvManifest = await readJson(join(packageDirectory(staging, RPGMAKER_MV_MCP_PACKAGE), 'package.json'));
-        const isLegacyFixture = record.engine === 'mz'
-          && typeof mvManifest?.name !== 'string'
-          && error instanceof RpgMakerStartupError
-          && /unexpected dependency fixture args/i.test(error.message);
-        if (!isLegacyFixture) throw error;
-        legacySingleEngineFixture = true;
-        break;
-      }
+      await runRequired(runner, bun, ['add', '--exact', '--ignore-scripts', `${record.package}@${record.version}`], staging, env, `${record.engine.toUpperCase()} RPG Maker MCP installation`);
       await mergeMcpRuntimeMetadata(staging, previousPackages);
     }
-    const staged = legacySingleEngineFixture
-      ? await verifyMcpRuntime(staging, platform)
-      : await verifyRpgMakerMcpRuntime(staging, platform);
+    const staged = await verifyRpgMakerMcpRuntime(staging, platform);
     if (!staged.valid) throw new RpgMakerStartupError(`RPG Maker MCP verification failed: ${staged.errors.join('; ')}`);
     if (await pathExists(runtimeDir)) {
       const rollback = `${runtimeDir}.rollback-${Date.now()}`;
@@ -404,9 +379,7 @@ export async function prepareRpgMakerMcpRuntime(
     } else {
       await fsRename(staging, runtimeDir);
     }
-    return legacySingleEngineFixture
-      ? await verifyMcpRuntime(runtimeDir, platform)
-      : await verifyRpgMakerMcpRuntime(runtimeDir, platform);
+    return await verifyRpgMakerMcpRuntime(runtimeDir, platform);
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     if (error instanceof RpgMakerStartupError) throw error;
@@ -799,7 +772,7 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   }, mcporterRuntimeDir);
   if (!mcporter.valid) throw new RpgMakerStartupError(`Pinned MCPorter runtime is not usable: ${mcporter.errors.join('; ')}`);
 
-  const rpgmakerRuntimeDir = resolve(options.rpgmakerRuntimeDir ?? options.mcpRuntimeDir ?? join(paths.programRoot, 'runtime', 'mcp'));
+  const rpgmakerRuntimeDir = resolve(options.rpgmakerRuntimeDir ?? join(paths.programRoot, 'runtime', 'mcp'));
   const prepareMcp = options.mcpRuntimePreparer ?? prepareRpgMakerMcpRuntime;
   const mcp = await prepareMcp({
     platform,
@@ -807,7 +780,9 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
     bunExecutable: options.bunExecutable,
     commandRunner: options.commandRunner
   }, rpgmakerRuntimeDir);
-  if (!mcp.valid || !mcp.executable) throw new RpgMakerStartupError(`Pinned RPG Maker MCP runtime is not usable: ${mcp.errors.join('; ')}`);
+  const mvScript = mcp.engines.mv.executable;
+  const mzScript = mcp.engines.mz.executable;
+  if (!mcp.valid || !mvScript || !mzScript) throw new RpgMakerStartupError(`Pinned RPG Maker MCP runtime is not usable: ${mcp.errors.join('; ')}`);
   const jsRunner = await resolveMcpRunner(options, platform, withoutCredentials(env));
 
   const managedWebProfileOptions: ManagedWebProfileOptions = {
@@ -848,13 +823,8 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   return {
     dshExecutable,
     mcporterRuntimeDir,
-    // The legacy Xerolo names remain as a read-only result alias because the
-    // installed directory identity is intentionally unchanged.
-    xeroloRuntimeDir: rpgmakerRuntimeDir,
-    xeroloScript: mcp.executable,
-    mzScript: mcp.mzExecutable,
     rpgmakerRuntimeDir,
-    rpgmakerScripts: { mv: mcp.executable, ...(mcp.mzExecutable ? { mz: mcp.mzExecutable } : {}) },
+    rpgmakerScripts: { mv: mvScript, mz: mzScript },
     jsRunner,
     ...presets,
     managedWebProfile
@@ -880,9 +850,6 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
   const ownedEnvironment = {
     [MCPORTER_RUNTIME_ENV]: deployment.mcporterRuntimeDir,
     [RPGMAKER_MCP_RUNTIME_ENV]: deployment.rpgmakerRuntimeDir,
-    // Keep the historical key for installed probes and older profile helpers;
-    // both keys point at the same app-owned dual-engine runtime.
-    [XEROLO_RUNTIME_ENV]: deployment.rpgmakerRuntimeDir,
     [JS_RUNNER_ENV]: deployment.jsRunner
   };
   const result = await launchProject({

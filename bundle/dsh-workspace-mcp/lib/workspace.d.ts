@@ -34,19 +34,11 @@ export declare const MCPORTER_CALL_TIMEOUT_MS: number;
 export declare function canonicalWorkspace(cwd: unknown): Promise<string>;
 export declare function classifyWorkspace(canonical: string): Promise<WorkspaceValidation>;
 export declare function validateWorkspace(canonical: string): Promise<WorkspaceValidation>;
-export declare function privateServerName(canonical: string): string;
 export declare function privateServerName(engine: RpgMakerEngine, canonical: string): string;
-export declare function privateServerName(canonical: string, engine: RpgMakerEngine): string;
 export declare function resolveEngineEntry(engine: RpgMakerEngine, runtime: string): Promise<string>;
-export declare function resolveXeroloEntry(xeroloRuntime: string): Promise<string>;
-export declare function buildWorkspaceDefinition(
-  canonical: string,
-  paths: { xeroloRuntime: string; runner: string },
-  env?: Record<string, string | undefined>
-): Promise<WorkspaceServerDefinition>;
 export declare function buildWorkspaceDefinition(
   engine: RpgMakerEngine,
   canonical: string,
-  paths: { rpgmakerRuntime?: string; xeroloRuntime?: string; runner: string },
+  paths: { rpgmakerRuntime: string; runner: string },
   env?: Record<string, string | undefined>
 ): Promise<WorkspaceServerDefinition>;

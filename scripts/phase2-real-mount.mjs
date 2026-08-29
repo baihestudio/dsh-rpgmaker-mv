@@ -39,11 +39,120 @@ function stableNames(schemas) {
   return schemas.filter((schema) => typeof schema?.name === 'string' && schema.name.startsWith('rpgmaker_')).map((schema) => schema.name).sort()
 }
 
+async function runDualMount() {
+  const mvProject = process.env.PROJECT_PATH_MV
+  const mzProject = process.env.PROJECT_PATH_MZ
+  const neutralLanding = process.env.NEUTRAL_LANDING_DIR
+  const mvEntry = process.env.MV_ENTRY
+  const mzEntry = process.env.MZ_ENTRY
+  if (!mvProject || !mzProject || !neutralLanding || !mvEntry || !mzEntry) throw new Error('PROJECT_PATH_MV, PROJECT_PATH_MZ, NEUTRAL_LANDING_DIR, MV_ENTRY, and MZ_ENTRY are required')
+  const [actualNeutralLanding, expectedNeutralLanding, canonicalMv, canonicalMz] = await Promise.all([
+    realpath(process.cwd()), realpath(neutralLanding), realpath(mvProject), realpath(mzProject)
+  ])
+  if (actualNeutralLanding !== expectedNeutralLanding) throw new Error(`DSH did not start from the neutral landing directory: ${process.cwd()}`)
+  for (const project of [mvProject, mzProject]) {
+    if (!/[\u4e00-\u9fff]/.test(project) || !project.includes(' ')) throw new Error(`CJK/space project fixture was lost: ${project}`)
+  }
+  if (process.argv.some((argument) => argument === '--project' || argument.startsWith('--project='))) throw new Error('project-neutral acceptance received an unexpected --project argument')
+
+  const mounted = await profileModule.runProfile({
+    profile: 'web',
+    patchFiles: [process.env.COMPOSITION_FILE],
+    args: ['--port', '0'],
+    environment
+  })
+  const handles = []
+  try {
+    const presets = mounted.ctx.get('agentPresets')
+    if (!presets) throw new Error('official DSH agent preset service did not mount')
+    const presetIds = (await presets.list()).map((entry) => entry.id)
+    for (const id of ['rpgmaker', 'playtest-debug']) if (!presetIds.includes(id)) throw new Error(`shipped preset ${id} was not available in the neutral Host`)
+    const systemPrompt = mounted.ctx.get('systemPrompt')
+    const agentLoop = mounted.ctx.get('agentLoop')
+    const tools = mounted.ctx.get('tools')
+    if (!systemPrompt || !agentLoop || !tools) throw new Error('official DSH agent, system-prompt, or tools service did not mount')
+    async function createAgent(project, sessionId) {
+      const handle = await agentLoop.createAgent(mounted.ctx, {
+        sessionId,
+        meta: { cwd: project, agentPreset: 'rpgmaker' },
+        setup: async (agentCtx) => {
+          if (!agentCtx.agent) throw new Error('DSH Agent setup did not supply agentCtx.agent')
+          await presets.mount(agentCtx, 'rpgmaker')
+        }
+      })
+      handles.push(handle)
+      return handle
+    }
+    const [mv, mz] = await Promise.all([
+      createAgent(mvProject, 'phase2-real-workspace-mv'),
+      createAgent(mzProject, 'phase2-real-workspace-mz')
+    ])
+    const [mvAssembly, mzAssembly] = await Promise.all([
+      systemPrompt.assemble(assembleContextFor(mv.agent)),
+      systemPrompt.assemble(assembleContextFor(mz.agent))
+    ])
+    const mvNames = agentBundle.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort()
+    const mzNames = agentBundle.MZ_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort()
+    const mvSdk = (mvAssembly.sections ?? []).find((section) => section?.name === 'tools:sdk')
+    const mzSdk = (mzAssembly.sections ?? []).find((section) => section?.name === 'tools:sdk')
+    if (typeof mvSdk?.text !== 'string' || mvNames.some((name) => !mvSdk.text.includes(name))) throw new Error('MV first assembly did not carry its complete SDK surface')
+    if (typeof mzSdk?.text !== 'string' || mzNames.some((name) => !mzSdk.text.includes(name))) throw new Error('MZ first assembly did not carry its complete SDK surface')
+    if (stableNames(mvAssembly.tools ?? []).length !== 0 || stableNames(mzAssembly.tools ?? []).length !== 0) throw new Error('dual-engine Code Mode assembly exposed RPG Maker tools natively')
+    if (!mzAssembly.tools?.some((schema) => schema?.name === 'run_code')) throw new Error('MZ Code Mode assembly did not retain run_code')
+    if (mzSdk.text.includes('rpgmaker_get_project_info')) throw new Error('MZ SDK leaked the MV-only get_project_info tool')
+
+    const state = hostBundle.hostState(mounted.ctx)
+    if (state.workspaces.length !== 2 || !state.workspaces.includes(canonicalMv) || !state.workspaces.includes(`mz:${canonicalMz}`)) throw new Error(`expected one pooled pair per engine/workspace, got ${JSON.stringify(state.workspaces)}`)
+    const directAgentToolCalls = []
+    async function call(handle, rawName, args) {
+      const modelName = `rpgmaker_${rawName}`
+      const result = await tools.execute({
+        callId: `phase2-real-dual-${directAgentToolCalls.length + 1}`,
+        name: 'run_code',
+        arguments: { code: `const __result = await tools['${modelName}'](${JSON.stringify(args)});\nreturn __result`, description: `Call ${modelName}` },
+        agent: handle.agent,
+        signal: new AbortController().signal
+      })
+      if (result.isError) throw new Error(`stable RPG Maker tool ${rawName} failed without retry: ${JSON.stringify(result)}`)
+      directAgentToolCalls.push({ name: modelName, isError: result.isError === true, valueObserved: result.value !== undefined })
+      return result.value ?? result
+    }
+    const mvInfo = unwrap(await call(mv, 'get_project_info', {}))
+    const mzInfo = unwrap(await call(mz, 'get_project', {}))
+    if (typeof mvInfo?.gameTitle !== 'string' || mvInfo.gameTitle.length === 0 || mzInfo?.valid !== true) throw new Error(`unexpected dual-engine project info: ${JSON.stringify({ mvInfo, mzInfo })}`)
+    assertValidation('dual MV', await call(mv, 'validate_project', {}))
+    assertValidation('dual MZ', await call(mz, 'validate_project', {}))
+    const stateAfterCalls = hostBundle.hostState(mounted.ctx)
+    if (stateAfterCalls.workspaces.length !== 2) throw new Error('dual-engine calls changed pooled pair count')
+    const [mvProcessEvidence, mzProcessEvidence] = await Promise.all([
+      observeRpgMakerChildren({ project: canonicalMv, entry: mvEntry, engine: 'mv', platform: 'win32', env: process.env }),
+      observeRpgMakerChildren({ project: canonicalMz, entry: mzEntry, engine: 'mz', platform: 'win32', env: process.env })
+    ])
+    if (mvProcessEvidence.children.length === 0 || mzProcessEvidence.children.length === 0) throw new Error('dual-engine acceptance did not observe both selected MCP children')
+    console.log(JSON.stringify({
+      ok: true,
+      launchCwd: process.cwd(),
+      workspaces: [canonicalMv, canonicalMz],
+      hostRuntime: stateAfterCalls.runtimeDir,
+      workspaceServers: stateAfterCalls.workspaces.length,
+      mv: { stableTools: mvNames.length, engine: 'mv', workspaceServers: stateAfterCalls.workspaces.length, pooledChildren: mvProcessEvidence.children.length, processEvidence: mvProcessEvidence },
+      mz: { stableTools: mzNames.length, engine: 'mz', workspaceServers: stateAfterCalls.workspaces.length, pooledChildren: mzProcessEvidence.children.length, processEvidence: mzProcessEvidence },
+      directAgentToolCalls
+    }))
+  } finally {
+    for (const handle of handles) if (typeof handle.dispose === 'function') await handle.dispose().catch(() => undefined)
+    await mounted.shutdown.shutdown(0)
+  }
+}
+
+if (process.env.PROJECT_PATH_MV && process.env.PROJECT_PATH_MZ) {
+  await runDualMount()
+} else {
 const engine = process.env.RPGMAKER_ENGINE === 'mz' ? 'mz' : 'mv'
 const project = process.env.PROJECT_PATH
 const neutralLanding = process.env.NEUTRAL_LANDING_DIR
-const rpgmakerEntry = engine === 'mz' ? process.env.MZ_ENTRY : process.env.XEROLO_ENTRY
-if (!project || !neutralLanding || !rpgmakerEntry) throw new Error(`PROJECT_PATH, NEUTRAL_LANDING_DIR, and ${engine === 'mz' ? 'MZ_ENTRY' : 'XEROLO_ENTRY'} are required`)
+const rpgmakerEntry = engine === 'mz' ? process.env.MZ_ENTRY : process.env.MV_ENTRY
+if (!project || !neutralLanding || !rpgmakerEntry) throw new Error(`PROJECT_PATH, NEUTRAL_LANDING_DIR, and ${engine === 'mz' ? 'MZ_ENTRY' : 'MV_ENTRY'} are required`)
 const [actualNeutralLanding, expectedNeutralLanding] = await Promise.all([realpath(process.cwd()), realpath(neutralLanding)])
 if (actualNeutralLanding !== expectedNeutralLanding) throw new Error(`DSH did not start from the neutral landing directory: ${process.cwd()}`)
 if (!/[\u4e00-\u9fff]/.test(project) || !project.includes(' ')) throw new Error(`CJK/space project fixture was lost: ${project}`)
@@ -168,15 +277,15 @@ try {
     throw new Error('pooled workspace calls did not remain on the single Host runtime/server')
   }
 
-  const xeroloProcessEvidence = await observeRpgMakerChildren({
+  const processEvidence = await observeRpgMakerChildren({
     project: canonicalProject,
     entry: rpgmakerEntry,
     engine,
     platform: 'win32',
     env: process.env
   })
-  if (xeroloProcessEvidence.children.length === 0) {
-    throw new Error(`no live Xerolo child matched the canonical workspace and pinned entry (process table size ${xeroloProcessEvidence.processTableSize})`)
+  if (processEvidence.children.length === 0) {
+    throw new Error(`no live RPG Maker child matched the canonical workspace and pinned entry (process table size ${processEvidence.processTableSize})`)
   }
   console.log(JSON.stringify({
     ok: true,
@@ -184,15 +293,16 @@ try {
     workspace: canonicalProject,
     hostRuntime: stateAfterCalls.runtimeDir,
     workspaceServers: stateAfterCalls.workspaces.length,
-    pooledXeroloChildren: xeroloProcessEvidence.children.length,
+    pooledChildren: processEvidence.children.length,
     engine,
     stableTools: expectedNames.length,
     directAgentToolCalls,
-    xeroloProcessEvidence
+    processEvidence
   }))
 } finally {
   for (const handle of handles) {
     if (typeof handle.dispose === 'function') await handle.dispose().catch(() => undefined)
   }
   if (mounted) await mounted.shutdown.shutdown(0)
+}
 }

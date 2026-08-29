@@ -8,7 +8,7 @@ import { bootstrapRuntime, findDshExecutable } from '../src/bootstrap';
 import { DSH_VERSION } from '../src/config';
 import { launchRpgmakerProject, prepareRpgMakerLaunch } from '../src/rpgmaker';
 import { redactSensitive, runCommand } from '../src/process';
-import { JS_RUNNER_ENV, MCPORTER_RUNTIME_ENV, RPGMAKER_MCP_RUNTIME_ENV, XEROLO_RUNTIME_ENV } from '../src/workspace-mcp';
+import { JS_RUNNER_ENV, MCPORTER_RUNTIME_ENV, RPGMAKER_MCP_RUNTIME_ENV } from '../src/workspace-mcp';
 
 const DATABASE_TYPES = ['Actors', 'Classes', 'Skills', 'Items', 'Weapons', 'Armors', 'Enemies', 'Troops', 'States', 'Animations', 'Tilesets', 'CommonEvents'];
 
@@ -58,7 +58,7 @@ const dshHome = join(root, 'state');
 const programRoot = join(root, 'program');
 const runtimeDir = join(programRoot, 'runtime', 'dsh');
 const mcporterRuntimeDir = join(programRoot, 'runtime', 'mcporter');
-const xeroloRuntimeDir = join(programRoot, 'runtime', 'mcp');
+const rpgmakerRuntimeDir = join(programRoot, 'runtime', 'mcp');
 const neutralLandingDir = join(programRoot, 'neutral');
 const safeEnv: Record<string, string> = {};
 for (const key of ['PATH', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP', 'SystemRoot', 'ComSpec', 'COMSPEC', 'PATHEXT', 'LANG', 'LC_ALL', 'TERM', 'BUN_INSTALL', 'NODE_PATH', 'NODE_OPTIONS']) {
@@ -86,7 +86,7 @@ try {
     mutableRoot: root,
     runtimeDir,
     mcporterRuntimeDir,
-    mcpRuntimeDir: xeroloRuntimeDir,
+    rpgmakerRuntimeDir,
     dshExecutable,
     commandRunner: runCommand
   });
@@ -95,9 +95,8 @@ try {
   assert.equal(composition.includes('--project'), false, 'project-neutral composition must not carry a project argument');
   assert.equal(preparation.agentPreset, 'rpgmaker');
   assert.equal(preparation.mcporterRuntimeDir, mcporterRuntimeDir);
-  assert.equal(preparation.xeroloRuntimeDir, xeroloRuntimeDir);
-  assert.equal(preparation.rpgmakerRuntimeDir, xeroloRuntimeDir);
-  assert.ok(preparation.mzScript, 'pinned MZ MCP entry was not prepared');
+  assert.equal(preparation.rpgmakerRuntimeDir, rpgmakerRuntimeDir);
+  assert.ok(preparation.rpgmakerScripts.mz, 'pinned MZ MCP entry was not prepared');
 
   // Exercise the real launcher seam after preparation with a tracked child
   // double. This keeps the acceptance disposable while proving the launcher
@@ -113,7 +112,7 @@ try {
     mutableRoot: root,
     runtimeDir,
     mcporterRuntimeDir,
-    mcpRuntimeDir: xeroloRuntimeDir,
+    rpgmakerRuntimeDir,
     dshExecutable,
     portAlreadyChecked: true,
     portProbe: async () => true,
@@ -134,76 +133,33 @@ try {
     cwd: neutralLandingDir,
     env: {
       ...safeEnv,
-      PROJECT_PATH: project,
+      PROJECT_PATH_MV: project,
+      PROJECT_PATH_MZ: mzProject,
       NEUTRAL_LANDING_DIR: neutralLandingDir,
       PROFILE_FILE: join(dshLib, profileFile),
       ENVIRONMENT_MODULE: profileEnvironmentModule,
       COMPOSITION_FILE: preparation.compositionPath,
       [MCPORTER_RUNTIME_ENV]: preparation.mcporterRuntimeDir,
       [RPGMAKER_MCP_RUNTIME_ENV]: preparation.rpgmakerRuntimeDir,
-      [XEROLO_RUNTIME_ENV]: preparation.xeroloRuntimeDir,
       [JS_RUNNER_ENV]: preparation.jsRunner,
-      XEROLO_ENTRY: preparation.xeroloScript,
+      MV_ENTRY: preparation.rpgmakerScripts.mv,
+      MZ_ENTRY: preparation.rpgmakerScripts.mz,
       WORKSPACE_HOST_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js'),
       WORKSPACE_AGENT_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'agent.js')
     },
     platform: 'win32',
     timeoutMs: 120_000
   });
-  if (mountProbe.exitCode !== 0) throw new Error(`project-neutral DSH/Xerolo workspace acceptance failed: ${diagnosticText(mountProbe.stderr || mountProbe.stdout)}`);
+  if (mountProbe.exitCode !== 0) throw new Error(`project-neutral dual-engine workspace acceptance failed: ${diagnosticText(mountProbe.stderr || mountProbe.stdout)}`);
   const line = mountProbe.stdout.split(/\r?\n/).map((value) => value.trim()).find((value) => value.startsWith('{"ok"'));
   if (!line) throw new Error(`workspace acceptance returned no structured result: ${diagnosticText(mountProbe.stdout)}`);
-  const result = JSON.parse(line) as {
-    ok?: boolean;
-    stableTools?: number;
-    workspaceServers?: number;
-    pooledXeroloChildren?: number;
-    directAgentToolCalls?: Array<{ name?: string; isError?: boolean; valueObserved?: boolean }>;
-    xeroloProcessEvidence?: { children?: Array<unknown>; shellProcesses?: Array<unknown> };
-  };
+  const result = JSON.parse(line) as { ok?: boolean; workspaceServers?: number; mv?: { stableTools?: number; pooledChildren?: number }; mz?: { stableTools?: number; pooledChildren?: number } };
   assert.equal(result.ok, true);
-  assert.equal(result.workspaceServers, 1);
-  assert.equal(result.pooledXeroloChildren, 1);
-  assert.equal(result.stableTools, 41);
-  assert.equal(result.directAgentToolCalls?.length, 2);
-  assert.equal(result.directAgentToolCalls?.some((call) => call.isError !== false || call.valueObserved !== true), false);
-  assert.equal(result.xeroloProcessEvidence?.children?.length, 1);
-  assert.equal(result.xeroloProcessEvidence?.shellProcesses?.length, 0);
-
-  // Reuse the same app-owned runtimes and profile for a separate disposable
-  // MZ Agent generation. The selected marker retargets only this new Agent;
-  // the MV generation above remains unchanged.
-  const mzMountProbe = await runCommand(process.env.NODE_EXECUTABLE ?? 'node', [join(process.cwd(), 'scripts', 'phase2-real-mount.mjs')], {
-    cwd: neutralLandingDir,
-    env: {
-      ...safeEnv,
-      PROJECT_PATH: mzProject,
-      NEUTRAL_LANDING_DIR: neutralLandingDir,
-      PROFILE_FILE: join(dshLib, profileFile!),
-      ENVIRONMENT_MODULE: profileEnvironmentModule,
-      COMPOSITION_FILE: preparation.compositionPath,
-      [MCPORTER_RUNTIME_ENV]: preparation.mcporterRuntimeDir,
-      [RPGMAKER_MCP_RUNTIME_ENV]: preparation.rpgmakerRuntimeDir,
-      [XEROLO_RUNTIME_ENV]: preparation.xeroloRuntimeDir,
-      [JS_RUNNER_ENV]: preparation.jsRunner,
-      XEROLO_ENTRY: preparation.xeroloScript,
-      MZ_ENTRY: preparation.mzScript!,
-      RPGMAKER_ENGINE: 'mz',
-      WORKSPACE_HOST_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js'),
-      WORKSPACE_AGENT_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'agent.js')
-    },
-    platform: 'win32',
-    timeoutMs: 120_000
-  });
-  if (mzMountProbe.exitCode !== 0) throw new Error(`project-neutral DSH/MZ workspace acceptance failed: ${diagnosticText(mzMountProbe.stderr || mzMountProbe.stdout)}`);
-  const mzLine = mzMountProbe.stdout.split(/\r?\n/).map((value) => value.trim()).find((value) => value.startsWith('{"ok"'));
-  if (!mzLine) throw new Error(`MZ workspace acceptance returned no structured result: ${diagnosticText(mzMountProbe.stdout)}`);
-  const mzResult = JSON.parse(mzLine) as { ok?: boolean; engine?: string; stableTools?: number; workspaceServers?: number; pooledXeroloChildren?: number };
-  assert.equal(mzResult.ok, true);
-  assert.equal(mzResult.engine, 'mz');
-  assert.equal(mzResult.workspaceServers, 1);
-  assert.equal(mzResult.pooledXeroloChildren, 1);
-  assert.equal(mzResult.stableTools, 119);
+  assert.equal(result.workspaceServers, 2);
+  assert.equal(result.mv?.stableTools, 41);
+  assert.equal(result.mv?.pooledChildren, 1);
+  assert.equal(result.mz?.stableTools, 119);
+  assert.equal(result.mz?.pooledChildren, 1);
   console.log(diagnosticText(JSON.stringify({
     ok: true,
     gate: 'phase2-real-workspace-mcp',
@@ -211,14 +167,13 @@ try {
     neutralLandingDir,
     project,
     mcporterRuntime: mcporterRuntimeDir,
-    xeroloRuntime: xeroloRuntimeDir,
+    rpgmakerRuntime: rpgmakerRuntimeDir,
     launchEvidence: {
       neutralLandingDir,
       observedCwd: launched.cwd,
       projectArgumentCount: launched.args.filter((argument) => argument === '--project' || argument.startsWith('--project=')).length
     },
-    ...result,
-    mz: mzResult
+    ...result
   })));
 } finally {
   await rm(root, { recursive: true, force: true });

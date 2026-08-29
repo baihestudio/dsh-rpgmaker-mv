@@ -74,18 +74,18 @@ window.__ModuleLoader__.load({
       },
       {
         label: '开发插件',
-        skill: 'rpgmaker-mv',
-        prompt: '/rpgmaker-mv 先检查当前项目的插件结构和相关实现，再开发或修改下面的插件；完成后回读并验证：'
+        skill: 'rpgmaker (当前引擎)',
+        prompt: '请按当前工作空间选择的 RPG Maker 引擎读取对应 authoring Skill，先检查当前项目的插件结构和相关实现，再开发或修改下面的插件；完成后回读并验证：'
       },
       {
         label: '编辑对话与事件',
-        skill: 'rpgmaker-mv',
-        prompt: '/rpgmaker-mv 先检查当前项目的相关事件页，再编辑下面的对话、分支、触发条件或事件逻辑；完成后回读并验证：'
+        skill: 'rpgmaker (当前引擎)',
+        prompt: '请按当前工作空间选择的 RPG Maker 引擎读取对应 authoring Skill，先检查当前项目的相关事件页，再编辑下面的对话、分支、触发条件或事件逻辑；完成后回读并验证：'
       },
       {
         label: '制作美术素材',
         skill: 'image-assets',
-        prompt: '/image-assets 先确认素材用途、RPG Maker MV 目标尺寸或网格与现有风格，再制作或修改下面的美术素材：'
+        prompt: '/image-assets 先确认素材用途、当前工作空间的 RPG Maker 引擎目标尺寸或网格与现有风格，再制作或修改下面的美术素材：'
       }
     ];
 

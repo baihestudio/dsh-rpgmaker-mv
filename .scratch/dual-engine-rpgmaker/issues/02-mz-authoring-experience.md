@@ -12,3 +12,7 @@ Status: done
 - [x] A disposable MZ editing scenario completes identity read, dry-run preview, committed targeted change, reread, `validate_project`, and `validate_references` through generated DSH tools.
 - [x] The existing MZ selection research lands in the PR, and a separate future-fork document prioritizes Playtest/runtime lifecycle, atomic and transactional writes, logs/screenshots/input, bulk/localization, and compact results with value, risks, acceptance target, provenance, and upstream/product ownership for every item.
 - [x] Machine-consumed preset and skill artifacts parse and mount successfully; tests assert their contracts and roster rather than prose wording.
+
+## Whole-spec review remediation (2026-08-29)
+
+- [x] Plugin, dialogue, and image quick starts now describe the workspace-selected engine rather than hard-coding RPG Maker MV; runtime assertions cover the active prompts.

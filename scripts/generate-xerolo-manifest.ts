@@ -5,7 +5,7 @@
  * The manifest is machine-generated from the exact-pinned package's own
  * `tools/list` response (the same JSON MCP clients observe), never hand-edited.
  * It is tied mechanically to the package pin: the generator imports
- * RPGMAKER_MCP_PACKAGE / RPGMAKER_MCP_VERSION from src/rpgmaker.ts, installs
+ * RPGMAKER_MV_MCP_PACKAGE / RPGMAKER_MV_MCP_VERSION from src/rpgmaker.ts, installs
  * that exact version into a disposable directory, asks the real server for its
  * tool list, and then:
  *
@@ -13,7 +13,6 @@
  *   2. recomputes and patches XEROLO_MANIFEST_SHA256 in the bundle contract,
  *   3. machine-validates the regenerated manifest through the bundle's own
  *      verifyManifest() and validateDiscoveredTools(),
- *   4. recomputes and patches WORKSPACE_MCP_SHA256 in src/workspace-mcp.ts.
  *
  * Run `bun run scripts/generate-xerolo-manifest.ts` only when the pinned Xerolo
  * version changes or a verified upstream tool contract update must be absorbed.
@@ -29,13 +28,11 @@ import { pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 
 import { redactSensitive, withoutCredentials } from '../src/process';
-import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
-import { WORKSPACE_MCP_BUNDLE_RELATIVE, workspaceMcpBundleDigest } from '../src/workspace-mcp';
+import { RPGMAKER_MV_MCP_PACKAGE, RPGMAKER_MV_MCP_VERSION } from '../src/rpgmaker';
 
 const BUNDLE_LIB = join(import.meta.dir, '..', 'bundle', 'dsh-workspace-mcp', 'lib');
 const MANIFEST_MODULE = join(BUNDLE_LIB, 'xerolo-manifest.js');
 const CONTRACT_MODULE = join(BUNDLE_LIB, 'contract.js');
-const WORKSPACE_MCP_SRC = join(import.meta.dir, '..', 'src', 'workspace-mcp.ts');
 const EXPECTED_TOOL_COUNT = 41;
 
 interface XeroloTool {
@@ -162,7 +159,7 @@ async function discoverTools(entry: string, projectRoot: string): Promise<Xerolo
 }
 
 async function main(): Promise<void> {
-  const pin = { package: RPGMAKER_MCP_PACKAGE, version: RPGMAKER_MCP_VERSION };
+  const pin = { package: RPGMAKER_MV_MCP_PACKAGE, version: RPGMAKER_MV_MCP_VERSION };
   console.log(`generate-xerolo-manifest: pin ${pin.package}@${pin.version}`);
   if (pin.package !== '@xerolo44/rpgmaker-mv-mcp') fail(`unexpected pin package ${pin.package}`);
 
@@ -226,22 +223,8 @@ async function main(): Promise<void> {
     const discovered = contract.validateDiscoveredTools(contractTools);
     if (discovered.errors.length > 0) fail(`regenerated manifest failed live-contract validation: ${discovered.errors.join('; ')}`);
 
-    // The bundle directory digest pins the shipped prebuilt package too.
-    const bundleDir = join(import.meta.dir, '..', WORKSPACE_MCP_BUNDLE_RELATIVE);
-    const bundleDigest = await workspaceMcpBundleDigest(bundleDir);
-    const workspaceSource = await readFile(WORKSPACE_MCP_SRC, 'utf8');
-    const patchedWorkspace = workspaceSource.replace(
-      /export const WORKSPACE_MCP_SHA256 = '[0-9a-f]{64}'/,
-      `export const WORKSPACE_MCP_SHA256 = '${bundleDigest}'`
-    );
-    if (patchedWorkspace === workspaceSource && !workspaceSource.includes(`export const WORKSPACE_MCP_SHA256 = '${bundleDigest}'`)) {
-      fail('could not locate WORKSPACE_MCP_SHA256 pin in src/workspace-mcp.ts');
-    }
-    if (patchedWorkspace !== workspaceSource) await writeFile(WORKSPACE_MCP_SRC, patchedWorkspace);
-
     console.log(`generate-xerolo-manifest: wrote ${MANIFEST_MODULE}`);
     console.log(`generate-xerolo-manifest: XEROLO_MANIFEST_SHA256=${digest}`);
-    console.log(`generate-xerolo-manifest: WORKSPACE_MCP_SHA256=${bundleDigest}`);
     console.log('generate-xerolo-manifest: machine validation passed');
   } finally {
     await rm(root, { recursive: true, force: true });

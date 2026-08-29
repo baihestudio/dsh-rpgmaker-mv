@@ -95,23 +95,15 @@ export async function validateWorkspace(canonical) {
 }
 
 /** Deterministic internal server name; an engine/workspace identity, never a tool name. */
-export function privateServerName(engineOrCanonical, maybeCanonical) {
-  // Keep the historical `(canonical)` and `(canonical, 'mz')` forms useful
-  // to callers while making `(engine, canonical)` the explicit contract.
-  const firstIsEngine = ENGINE_IDS.includes(engineOrCanonical)
-  const secondIsEngine = maybeCanonical === 'mv' || maybeCanonical === 'mz'
-  const reverse = secondIsEngine && !firstIsEngine
-  const engine = maybeCanonical === undefined ? 'mv' : reverse ? maybeCanonical : engineOrCanonical
-  const canonical = maybeCanonical === undefined ? engineOrCanonical : reverse ? engineOrCanonical : maybeCanonical
+export function privateServerName(engine, canonical) {
   if (!ENGINE_IDS.includes(engine)) throw new Error(`dsh-workspace-mcp: unknown RPG Maker engine ${String(engine)}`)
+  if (typeof canonical !== 'string' || canonical.length === 0) throw new Error('dsh-workspace-mcp: canonical workspace is required')
   const digest = createHash('sha256').update(canonical).digest('hex')
   return `rpgmaker-${engine}-ws-${digest.slice(0, 12)}`
 }
 
 /** Resolve one pinned engine JavaScript entry inside the owned runtime. */
-export async function resolveEngineEntry(engineOrRuntime, maybeRuntime) {
-  const engine = maybeRuntime === undefined ? 'mv' : engineOrRuntime
-  const runtime = maybeRuntime === undefined ? engineOrRuntime : maybeRuntime
+export async function resolveEngineEntry(engine, runtime) {
   const record = RPGMAKER_ENGINES[engine]
   if (!record) throw new Error(`dsh-workspace-mcp: unknown RPG Maker engine ${String(engine)}`)
   const packageDir = join(runtime, 'node_modules', ...record.package.split('/'))
@@ -144,19 +136,11 @@ export async function resolveEngineEntry(engineOrRuntime, maybeRuntime) {
   return candidate
 }
 
-export async function resolveXeroloEntry(xeroloRuntime) {
-  return resolveEngineEntry('mv', xeroloRuntime)
-}
-
 /** The fixed stdio definition for one engine/workspace pair; nothing is model-supplied. */
-export async function buildWorkspaceDefinition(engineOrCanonical, canonicalOrPaths, pathsOrEnv, maybeEnv) {
-  const explicitEngine = typeof engineOrCanonical === 'string' && ENGINE_IDS.includes(engineOrCanonical)
-  const engine = explicitEngine ? engineOrCanonical : 'mv'
-  const canonical = explicitEngine ? canonicalOrPaths : engineOrCanonical
-  const paths = explicitEngine ? pathsOrEnv : canonicalOrPaths
-  const env = explicitEngine ? (maybeEnv ?? process.env) : (pathsOrEnv ?? process.env)
+export async function buildWorkspaceDefinition(engine, canonical, paths, env = process.env) {
   const record = RPGMAKER_ENGINES[engine]
-  const entry = await resolveEngineEntry(engine, paths.rpgmakerRuntime ?? paths.xeroloRuntime)
+  if (!record) throw new Error(`dsh-workspace-mcp: unknown RPG Maker engine ${String(engine)}`)
+  const entry = await resolveEngineEntry(engine, paths.rpgmakerRuntime)
   const command = engine === 'mv'
     ? { kind: 'stdio', command: paths.runner, args: [entry, '--project', canonical], cwd: canonical }
     : { kind: 'stdio', command: paths.runner, args: [entry], cwd: canonical }

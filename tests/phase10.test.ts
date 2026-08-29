@@ -8,9 +8,9 @@ import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION, verifyMcpor
 import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
-  XEROLO_RUNTIME_ENV
+  RPGMAKER_MCP_RUNTIME_ENV
 } from '../src/workspace-mcp';
-import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
+import { RPGMAKER_MV_MCP_PACKAGE, RPGMAKER_MV_MCP_VERSION } from '../src/rpgmaker';
 import { redactSensitive, withoutCredentials } from '../src/process';
 import { HarnessScope, createHarnessAgent, type HarnessAgent } from './fixtures/dsh-agent-harness';
 
@@ -67,8 +67,8 @@ function harnessPaths(root: string) {
 const BUNDLE_LIB = join(process.cwd(), 'bundle', 'dsh-workspace-mcp', 'lib');
 const FIXTURE_SERVER = join(process.cwd(), 'tests', 'fixtures', 'deterministic-mcp-server.mjs');
 const FAKE_MCPORTER = join(process.cwd(), 'tests', 'fixtures', 'fake-mcporter.mjs');
-const XEROLO_SERVER_TEMPLATE = join(process.cwd(), 'tests', 'fixtures', 'xerolo-fixture-server.mjs');
-const XEROLO_PACKAGE_DIR = join('node_modules', RPGMAKER_MCP_PACKAGE);
+const RPGMAKER_SERVER_TEMPLATE = join(process.cwd(), 'tests', 'fixtures', 'xerolo-fixture-server.mjs');
+const RPGMAKER_MV_PACKAGE_DIR = join('node_modules', RPGMAKER_MV_MCP_PACKAGE);
 
 /**
  * Install the test-owned fake MCPorter runtime in the exact pinned shape
@@ -95,15 +95,15 @@ async function writeFixtureMcporterRuntime(runtimeDir: string): Promise<void> {
  * an external install. The server template is a generated test double, not a
  * second manifest.
  */
-async function writeFixtureXeroloRuntime(runtimeDir: string, manifest: unknown): Promise<void> {
-  const packageDir = join(runtimeDir, XEROLO_PACKAGE_DIR);
+async function writeFixtureRpgMakerRuntime(runtimeDir: string, manifest: unknown): Promise<void> {
+  const packageDir = join(runtimeDir, RPGMAKER_MV_PACKAGE_DIR);
   await mkdir(join(packageDir, 'dist'), { recursive: true });
   await writeFile(join(packageDir, 'package.json'), JSON.stringify({
-    name: RPGMAKER_MCP_PACKAGE,
-    version: RPGMAKER_MCP_VERSION,
+    name: RPGMAKER_MV_MCP_PACKAGE,
+    version: RPGMAKER_MV_MCP_VERSION,
     bin: { 'rpgmaker-mv-mcp': 'dist/index.js' }
   }));
-  const template = await readFile(XEROLO_SERVER_TEMPLATE, 'utf8');
+  const template = await readFile(RPGMAKER_SERVER_TEMPLATE, 'utf8');
   await writeFile(
     join(packageDir, 'dist', 'index.js'),
     template.replace(
@@ -114,20 +114,20 @@ async function writeFixtureXeroloRuntime(runtimeDir: string, manifest: unknown):
 }
 
 /** Lazy test-owned fixture runtimes shared by the probe and the Agent seam. */
-let sharedFixturesPromise: Promise<{ root: string; mcporter: string; xerolo: string }> | undefined;
+let sharedFixturesPromise: Promise<{ root: string; mcporter: string; rpgmakerRuntime: string }> | undefined;
 let sharedRootForCleanup: string | undefined;
 
-function sharedFixtureRuntimes(): Promise<{ root: string; mcporter: string; xerolo: string }> {
+function sharedFixtureRuntimes(): Promise<{ root: string; mcporter: string; rpgmakerRuntime: string }> {
   sharedFixturesPromise ??= (async () => {
     const root = await temp('ws-mcp-fixture');
     sharedRootForCleanup = root;
     const paths = harnessPaths(root);
     const mcporter = join(paths.programRoot, 'runtime', 'mcporter');
     await writeFixtureMcporterRuntime(mcporter);
-    const xerolo = join(paths.programRoot, 'runtime', 'mcp');
+    const rpgmakerRuntime = join(paths.programRoot, 'runtime', 'mcp');
     const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
-    await writeFixtureXeroloRuntime(xerolo, contract.XEROLO_MANIFEST);
-    return { root, mcporter, xerolo };
+    await writeFixtureRpgMakerRuntime(rpgmakerRuntime, contract.XEROLO_MANIFEST);
+    return { root, mcporter, rpgmakerRuntime };
   })();
   return sharedFixturesPromise;
 }
@@ -422,8 +422,8 @@ describe('disposable MCPorter probe', () => {
 
         // Single-flight per-workspace acquisition: registration + listing once.
         const [acquiredA, acquiredB] = await Promise.all([
-          host.acquireWorkspaceServer(paths, canonical, definition),
-          host.acquireWorkspaceServer(paths, canonical, definition)
+          host.acquireWorkspaceServer(paths, 'mv', canonical, definition),
+          host.acquireWorkspaceServer(paths, 'mv', canonical, definition)
         ]);
         expect(acquiredA).toBe(acquiredB);
         expect(runtime.listServers()).toEqual(['rpgmaker-ws-probe']);
@@ -435,15 +435,15 @@ describe('disposable MCPorter probe', () => {
         expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(1);
 
         // Pooled calls share one process.
-        const call1 = host.canonicalMcpValue(await host.callWorkspaceTool(paths, canonical, 'shared_state', {})) as { count: number; pid: number };
-        const call2 = host.canonicalMcpValue(await host.callWorkspaceTool(paths, canonical, 'shared_state', {})) as { count: number; pid: number };
+        const call1 = host.canonicalMcpValue(await host.callWorkspaceTool(paths, 'mv', canonical, 'shared_state', {})) as { count: number; pid: number };
+        const call2 = host.canonicalMcpValue(await host.callWorkspaceTool(paths, 'mv', canonical, 'shared_state', {})) as { count: number; pid: number };
         expect(call1.count).toBe(1);
         expect(call2.count).toBe(2);
         expect(call2.pid).toBe(call1.pid);
         expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(1);
 
         // The spawned child observed the exact argv, cwd, and neutralized env.
-        await host.callWorkspaceTool(paths, canonical, 'dump_context', {});
+        await host.callWorkspaceTool(paths, 'mv', canonical, 'dump_context', {});
         const dumped = JSON.parse(await readFile(join(contextDir, 'context.json'), 'utf8')) as { argv: string[]; cwd: string; env: Record<string, string> };
         expect(dumped.argv.slice(1)).toEqual([FIXTURE_SERVER, '--context', contextDir]);
         expect(dumped.cwd).toBe(await realpath(serverCwd));
@@ -459,30 +459,30 @@ describe('disposable MCPorter probe', () => {
         expect(dumped.env.PATH).toBe(syntheticEnv.PATH);
 
         // Result normalization and MCP errors as failures.
-        const echo = await host.callWorkspaceTool(paths, canonical, 'echo', { message: 'hi' });
+        const echo = await host.callWorkspaceTool(paths, 'mv', canonical, 'echo', { message: 'hi' });
         expect(echo).toEqual({ content: [{ type: 'text', text: 'hi' }] });
         expect(host.normalizeMcpResult(echo)).toEqual({ text: 'hi', content: [{ type: 'text', text: 'hi' }], structuredContent: null });
         expect(host.canonicalMcpValue(echo)).toBe('hi');
         // MCP error results surface as failures through the normalization layer
         // the tool factory uses, while the raw pooled call resolves with them.
-        const errorRaw = await host.callWorkspaceTool(paths, canonical, 'error_tool', {});
+        const errorRaw = await host.callWorkspaceTool(paths, 'mv', canonical, 'error_tool', {});
         expect(() => host.normalizeMcpResult(errorRaw)).toThrow(/boom/);
 
         // Cancellation containment closes that server (killing its child); the
         // next call reconnects without restarting the Host runtime.
         const controller = new AbortController();
-        const slow = host.callWorkspaceTool(paths, canonical, 'slow_tool', { ms: 10_000 }, { signal: controller.signal });
+        const slow = host.callWorkspaceTool(paths, 'mv', canonical, 'slow_tool', { ms: 10_000 }, { signal: controller.signal });
         await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
         controller.abort();
         await expect(slow).rejects.toThrow(/cancelled/);
-        const reconnected = await host.callWorkspaceTool(paths, canonical, 'echo', { message: 'again' });
+        const reconnected = await host.callWorkspaceTool(paths, 'mv', canonical, 'echo', { message: 'again' });
         expect(host.canonicalMcpValue(reconnected)).toBe('again');
         expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(2);
 
         // Per-server close keeps the definition registered; the next call reconnects.
-        await host.closeWorkspaceServer(paths, canonical);
+        await host.closeWorkspaceServer(paths, 'mv', canonical);
         expect(runtime.listServers()).toEqual(['rpgmaker-ws-probe']);
-        const afterClose = await host.callWorkspaceTool(paths, canonical, 'echo', { message: 'x' });
+        const afterClose = await host.callWorkspaceTool(paths, 'mv', canonical, 'echo', { message: 'x' });
         expect(host.canonicalMcpValue(afterClose)).toBe('x');
         expect(await countLines(join(contextDir, 'started.jsonl'))).toBe(3);
 
@@ -703,7 +703,7 @@ describe('disposable MCPorter probe', () => {
 
       host.resetHostState();
       let shutdown: Promise<void> | undefined;
-      const acquisition = host.acquireWorkspaceServer(paths, canonical, definition);
+      const acquisition = host.acquireWorkspaceServer(paths, 'mv', canonical, definition);
       try {
         // Hold the fixture immediately before it establishes its child, then
         // prove Host shutdown's first Runtime close has already happened.
@@ -744,7 +744,7 @@ describe('real DSH Agent seam', () => {
       const hostBundle = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/index.js')>('index.js');
       const agentBundle = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/agent.js')>('agent.js');
       await withBundleEnv(
-        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [XEROLO_RUNTIME_ENV]: shared.xerolo, [JS_RUNNER_ENV]: process.execPath },
+        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [RPGMAKER_MCP_RUNTIME_ENV]: shared.rpgmakerRuntime, [JS_RUNNER_ENV]: process.execPath },
         async () => {
           const hostCtx = new HarnessScope('host-apply-lifecycle');
           hostBundle.apply(hostCtx);
@@ -775,7 +775,7 @@ describe('real DSH Agent seam', () => {
       await withBundleEnv(
         {
           [MCPORTER_RUNTIME_ENV]: shared.mcporter,
-          [XEROLO_RUNTIME_ENV]: shared.xerolo,
+          [RPGMAKER_MCP_RUNTIME_ENV]: shared.rpgmakerRuntime,
           [JS_RUNNER_ENV]: process.execPath,
           XEROLO_FIXTURE_TRACE: tracePath
         },
@@ -836,7 +836,7 @@ describe('real DSH Agent seam', () => {
       const expectedNames = contract.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort();
 
       await withBundleEnv(
-        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [XEROLO_RUNTIME_ENV]: shared.xerolo, [JS_RUNNER_ENV]: process.execPath },
+        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [RPGMAKER_MCP_RUNTIME_ENV]: shared.rpgmakerRuntime, [JS_RUNNER_ENV]: process.execPath },
         async () => {
           const hostCtx = new HarnessScope('host');
           hostBundle.apply(hostCtx);
@@ -953,7 +953,7 @@ describe('real DSH Agent seam', () => {
       await withBundleEnv(
         {
           [MCPORTER_RUNTIME_ENV]: shared.mcporter,
-          [XEROLO_RUNTIME_ENV]: shared.xerolo,
+          [RPGMAKER_MCP_RUNTIME_ENV]: shared.rpgmakerRuntime,
           [JS_RUNNER_ENV]: process.execPath,
           XEROLO_FIXTURE_TRACE: tracePath
         },
@@ -1051,7 +1051,7 @@ describe('real DSH Agent seam', () => {
       await withBundleEnv(
         {
           [MCPORTER_RUNTIME_ENV]: shared.mcporter,
-          [XEROLO_RUNTIME_ENV]: shared.xerolo,
+          [RPGMAKER_MCP_RUNTIME_ENV]: shared.rpgmakerRuntime,
           [JS_RUNNER_ENV]: process.execPath,
           XEROLO_FIXTURE_TRACE: tracePath,
           XEROLO_FIXTURE_FAIL_PROJECT: canonicalFailed
@@ -1115,7 +1115,7 @@ describe('real DSH Agent seam', () => {
       expect(hostBundle.inject).toEqual([]);
       expect(agentBundle.inject).toEqual(['tools']);
       await withBundleEnv(
-        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [XEROLO_RUNTIME_ENV]: shared.xerolo, [JS_RUNNER_ENV]: process.execPath },
+        { [MCPORTER_RUNTIME_ENV]: shared.mcporter, [RPGMAKER_MCP_RUNTIME_ENV]: shared.rpgmakerRuntime, [JS_RUNNER_ENV]: process.execPath },
         async () => {
           const noLoggerScope = new HarnessScope('host-without-logger');
           try {
