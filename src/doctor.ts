@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises';
 
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { verifyForgejoMcpRuntime } from './forgejo-mcp';
-import { ownedCoreutilsCommands } from './prerequisites';
+import { ownedCoreutilsCommands, verifyWindowsPrerequisites } from './prerequisites';
 import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 import { resolveExecutable, resolveWindowsPwsh } from './executable';
@@ -87,7 +87,8 @@ async function commandVersion(
   }
 }
 
-// Mirrors Microsoft coreutils-manager's manager.rs clap help and status subcommands; find/grep banners are intentionally not used as identity.
+// Non-Windows Doctor keeps its best-effort Coreutils contract locally; find/grep
+// banners are intentionally not used as identity.
 function managerContract(helpOutput: string, statusOutput: string): boolean {
   return /Manage coreutils utilities and PowerShell profiles/i.test(helpOutput)
     && /\benable\b/i.test(helpOutput)
@@ -129,115 +130,104 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
 async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: Record<string, string | undefined>, paths: ReturnType<typeof resolveHarnessPaths>): Promise<DoctorReport> {
   const runner = options.commandRunner ?? runCommand;
   const commandEnv = withoutCredentials(env);
-
-  const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform, env });
-  const coreutils = options.coreutilsExecutable ?? env.COREUTILS_MANAGER ?? await resolveExecutable('coreutils-manager', { platform, env }) ?? await resolveExecutable('coreutils', { platform, env });
-  const ownedCoreutils = await ownedCoreutilsCommands(coreutils, env);
-  const coreutilsFind = ownedCoreutils.find ?? await resolveExecutable('find', { platform, env });
-  const coreutilsGrep = ownedCoreutils.grep ?? await resolveExecutable('grep', { platform, env });
-  const git = options.gitExecutable ?? env.GIT_EXECUTABLE ?? await resolveExecutable('git', { platform, env });
-  const bun = options.bunExecutable ?? env.BUN_EXECUTABLE ?? await resolveExecutable('bun', { platform, env });
-  const node = options.nodeExecutable ?? env.NODE_EXECUTABLE ?? await resolveExecutable('node', { platform, env });
-  const npm = options.npmExecutable ?? env.NPM_EXECUTABLE ?? await resolveExecutable('npm', { platform, env });
-  const wingetPython = platform === 'win32' && env.LOCALAPPDATA
-    ? await resolveExecutable(join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe'), { platform, env })
-    : undefined;
-  const python = options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? wingetPython ?? await resolveExecutable('python', { platform, env });
-  const imageMagick = platform === 'win32' ? await resolveExecutable(options.imageMagickExecutable ?? 'magick', { platform, env }) : undefined;
-
   const checks: DoctorCheck[] = [];
-  const executablePaths: Record<string, string | undefined> = {
-    powershell: pwsh,
-    coreutilsManager: coreutils,
-    coreutilsFind,
-    coreutilsGrep,
-    git,
-    bun,
-    node,
-    npm,
-    python,
-    ...(imageMagick ? { imageMagick } : {})
-  };
-
-  const pwshVersion = await commandVersion(runner, pwsh, commandEnv);
-  const pwshParsed = versionNumbers(pwshVersion.output);
-  checks.push(check(
-    'powershell',
-    'PowerShell 7.4+',
-    pwshVersion.ok && /PowerShell\s+\d+\.\d+/i.test(pwshVersion.output) && atLeast(pwshParsed, [7, 4, 0]),
-    pwsh ? (pwshVersion.ok && pwshParsed ? `PowerShell ${pwshParsed.join('.')} at ${pwsh}` : `PowerShell at ${pwsh} is missing or older than 7.4`) : 'PowerShell 7.4+ was not found; install Microsoft.PowerShell',
-    pwsh
-  ));
-
-  const coreutilsHelp = await commandVersion(runner, coreutils, commandEnv, ['--help']);
-  const coreutilsStatus = await commandVersion(runner, coreutils, commandEnv, ['status']);
-  const coreutilsFindVersion = await commandVersion(runner, coreutilsFind, commandEnv);
-  const coreutilsGrepVersion = await commandVersion(runner, coreutilsGrep, commandEnv);
-  const coreutilsRoot = coreutilsInstallDir(coreutils);
-  const coreutilsOk = coreutilsHelp.ok && coreutilsStatus.ok
-    && managerContract(coreutilsHelp.output, coreutilsStatus.output)
-    && coreutilsFindVersion.ok && coreutilsGrepVersion.ok
-    && isWithinInstallDir(coreutilsFind, coreutilsRoot)
-    && isWithinInstallDir(coreutilsGrep, coreutilsRoot);
-  checks.push(check(
-    'coreutils',
-    'Microsoft Coreutils',
-    coreutilsOk,
-    coreutilsOk
-      ? `Microsoft Coreutils manager contract and enabled find/grep are available under ${coreutilsRoot}`
-      : 'Microsoft Coreutils manager contract and installation-relative enabled find/grep were not verified; install Microsoft.Coreutils with WinGet',
-    coreutils
-  ));
-
-  const gitVersion = await commandVersion(runner, git, commandEnv);
-  checks.push(check(
-    'git',
-    'Git',
-    gitVersion.ok && /(?:^|\r?\n)\s*git version\s+\d+\.\d+\.\d+/i.test(gitVersion.output),
-    gitVersion.ok ? `Git is available at ${git}` : 'Git was not found; install Git for Windows',
-    git
-  ));
-
-  const bunVersion = await commandVersion(runner, bun, commandEnv);
-  checks.push(check(
-    'bun',
-    'Bun',
-    bunVersion.ok && /(?:^|\r?\n)\s*\d+\.\d+\.\d+/i.test(bunVersion.output) && Boolean(versionNumbers(bunVersion.output)),
-    bunVersion.ok ? `Bun is available at ${bun}` : 'Bun was not found; install Bun and reopen the launcher',
-    bun
-  ));
+  let pwsh: string | undefined;
+  let coreutils: string | undefined;
+  let coreutilsFind: string | undefined;
+  let coreutilsGrep: string | undefined;
+  let git: string | undefined;
+  let bun: string | undefined;
+  let node: string | undefined;
+  let npm: string | undefined;
+  let python: string | undefined;
+  let imageMagick: string | undefined;
+  let executablePaths: Record<string, string | undefined>;
 
   if (platform === 'win32') {
-    const imageMagickVersion = await commandVersion(runner, imageMagick, commandEnv);
+    const prerequisites = await verifyWindowsPrerequisites({
+      platform,
+      env,
+      commandRunner: runner,
+      nodeExecutable: options.nodeExecutable,
+      npmExecutable: options.npmExecutable,
+      pythonExecutable: options.pythonExecutable,
+      bunExecutable: options.bunExecutable,
+      pwshExecutable: options.pwshExecutable,
+      gitExecutable: options.gitExecutable,
+      coreutilsExecutable: options.coreutilsExecutable,
+      imageMagickExecutable: options.imageMagickExecutable
+    });
+    checks.push(...prerequisites.checks.map((item) => check(item.id, item.label, item.ok, item.detail, item.executable)));
+    executablePaths = { ...prerequisites.executablePaths };
+    pwsh = prerequisites.executablePaths.powershell;
+    coreutils = prerequisites.executablePaths.coreutilsManager;
+    coreutilsFind = prerequisites.executablePaths.coreutilsFind;
+    coreutilsGrep = prerequisites.executablePaths.coreutilsGrep;
+    git = prerequisites.executablePaths.git;
+    bun = prerequisites.executablePaths.bun;
+    node = prerequisites.executablePaths.node;
+    npm = prerequisites.executablePaths.npm;
+    python = prerequisites.executablePaths.python;
+    imageMagick = prerequisites.executablePaths.imageMagick;
+  } else {
+    pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform, env });
+    coreutils = options.coreutilsExecutable ?? env.COREUTILS_MANAGER ?? await resolveExecutable('coreutils-manager', { platform, env }) ?? await resolveExecutable('coreutils', { platform, env });
+    const ownedCoreutils = await ownedCoreutilsCommands(coreutils, env);
+    coreutilsFind = ownedCoreutils.find ?? await resolveExecutable('find', { platform, env });
+    coreutilsGrep = ownedCoreutils.grep ?? await resolveExecutable('grep', { platform, env });
+    git = options.gitExecutable ?? env.GIT_EXECUTABLE ?? await resolveExecutable('git', { platform, env });
+    bun = options.bunExecutable ?? env.BUN_EXECUTABLE ?? await resolveExecutable('bun', { platform, env });
+    node = options.nodeExecutable ?? env.NODE_EXECUTABLE ?? await resolveExecutable('node', { platform, env });
+    npm = options.npmExecutable ?? env.NPM_EXECUTABLE ?? await resolveExecutable('npm', { platform, env });
+    python = options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? await resolveExecutable('python', { platform, env });
+    executablePaths = { powershell: pwsh, coreutilsManager: coreutils, coreutilsFind, coreutilsGrep, git, bun, node, npm, python };
+
+    const pwshVersion = await commandVersion(runner, pwsh, commandEnv);
+    const pwshParsed = versionNumbers(pwshVersion.output);
     checks.push(check(
-      'imagemagick',
-      'ImageMagick 7',
-      imageMagickVersion.ok && /ImageMagick\s+\d+\.\d+/i.test(imageMagickVersion.output),
-      imageMagickVersion.ok && /ImageMagick\s+\d+\.\d+/i.test(imageMagickVersion.output) ? `ImageMagick is available at ${imageMagick}` : 'ImageMagick was not verified; run Install.cmd to install ImageMagick.ImageMagick with WinGet',
-      imageMagick
+      'powershell',
+      'PowerShell 7.4+',
+      pwshVersion.ok && /PowerShell\s+\d+\.\d+/i.test(pwshVersion.output) && atLeast(pwshParsed, [7, 4, 0]),
+      pwsh ? (pwshVersion.ok && pwshParsed ? `PowerShell ${pwshParsed.join('.')} at ${pwsh}` : `PowerShell at ${pwsh} is missing or older than 7.4`) : 'PowerShell 7.4+ was not found; install Microsoft.PowerShell',
+      pwsh
     ));
 
-    const pythonVersion = await commandVersion(runner, python, commandEnv);
-    const pythonParsed = versionNumbers(pythonVersion.output);
+    const coreutilsHelp = await commandVersion(runner, coreutils, commandEnv, ['--help']);
+    const coreutilsStatus = await commandVersion(runner, coreutils, commandEnv, ['status']);
+    const coreutilsFindVersion = await commandVersion(runner, coreutilsFind, commandEnv);
+    const coreutilsGrepVersion = await commandVersion(runner, coreutilsGrep, commandEnv);
+    const coreutilsRoot = coreutilsInstallDir(coreutils);
+    const coreutilsOk = coreutilsHelp.ok && coreutilsStatus.ok
+      && managerContract(coreutilsHelp.output, coreutilsStatus.output)
+      && coreutilsFindVersion.ok && coreutilsGrepVersion.ok
+      && isWithinInstallDir(coreutilsFind, coreutilsRoot)
+      && isWithinInstallDir(coreutilsGrep, coreutilsRoot);
     checks.push(check(
-      'python',
-      'Python 3.11+',
-      pythonVersion.ok && /(?:^|\r?\n)\s*Python\s+\d+\.\d+/i.test(pythonVersion.output) && atLeast(pythonParsed, [3, 11, 0]),
-      pythonVersion.ok && pythonParsed ? `Python ${pythonParsed.join('.')} is available at ${python}` : 'Python 3.11+ was not verified; run Install.cmd to install Python.Python.3.13 with WinGet',
-      python
+      'coreutils',
+      'Microsoft Coreutils',
+      coreutilsOk,
+      coreutilsOk
+        ? `Microsoft Coreutils manager contract and enabled find/grep are available under ${coreutilsRoot}`
+        : 'Microsoft Coreutils manager contract and installation-relative enabled find/grep were not verified; install Microsoft.Coreutils with WinGet',
+      coreutils
     ));
 
-    const nodeVersion = await commandVersion(runner, node, commandEnv);
-    const nodeLts = await commandVersion(runner, node, commandEnv, ['-p', 'process.release.lts']);
-    const npmVersion = await commandVersion(runner, npm, commandEnv);
-    const nodeParsed = versionNumbers(nodeVersion.output);
-    const nodeLtsName = nodeLts.output.trim().split(/\r?\n/).find(Boolean);
+    const gitVersion = await commandVersion(runner, git, commandEnv);
     checks.push(check(
-      'node',
-      'Node.js LTS 18+ and npm',
-      nodeVersion.ok && /(?:^|\r?\n)\s*v\d+\.\d+\.\d+/i.test(nodeVersion.output) && Boolean(nodeParsed) && atLeast(nodeParsed, [18, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && /(?:^|\r?\n)\s*v?\d+\.\d+\.\d+/i.test(npmVersion.output) && Boolean(versionNumbers(npmVersion.output)),
-      nodeVersion.ok && npmVersion.ok ? `Node.js LTS ${nodeParsed?.join('.')} (${nodeLtsName}) and npm ${versionNumbers(npmVersion.output)?.join('.')}` : 'Node.js LTS and npm were not both verified; install OpenJS.NodeJS.LTS',
-      node
+      'git',
+      'Git',
+      gitVersion.ok && /(?:^|\r?\n)\s*git version\s+\d+\.\d+\.\d+/i.test(gitVersion.output),
+      gitVersion.ok ? `Git is available at ${git}` : 'Git was not found; install Git for Windows',
+      git
+    ));
+
+    const bunVersion = await commandVersion(runner, bun, commandEnv);
+    checks.push(check(
+      'bun',
+      'Bun',
+      bunVersion.ok && /(?:^|\r?\n)\s*\d+\.\d+\.\d+/i.test(bunVersion.output) && Boolean(versionNumbers(bunVersion.output)),
+      bunVersion.ok ? `Bun is available at ${bun}` : 'Bun was not found; install Bun and reopen the launcher',
+      bun
     ));
   }
 
