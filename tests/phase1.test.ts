@@ -634,6 +634,20 @@ describe('doctor and launcher seams', () => {
     }
   });
 
+  test('CLI rejects Release ZIP commands outside Windows', async () => {
+    let stdout = '';
+    let stderr = '';
+    const code = await runCli(['release-zip'], {
+      platform: 'linux',
+      io: {
+        stdout: { write: (text) => { stdout += text; } },
+        stderr: { write: (text) => { stderr += text; } }
+      }
+    });
+    expect(code).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('supported on Windows only');
+  });
 
   test('Windows .cmd DSH shims are invoked through cmd.exe without using the project path as command text', () => {
     const command = String.raw`C:\Program Files\DSH\dsh.cmd`;

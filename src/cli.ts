@@ -166,7 +166,7 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
   }
 
   try {
-    if (parsed.command !== 'release-zip' && (dependencies.platform ?? process.platform) !== 'win32') {
+    if ((dependencies.platform ?? process.platform) !== 'win32') {
       throw new Error('RPG Maker Agent is supported on Windows only.');
     }
     if (parsed.command === 'bootstrap') {
