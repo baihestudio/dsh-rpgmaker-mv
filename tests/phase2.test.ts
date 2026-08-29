@@ -322,16 +322,6 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
             dependencies: {},
             bundles: [],
             packages: [],
-            workspaceMcpBundle: {
-              valid: true,
-              errors: [],
-              packageDir: join(options.programRoot ?? root, 'bundle', 'dsh-workspace-mcp'),
-              packageVersion: '0.1.0',
-              bundleOccurrences: 1,
-              entrypoint: join(root, 'bundle', 'dsh-workspace-mcp', 'lib', 'index.js'),
-              ownedPath: true,
-              sha256: 'fixture'
-            },
             materialized: false
           };
         },

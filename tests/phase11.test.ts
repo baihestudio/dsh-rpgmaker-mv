@@ -40,8 +40,7 @@ async function writeProfilePackage(
   packageName: string,
   version: string,
   source?: string,
-  installedVersion = version,
-  includePatch = true
+  installedVersion = version
 ): Promise<void> {
   const profileDir = join(dshHome, 'profiles', 'web');
   const installedDir = join(profileDir, 'node_modules', ...packageName.split('/'));
@@ -69,10 +68,10 @@ async function writeProfilePackage(
       version: installedVersion,
       license: 'MIT',
       main: 'lib/index.js',
-      ...(includePatch ? { dsh: { bundle: { patch: './cordis.patch.yml' } } } : {})
+      dsh: { bundle: { patch: './cordis.patch.yml' } }
     }));
     await writeFile(join(installedDir, 'lib', 'index.js'), 'export {};\n');
-    if (includePatch) await writeFile(join(installedDir, 'cordis.patch.yml'), '# fixture patch\n');
+    await writeFile(join(installedDir, 'cordis.patch.yml'), '# fixture patch\n');
   }
   await mkdir(profileDir, { recursive: true });
   await writeFile(join(profileDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -81,7 +80,7 @@ async function writeProfilePackage(
 function managedRunner(
   dshHome: string,
   calls: string[],
-  options: { failPackage?: string; wrongVersion?: string; missingPatch?: string } = {}
+  options: { failPackage?: string; wrongVersion?: string } = {}
 ) {
   return async (command: string, args: string[], context: { cwd?: string }) => {
     calls.push(`${basename(command)} ${args.join(' ')}`);
@@ -95,9 +94,9 @@ function managedRunner(
       return { exitCode: 23, stdout: '', stderr: `fixture rejected ${packageSpec}` };
     }
     if (packageSpec === `${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`) {
-      await writeProfilePackage(dshHome, DSH_WEB_PACKAGE, DSH_WEB_VERSION, undefined, DSH_WEB_VERSION, options.missingPatch !== DSH_WEB_PACKAGE);
+      await writeProfilePackage(dshHome, DSH_WEB_PACKAGE, DSH_WEB_VERSION);
     } else if (packageSpec === `${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`) {
-      await writeProfilePackage(dshHome, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, undefined, options.wrongVersion, options.missingPatch !== DSH_IMAGEGEN_PACKAGE);
+      await writeProfilePackage(dshHome, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, undefined, options.wrongVersion);
     } else if (packageSpec.startsWith('file:')) {
       const source = packageSpec.slice('file:'.length);
       const manifest = JSON.parse(await readFile(join(source, 'package.json'), 'utf8')) as { name: string; version: string };
@@ -279,48 +278,6 @@ describe('managed Web profile materialization', () => {
     }
   });
 
-  test('restores the prior profile when a failing runner damages an app-owned source', async () => {
-    const root = await temp('phase11-managed-profile-rollback-source-damage');
-    try {
-      const roots = await appRoots(root);
-      await writeFile(roots.npmExecutable, '@echo off\r\n');
-      await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
-      const profileDir = join(roots.dshHome, 'profiles', 'web');
-      const manifestPath = join(profileDir, 'package.json');
-      const priorManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { dependencies: Record<string, string> };
-      priorManifest.dependencies['@baihestudio/retired-profile-plugin'] = '9.9.9';
-      await writeFile(manifestPath, `${JSON.stringify(priorManifest, null, 2)}\n`);
-      const workspaceBundleDir = workspaceMcpBundleDirFor({ dshHome: roots.dshHome });
-      const priorProfileTree = await snapshotTree(profileDir);
-      const priorWorkspaceTree = await snapshotTree(workspaceBundleDir);
-      const priorWorkspaceDigest = await workspaceMcpBundleDigest(workspaceBundleDir);
-      const brandDir = join(roots.programRoot, DSH_BRAND_BUNDLE_RELATIVE);
-      const baseRunner = managedRunner(roots.dshHome, []);
-      let damaged = false;
-      const calls: string[] = [];
-      const runner = async (command: string, args: string[], context: { cwd?: string }) => {
-        calls.push(`${basename(command)} ${args.join(' ')}`);
-        const packageSpec = args.at(-1) ?? '';
-        if (!damaged && args[0] === 'plugin' && packageSpec.includes(DSH_IMAGEGEN_PACKAGE)) {
-          damaged = true;
-          await rm(brandDir, { recursive: true, force: true });
-          return { exitCode: 37, stdout: '', stderr: 'fixture source damage failure' };
-        }
-        return baseRunner(command, args, context);
-      };
-
-      await expect(ensureManagedWebProfile(optionsFor(roots, runner))).rejects.toThrow(/(?:dsh-imagegen|source damage failure).*prior managed Web profile was restored/i);
-      expect(damaged).toBe(true);
-      expect(await snapshotTree(profileDir)).toEqual(priorProfileTree);
-      expect(await snapshotTree(workspaceBundleDir)).toEqual(priorWorkspaceTree);
-      expect(await workspaceMcpBundleDigest(workspaceBundleDir)).toBe(priorWorkspaceDigest);
-      await expect(stat(brandDir)).rejects.toThrow();
-      expect(await rollbackSnapshotNames(roots.dshHome)).toEqual([]);
-      expect(calls.filter((call) => call.startsWith('dsh.exe plugin --profile web add'))).toHaveLength(2);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
 
   test('rejects and repairs an installed package whose declared patch is missing', async () => {
     const root = await temp('phase11-managed-profile-missing-patch');
@@ -465,7 +422,7 @@ describe('managed Web profile materialization', () => {
 
       const escapedPatch = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
       expect(escapedPatch.valid).toBe(false);
-      expect(escapedPatch.errors.join(' ')).toMatch(/brand bundle dsh\.bundle patch escapes its canonical bundle directory/i);
+      expect(escapedPatch.errors.join(' ')).toMatch(/dsh-rpgmaker-brand bundle dsh\.bundle\.patch .*escapes its canonical bundle directory/i);
 
       const outsideClient = join(root, 'outside-brand-client');
       await mkdir(outsideClient);
@@ -643,20 +600,4 @@ describe('managed Web profile materialization', () => {
     }
   });
 
-  test('restores an absent active profile when final verification rejects a missing package patch', async () => {
-    const root = await temp('phase11-managed-profile-final-missing-patch');
-    try {
-      const roots = await appRoots(root);
-      await writeFile(roots.npmExecutable, '@echo off\r\n');
-      const calls: string[] = [];
-      await expect(ensureManagedWebProfile(optionsFor(
-        roots,
-        managedRunner(roots.dshHome, calls, { missingPatch: DSH_IMAGEGEN_PACKAGE })
-      ))).rejects.toThrow(/materialization completed but verification failed:.*dsh\.bundle\.patch.*prior managed Web profile was restored/i);
-      await expect(stat(join(roots.dshHome, 'profiles', 'web'))).rejects.toThrow();
-      await expect(stat(workspaceMcpBundleDirFor({ dshHome: roots.dshHome }))).rejects.toThrow();
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
 });

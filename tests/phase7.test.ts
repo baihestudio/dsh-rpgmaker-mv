@@ -12,11 +12,11 @@ import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgej
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, RELEASE_ENTRIES, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { PNPM_VERSION } from '../src/profile';
-import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, DSH_WEB_PACKAGE, DSH_WEB_VERSION, MANAGED_WEB_PROFILE_BUNDLE_NAMES } from '../src/managed-web-profile';
+import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, DSH_WEB_PACKAGE, DSH_WEB_VERSION, MANAGED_WEB_PROFILE_BUNDLE_NAMES, verifyManagedWebProfile } from '../src/managed-web-profile';
 import { findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
-import { JS_RUNNER_ENV, XEROLO_RUNTIME_ENV, verifyWorkspaceMcpBundle, WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
+import { JS_RUNNER_ENV, XEROLO_RUNTIME_ENV, WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
 import { installWindowsPrerequisites, PrerequisiteConsentError, verifyWindowsPrerequisites } from '../src/prerequisites';
 import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
@@ -810,17 +810,7 @@ describe('Windows release gate foundations', () => {
           profileDir: join(dshHome, 'profiles', 'web'),
           dependencies: {},
           bundles: [],
-          packages: [],
-          workspaceMcpBundle: {
-            valid: true,
-            errors: [],
-            packageDir: join(dshHome, 'rpgmaker-mv', 'bundle', 'dsh-workspace-mcp'),
-            packageVersion: '0.1.0',
-            bundleOccurrences: 1,
-            entrypoint: join(dshHome, 'rpgmaker-mv', 'bundle', 'dsh-workspace-mcp', 'lib', 'index.js'),
-            ownedPath: true,
-            sha256: 'fixture'
-          }
+          packages: []
         })
       });
       expect(report.ok).toBe(true);
@@ -1797,7 +1787,6 @@ describe('Windows release gate foundations', () => {
       } as const;
 
       const firstPreparation = await prepareRpgMakerLaunch(launchOptions);
-      expect(firstPreparation.workspaceMcpBundle.valid).toBe(true);
       expect(firstPreparation.managedWebProfile.valid).toBe(true);
       expect(firstPreparation.managedWebProfile.packages).toHaveLength(4);
       expect(firstPreparation.managedWebProfile.materialized).toBe(false);
@@ -1805,16 +1794,15 @@ describe('Windows release gate foundations', () => {
       expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', '@anionex', 'dsh-vision-toolkit')).exists()).toBe(false);
       const profilePackage = join(state, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
       await rm(profilePackage, { recursive: true, force: true });
-      const broken = await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') });
+      const broken = await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') });
       expect(broken.valid).toBe(false);
       expect(broken.errors.join(' ')).toMatch(/installed profile package/i);
 
       const repairedPreparation = await prepareRpgMakerLaunch(launchOptions);
-      expect(repairedPreparation.workspaceMcpBundle.valid).toBe(true);
       expect(repairedPreparation.managedWebProfile.valid).toBe(true);
       expect(repairedPreparation.managedWebProfile.materialized).toBe(true);
       expect(repairedPreparation.managedWebProfile.packages).toHaveLength(4);
-      expect((await verifyWorkspaceMcpBundle({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') })).valid).toBe(true);
+      expect((await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') })).valid).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

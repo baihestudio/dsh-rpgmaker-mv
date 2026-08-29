@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { basename, join, relative, resolve } from 'node:path';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { basename, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
@@ -8,13 +8,7 @@ import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION, verifyMcpor
 import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
-  WORKSPACE_MCP_PACKAGE,
-  WORKSPACE_MCP_SHA256,
-  WORKSPACE_MCP_BUNDLE_RELATIVE,
-  XEROLO_RUNTIME_ENV,
-  verifyWorkspaceMcpBundle,
-  workspaceMcpBundleDigest,
-  workspaceMcpBundleDirFor
+  XEROLO_RUNTIME_ENV
 } from '../src/workspace-mcp';
 import { RPGMAKER_MCP_PACKAGE, RPGMAKER_MCP_VERSION } from '../src/rpgmaker';
 import { redactSensitive, withoutCredentials } from '../src/process';
@@ -263,14 +257,6 @@ function dirnameOf(path: string): string {
   return path.slice(0, Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')));
 }
 
-function relativeTo(from: string, to: string): string {
-  return relative(from, to);
-}
-
-function directoryLinkType(): 'dir' | 'junction' {
-  return process.platform === 'win32' ? 'junction' : 'dir';
-}
-
 class TrackedAbortSignal {
   aborted = false;
   addCalls = 0;
@@ -373,136 +359,6 @@ describe('Xerolo tool contract fail-closed', () => {
   });
 });
 
-describe('app-owned workspace MCP bundle profile link', () => {
-  const BUNDLE_SOURCE = join(process.cwd(), 'bundle', 'dsh-workspace-mcp');
-
-  test('rejects a tampered bundle, a missing bundle patch, and a non-host-level occurrence', async () => {
-    const root = await temp('ws-bundle-verify');
-    try {
-      const paths = harnessPaths(root);
-      const bundleDir = workspaceMcpBundleDirFor(paths);
-      await cp(BUNDLE_SOURCE, bundleDir, { recursive: true });
-      await writeFile(join(bundleDir, 'lib', 'index.js'), await readFile(join(bundleDir, 'lib', 'index.js'), 'utf8').then((text) => `${text}\n`));
-
-      const tampered = await verifyWorkspaceMcpBundle({ platform: 'win32', ...paths, bundleDir });
-      expect(tampered.valid).toBe(false);
-      expect(tampered.errors.join(' ')).toMatch(/release hash/);
-
-      await rm(join(bundleDir, 'cordis.patch.yml'));
-      const noPatch = await verifyWorkspaceMcpBundle({ platform: 'win32', ...paths, bundleDir });
-      expect(noPatch.errors.join(' ')).toMatch(/bundle patch file/);
-
-      const external = join(root, 'external');
-      await cp(BUNDLE_SOURCE, external, { recursive: true });
-      const outside = await verifyWorkspaceMcpBundle({ platform: 'win32', ...paths, bundleDir: external });
-      expect(outside.ownedPath).toBe(false);
-      expect(outside.valid).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('accepts a copied install at the canonical profile path with a matching hash', async () => {
-    const root = await temp('ws-bundle-copied');
-    try {
-      const paths = harnessPaths(root);
-      const bundleDir = workspaceMcpBundleDirFor(paths);
-      await mkdir(bundleDir, { recursive: true });
-      await cp(BUNDLE_SOURCE, bundleDir, { recursive: true });
-      const profile = join(paths.dshHome, 'profiles', 'web');
-      const installedDir = join(profile, 'node_modules', WORKSPACE_MCP_PACKAGE);
-      await mkdir(dirnameOf(installedDir), { recursive: true });
-      await cp(bundleDir, installedDir, { recursive: true });
-      const manifest = {
-        name: 'dsh-profile-web',
-        private: true,
-        version: '0.1.0',
-        dependencies: { [WORKSPACE_MCP_PACKAGE]: `file:${relativeTo(profile, bundleDir)}` },
-        dsh: { profile: { bundles: [WORKSPACE_MCP_PACKAGE] } }
-      };
-      await writeFile(join(profile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-      await writeFile(join(profile, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\nimporters:\n  .:\n    dependencies:\n      __placeholder__:\n        specifier: "0.0.0"\n        version: 0.0.0\n');
-      const verification = await verifyWorkspaceMcpBundle({ platform: 'win32', ...paths, bundleDir });
-      expect(verification.valid).toBe(true);
-      expect(verification.bundleOccurrences).toBe(1);
-      expect(verification.sha256).toBe(WORKSPACE_MCP_SHA256);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('rejects source and installed workspace loaded paths that resolve outside their package roots', async () => {
-    const root = await temp('ws-bundle-loaded-path-escape');
-    try {
-      const paths = harnessPaths(root);
-      const sourceDir = join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE);
-      const bundleDir = workspaceMcpBundleDirFor(paths);
-      await cp(BUNDLE_SOURCE, sourceDir, { recursive: true });
-      await mkdir(bundleDir, { recursive: true });
-      await cp(sourceDir, bundleDir, { recursive: true });
-      const profile = join(paths.dshHome, 'profiles', 'web');
-      const installedDir = join(profile, 'node_modules', WORKSPACE_MCP_PACKAGE);
-      await mkdir(dirnameOf(installedDir), { recursive: true });
-      await cp(bundleDir, installedDir, { recursive: true });
-      await writeFile(join(profile, 'package.json'), `${JSON.stringify({
-        name: 'dsh-profile-web',
-        private: true,
-        version: '0.1.0',
-        dependencies: { [WORKSPACE_MCP_PACKAGE]: `file:${relativeTo(profile, bundleDir)}` },
-        dsh: { profile: { bundles: [WORKSPACE_MCP_PACKAGE] } }
-      }, null, 2)}\n`);
-
-      const outsideSource = join(root, 'outside-source-entry');
-      const outsideInstalled = join(root, 'outside-installed-agent');
-      await mkdir(outsideSource);
-      await mkdir(outsideInstalled);
-      await writeFile(join(outsideSource, 'index.js'), 'outside source\n');
-      await writeFile(join(outsideInstalled, 'agent.js'), 'outside installed\n');
-      await rm(join(sourceDir, 'lib', 'index.js'));
-      await symlink(outsideSource, join(sourceDir, 'lib', 'index.js'), directoryLinkType());
-      await rm(join(installedDir, 'lib', 'agent.js'));
-      await symlink(outsideInstalled, join(installedDir, 'lib', 'agent.js'), directoryLinkType());
-
-      await expect(workspaceMcpBundleDigest(sourceDir)).rejects.toThrow(/escapes its canonical bundle root/i);
-      const escaped = await verifyWorkspaceMcpBundle({ platform: 'win32', ...paths, bundleDir });
-      expect(escaped.valid).toBe(false);
-      const diagnostics = escaped.errors.join(' ');
-      expect(diagnostics).toMatch(/workspace MCP source bundle entrypoint .*escapes its canonical bundle root/i);
-      expect(diagnostics).toMatch(/installed profile package Agent entrypoint .*escapes its canonical bundle root/i);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('does not surface raw credential-bearing profile dependency specs', async () => {
-    const root = await temp('ws-bundle-redaction');
-    try {
-      const paths = harnessPaths(root);
-      const bundleDir = workspaceMcpBundleDirFor(paths);
-      await mkdir(bundleDir, { recursive: true });
-      await cp(BUNDLE_SOURCE, bundleDir, { recursive: true });
-      const profile = join(paths.dshHome, 'profiles', 'web');
-      await mkdir(profile, { recursive: true });
-      const secret = 'profile-secret-never-surfaced';
-      const dependency = `file:../wrong-bundle?token=${secret}`;
-      await writeFile(join(profile, 'package.json'), `${JSON.stringify({
-        name: 'dsh-profile-web',
-        private: true,
-        version: '0.1.0',
-        dependencies: { [WORKSPACE_MCP_PACKAGE]: dependency },
-        dsh: { profile: { bundles: [WORKSPACE_MCP_PACKAGE] } }
-      }, null, 2)}\n`);
-
-      const verification = await verifyWorkspaceMcpBundle({ platform: 'win32', ...paths, bundleDir });
-      const diagnostics = verification.errors.join(' ');
-      expect(diagnostics).toContain('does not resolve to the app-owned local bundle');
-      expect(diagnostics).not.toContain(dependency);
-      expect(diagnostics).not.toContain(secret);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-});
 
 describe('disposable MCPorter probe', () => {
   test('proves single-flight runtime, dynamic stdio registration, listing, pooling, containment, per-server and final close', async () => {

@@ -13,8 +13,7 @@ import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
   XEROLO_RUNTIME_ENV,
-  WORKSPACE_MCP_AGENT_ROW_ID,
-  type WorkspaceMcpBundleVerification
+  WORKSPACE_MCP_AGENT_ROW_ID
 } from './workspace-mcp';
 import { ensureManagedWebProfile, type ManagedWebProfileOptions, type ManagedWebProfileResult } from './managed-web-profile';
 
@@ -63,7 +62,6 @@ export interface RpgMakerLaunchPreparation {
   compositionPath: string;
   agentPreset: string;
   managedWebProfile: ManagedWebProfileResult;
-  workspaceMcpBundle: WorkspaceMcpBundleVerification;
 }
 
 export interface RpgMakerPresetDeploymentOptions extends PathOptions {
@@ -737,8 +735,7 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
     xeroloScript: mcp.executable,
     jsRunner,
     ...presets,
-    managedWebProfile,
-    workspaceMcpBundle: managedWebProfile.workspaceMcpBundle
+    managedWebProfile
   };
 }
 

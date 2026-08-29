@@ -1,22 +1,22 @@
-import { cp, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve, win32 } from 'node:path';
+import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, resolve, sep, win32 } from 'node:path';
 
 import { findDshExecutable } from './bootstrap';
 import { resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { isRegularFile } from './files';
 import { withHarnessOperationLock } from './lock';
 import { commandFailure, redactSensitive, runCommand, type CommandRunner } from './process';
 import {
-  verifyWorkspaceMcpBundle,
-  verifyWorkspaceMcpSource,
+  defaultWorkspaceMcpBundleDir,
+  workspaceMcpBundleDigest,
   workspaceMcpBundleDirFor,
+  WORKSPACE_MCP_AGENT_ENTRYPOINT,
+  WORKSPACE_MCP_BUNDLE_PATCH,
+  WORKSPACE_MCP_BUNDLE_RELATIVE,
+  WORKSPACE_MCP_LICENSE,
   WORKSPACE_MCP_PACKAGE,
+  WORKSPACE_MCP_SHA256,
   WORKSPACE_MCP_VERSION,
-  canonicalExistingPath,
-  canonicalPath,
-  isRegularFile,
-  pathIsStrictlyWithin,
-  pathIsWithin,
-  type WorkspaceMcpBundleVerification
 } from './workspace-mcp';
 import {
   pluginEnvironment,
@@ -66,7 +66,6 @@ export interface ManagedWebProfileVerification {
   dependencies: Record<string, string>;
   bundles: string[];
   packages: ManagedWebPackageVerification[];
-  workspaceMcpBundle: WorkspaceMcpBundleVerification;
 }
 
 export interface ManagedWebProfileResult extends ManagedWebProfileVerification {
@@ -91,13 +90,31 @@ interface DesiredPackage {
   packageName: string;
   version: string;
   source?: 'brand' | 'workspace';
+  license?: string;
+  patch?: string;
+  requiredFiles?: readonly string[];
+  sha256?: string;
 }
 
 const DESIRED_PACKAGES: readonly DesiredPackage[] = [
   { packageName: DSH_WEB_PACKAGE, version: DSH_WEB_VERSION },
   { packageName: DSH_IMAGEGEN_PACKAGE, version: DSH_IMAGEGEN_VERSION },
-  { packageName: DSH_BRAND_PACKAGE, version: DSH_BRAND_VERSION, source: 'brand' },
-  { packageName: WORKSPACE_MCP_PACKAGE, version: WORKSPACE_MCP_VERSION, source: 'workspace' }
+  {
+    packageName: DSH_BRAND_PACKAGE,
+    version: DSH_BRAND_VERSION,
+    source: 'brand',
+    patch: './cordis.patch.yml',
+    requiredFiles: ['lib/client.js']
+  },
+  {
+    packageName: WORKSPACE_MCP_PACKAGE,
+    version: WORKSPACE_MCP_VERSION,
+    source: 'workspace',
+    license: WORKSPACE_MCP_LICENSE,
+    patch: WORKSPACE_MCP_BUNDLE_PATCH,
+    requiredFiles: [WORKSPACE_MCP_AGENT_ENTRYPOINT],
+    sha256: WORKSPACE_MCP_SHA256
+  }
 ] as const;
 
 export const MANAGED_WEB_PROFILE_PACKAGE_NAMES = DESIRED_PACKAGES.map(({ packageName }) => packageName) as readonly string[];
@@ -126,6 +143,49 @@ async function exists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Resolve an existing path, including symlinked ancestors of a missing leaf. */
+async function canonicalPath(path: string): Promise<string> {
+  const absolute = resolve(path);
+  try {
+    return await realpath(absolute);
+  } catch {
+    const missing: string[] = [];
+    let cursor = absolute;
+    while (true) {
+      const parent = dirname(cursor);
+      if (parent === cursor) return absolute;
+      missing.unshift(basename(cursor));
+      cursor = parent;
+      try {
+        return join(await realpath(cursor), ...missing);
+      } catch {
+        // Continue until an existing ancestor can be canonicalized.
+      }
+    }
+  }
+}
+
+async function canonicalExistingPath(path: string): Promise<string | undefined> {
+  try {
+    return await realpath(path);
+  } catch {
+    return undefined;
+  }
+}
+
+function pathIsWithin(parent: string, child: string, platform: string): boolean {
+  const parentKey = platform === 'win32' ? parent.toLowerCase() : parent;
+  const childKey = platform === 'win32' ? child.toLowerCase() : child;
+  const prefix = parentKey.endsWith(sep) ? parentKey : `${parentKey}${sep}`;
+  return childKey === parentKey || childKey.startsWith(prefix);
+}
+
+function pathIsStrictlyWithin(parent: string, child: string, platform: string): boolean {
+  const parentKey = platform === 'win32' ? parent.toLowerCase() : parent;
+  const childKey = platform === 'win32' ? child.toLowerCase() : child;
+  return childKey !== parentKey && pathIsWithin(parent, child, platform);
 }
 
 function packageDir(profileDir: string, packageName: string): string {
@@ -275,44 +335,9 @@ async function verifyBundlePackage(
   if (!installedExists) {
     packageErrors.push(`installed profile package ${desired.packageName} was not found under the ${MANAGED_WEB_PROFILE} profile`);
   } else {
-    const installedManifest = await readJson(join(installedReal, 'package.json'));
-    const installedName = typeof installedManifest?.name === 'string' ? installedManifest.name : undefined;
-    installedVersion = typeof installedManifest?.version === 'string' ? installedManifest.version : undefined;
-    if (installedName !== desired.packageName || installedVersion !== desired.version) {
-      packageErrors.push(`installed profile package identity is ${installedName ?? 'missing'}@${installedVersion ?? 'missing'}, expected ${desired.packageName}@${desired.version}`);
-    }
-    const main = typeof installedManifest?.main === 'string' ? installedManifest.main : undefined;
-    const mainPath = main ? resolve(installedReal, main) : undefined;
-    const mainTarget = mainPath ? await canonicalExistingPath(mainPath) : undefined;
-    if (!main || !mainPath || !mainTarget) {
-      packageErrors.push(`installed profile package entrypoint ${main ?? 'missing'} was not found`);
-    } else if (!pathIsWithin(installedReal, mainTarget, platform)) {
-      packageErrors.push(`installed profile package ${desired.packageName} entrypoint ${main} escapes its canonical package directory`);
-    } else if (!(await isRegularFile(mainPath))) {
-      packageErrors.push(`installed profile package entrypoint ${main} is not a regular file`);
-    }
-    const bundle = asObject(asObject(installedManifest?.dsh)?.bundle);
-    const patch = typeof bundle?.patch === 'string' ? bundle.patch : undefined;
-    const patchPath = patch ? resolve(installedReal, patch) : undefined;
-    const patchTarget = patchPath ? await canonicalExistingPath(patchPath) : undefined;
-    if (!patch || !patchPath || !patchTarget) {
-      packageErrors.push(`installed profile package ${desired.packageName} dsh.bundle.patch ${patch ?? 'missing'} was not found`);
-    } else if (!pathIsWithin(installedReal, patchTarget, platform)) {
-      packageErrors.push(`installed profile package ${desired.packageName} dsh.bundle.patch ${patch} escapes its canonical package directory`);
-    } else if (!(await isRegularFile(patchPath))) {
-      packageErrors.push(`installed profile package ${desired.packageName} dsh.bundle.patch ${patch} is not a regular file`);
-    }
-    if (desired.source === 'brand') {
-      const clientPath = join(installedReal, 'lib', 'client.js');
-      const clientTarget = await canonicalExistingPath(clientPath);
-      if (!clientTarget) {
-        packageErrors.push(`installed profile package ${desired.packageName} client entrypoint lib/client.js was not found`);
-      } else if (!pathIsWithin(installedReal, clientTarget, platform)) {
-        packageErrors.push(`installed profile package ${desired.packageName} client entrypoint lib/client.js escapes its canonical package directory`);
-      } else if (!(await isRegularFile(clientPath))) {
-        packageErrors.push(`installed profile package ${desired.packageName} client entrypoint lib/client.js is not a regular file`);
-      }
-    }
+    const installed = await verifyPackageRoot(desired, installedReal, `installed profile package ${desired.packageName}`, 'canonical package directory', platform);
+    installedVersion = installed.version;
+    packageErrors.push(...installed.errors);
   }
 
   if (!desired.source && dependency !== expectedDependencyValue) {
@@ -323,15 +348,19 @@ async function verifyBundlePackage(
     const sourceReal = await canonicalPath(sourceDir);
     if (!(await exists(sourceDir))) {
       packageErrors.push(`app-owned ${desired.packageName} bundle was not found at ${sourceDir}`);
-    } else if (!dependency || !/^file:/i.test(dependency)) {
-      packageErrors.push(`profile dependency ${desired.packageName} is not an app-owned local file source`);
     } else {
-      const sourceSpec = dependency.replace(/^file:/i, '');
-      if (!absolutePathFor(sourceSpec, platform)) {
-        packageErrors.push(`profile dependency ${desired.packageName} is not an absolute app-owned local file source`);
+      const source = await verifyPackageRoot(desired, sourceReal, `app-owned ${desired.packageName} bundle`, 'canonical bundle directory', platform);
+      packageErrors.push(...source.errors);
+      if (!dependency || !/^file:/i.test(dependency)) {
+        packageErrors.push(`profile dependency ${desired.packageName} is not an app-owned local file source`);
       } else {
-        const dependencyTarget = await canonicalPath(resolve(profileDir, sourceSpec));
-        if (!samePath(dependencyTarget, sourceReal, platform)) packageErrors.push(`profile dependency ${desired.packageName} does not resolve to its app-owned bundle`);
+        const sourceSpec = dependency.replace(/^file:/i, '');
+        if (!absolutePathFor(sourceSpec, platform)) {
+          packageErrors.push(`profile dependency ${desired.packageName} is not an absolute app-owned local file source`);
+        } else {
+          const dependencyTarget = await canonicalPath(resolve(profileDir, sourceSpec));
+          if (!samePath(dependencyTarget, sourceReal, platform)) packageErrors.push(`profile dependency ${desired.packageName} does not resolve to its app-owned bundle`);
+        }
       }
     }
     if (installedExists) {
@@ -356,97 +385,113 @@ async function verifyBundlePackage(
   };
 }
 
-interface ManagedBrandSourceVerification {
-  valid: boolean;
+interface PackageRootVerification {
   errors: string[];
+  version: string | undefined;
 }
 
-async function verifyBrandSource(bundleDir: string, platform: string, programRoot: string): Promise<ManagedBrandSourceVerification> {
+async function verifyContainedFile(
+  rootReal: string,
+  path: string | undefined,
+  label: string,
+  containment: string,
+  platform: string,
+  errors: string[]
+): Promise<void> {
+  const target = path ? await canonicalExistingPath(path) : undefined;
+  if (!path || !target) {
+    errors.push(`${label} was not found`);
+  } else if (!pathIsWithin(rootReal, target, platform)) {
+    errors.push(`${label} escapes its ${containment}`);
+  } else if (!(await isRegularFile(path))) {
+    errors.push(`${label} is not a regular file`);
+  }
+}
+
+async function verifyPackageRoot(
+  desired: DesiredPackage,
+  root: string,
+  label: string,
+  containment: string,
+  platform: string
+): Promise<PackageRootVerification> {
   const errors: string[] = [];
-  if (!(await exists(bundleDir))) {
-    errors.push(`app-owned RPG Maker Agent brand bundle was not found at ${bundleDir}`);
-    return { valid: false, errors };
+  if (!(await exists(root))) {
+    errors.push(`${label} was not found at ${root}`);
+    return { errors, version: undefined };
   }
-  const sourceReal = await canonicalPath(bundleDir);
-  const programReal = await canonicalPath(programRoot);
-  if (!pathIsWithin(programReal, sourceReal, platform)) {
-    errors.push(`brand bundle path ${bundleDir} is not inside the app-owned program root ${programRoot}`);
-    return { valid: false, errors };
-  }
-  const manifestPath = join(bundleDir, 'package.json');
-  const manifestTarget = await canonicalExistingPath(manifestPath);
-  if (!manifestTarget) {
-    errors.push('brand bundle manifest package.json was not found');
-    return { valid: false, errors };
-  }
-  if (!pathIsWithin(sourceReal, manifestTarget, platform)) {
-    errors.push('brand bundle manifest package.json escapes its canonical bundle directory');
-    return { valid: false, errors };
-  }
-  if (!(await isRegularFile(manifestPath))) {
-    errors.push('brand bundle manifest package.json is not a regular file');
-    return { valid: false, errors };
-  }
+  const rootReal = await canonicalPath(root);
+  const manifestPath = join(root, 'package.json');
+  await verifyContainedFile(rootReal, manifestPath, `${label} manifest package.json`, containment, platform, errors);
   const manifest = await readJson(manifestPath);
-  if (manifest?.name !== DSH_BRAND_PACKAGE || manifest?.version !== DSH_BRAND_VERSION) errors.push(`brand bundle identity is ${String(manifest?.name ?? 'missing')}@${String(manifest?.version ?? 'missing')}, expected ${DSH_BRAND_PACKAGE}@${DSH_BRAND_VERSION}`);
+  const name = typeof manifest?.name === 'string' ? manifest.name : undefined;
+  const version = typeof manifest?.version === 'string' ? manifest.version : undefined;
+  if (name !== desired.packageName || version !== desired.version) {
+    errors.push(`${label} identity is ${name ?? 'missing'}@${version ?? 'missing'}, expected ${desired.packageName}@${desired.version}`);
+  }
+  if (desired.license && manifest?.license !== desired.license) {
+    errors.push(`${label} license is ${String(manifest?.license ?? 'missing')}, expected ${desired.license}`);
+  }
   const main = typeof manifest?.main === 'string' ? manifest.main : undefined;
-  const mainPath = main ? resolve(bundleDir, main) : undefined;
-  const mainTarget = mainPath ? await canonicalExistingPath(mainPath) : undefined;
-  if (!main || !mainPath || !mainTarget) {
-    errors.push(`brand bundle entrypoint ${main ?? 'missing'} was not found`);
-  } else if (!pathIsWithin(sourceReal, mainTarget, platform)) {
-    errors.push(`brand bundle entrypoint ${main} escapes its canonical bundle directory`);
-  } else if (!(await isRegularFile(mainPath))) {
-    errors.push(`brand bundle entrypoint ${main} is not a regular file`);
-  }
-  const clientPath = join(bundleDir, 'lib', 'client.js');
-  const clientTarget = await canonicalExistingPath(clientPath);
-  if (!clientTarget) {
-    errors.push('brand bundle client entrypoint lib/client.js was not found');
-  } else if (!pathIsWithin(sourceReal, clientTarget, platform)) {
-    errors.push('brand bundle client entrypoint lib/client.js escapes its canonical bundle directory');
-  } else if (!(await isRegularFile(clientPath))) {
-    errors.push('brand bundle client entrypoint lib/client.js is not a regular file');
-  }
+  await verifyContainedFile(rootReal, main ? resolve(root, main) : undefined, `${label} entrypoint ${main ?? 'missing'}`, containment, platform, errors);
   const patch = asObject(asObject(manifest?.dsh)?.bundle)?.patch;
-  const patchPath = typeof patch === 'string' ? resolve(bundleDir, patch) : undefined;
-  const patchTarget = patchPath ? await canonicalExistingPath(patchPath) : undefined;
-  if (patch !== './cordis.patch.yml' || !patchPath || !patchTarget) {
-    errors.push('brand bundle dsh.bundle patch is missing or invalid');
-  } else if (!pathIsWithin(sourceReal, patchTarget, platform)) {
-    errors.push('brand bundle dsh.bundle patch escapes its canonical bundle directory');
-  } else if (!(await isRegularFile(patchPath))) {
-    errors.push('brand bundle dsh.bundle patch is not a regular file');
+  const patchValue = typeof patch === 'string' ? patch : undefined;
+  if (desired.patch && patchValue !== desired.patch) {
+    errors.push(`${label} dsh.bundle.patch is ${patchValue ?? 'missing'}, expected ${desired.patch}`);
   }
-  return { valid: errors.length === 0, errors };
+  await verifyContainedFile(rootReal, patchValue ? resolve(root, patchValue) : undefined, `${label} dsh.bundle.patch ${patchValue ?? 'missing'}`, containment, platform, errors);
+  for (const required of desired.requiredFiles ?? []) {
+    const kind = required === 'lib/client.js' ? 'client entrypoint' : 'Agent entrypoint';
+    await verifyContainedFile(rootReal, resolve(root, required), `${label} ${kind} ${required}`, containment, platform, errors);
+  }
+  if (desired.sha256) {
+    const digest = await workspaceMcpBundleDigest(root).catch(() => undefined);
+    if (digest !== desired.sha256) errors.push(`${label} release hash mismatch (got ${digest?.slice(0, 12) ?? 'none'}, expected ${desired.sha256.slice(0, 12)})`);
+  }
+  return { errors, version };
 }
 
 interface ManagedWebSourceVerification {
   valid: boolean;
   errors: string[];
+  brandSource: string;
   workspaceSource: string;
 }
 
-/**
- * Fixed product preflight for the two app-owned bundles consumed by profile
- * repair. It deliberately does not inspect mutable profile or target state.
- */
-async function verifyManagedWebSources(paths: HarnessPaths, platform: string): Promise<ManagedWebSourceVerification> {
-  const brandBundleDir = resolve(join(paths.programRoot, DSH_BRAND_BUNDLE_RELATIVE));
-  const brand = await verifyBrandSource(brandBundleDir, platform, paths.programRoot);
-  const workspace = await verifyWorkspaceMcpSource({
-    platform,
-    programRoot: paths.programRoot,
-    mutableRoot: paths.mutableRoot,
-    dshHome: paths.dshHome,
-    runtimeDir: paths.runtimeDir
-  });
-  const errors = [...brand.errors, ...workspace.errors];
-  return { valid: errors.length === 0, errors, workspaceSource: workspace.sourceDir };
+async function inspectManagedWebSources(paths: HarnessPaths, platform: string): Promise<ManagedWebSourceVerification> {
+  const errors: string[] = [];
+  const programRoot = await canonicalPath(paths.programRoot);
+  const brandSource = resolve(join(paths.programRoot, DSH_BRAND_BUNDLE_RELATIVE));
+  const brandReal = await canonicalPath(brandSource);
+  if (!pathIsStrictlyWithin(programRoot, brandReal, platform)) {
+    errors.push(`brand bundle path ${brandSource} is not inside the app-owned program root ${paths.programRoot}`);
+  }
+
+  const packagedWorkspace = resolve(join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE));
+  let packagedWorkspaceExists = false;
+  try {
+    await lstat(packagedWorkspace);
+    packagedWorkspaceExists = true;
+  } catch {
+    // Development may use the canonical repository bundle.
+  }
+  const workspaceSource = packagedWorkspaceExists ? packagedWorkspace : resolve(defaultWorkspaceMcpBundleDir());
+  const workspaceReal = await canonicalPath(workspaceSource);
+  const defaultWorkspaceReal = await canonicalPath(defaultWorkspaceMcpBundleDir());
+  const workspaceAllowed = packagedWorkspaceExists
+    ? pathIsStrictlyWithin(programRoot, workspaceReal, platform)
+    : samePath(workspaceReal, defaultWorkspaceReal, platform);
+  if (!workspaceAllowed) errors.push(`workspace MCP source bundle ${workspaceSource} is outside its allowed app-owned root`);
+  return { valid: errors.length === 0, errors, brandSource, workspaceSource: workspaceReal };
 }
 
 async function requireManagedWebSources(paths: HarnessPaths, platform: string): Promise<ManagedWebSourceVerification> {
-  const sources = await verifyManagedWebSources(paths, platform);
+  const sources = await inspectManagedWebSources(paths, platform);
+  const brand = DESIRED_PACKAGES.find(({ source }) => source === 'brand')!;
+  const workspace = DESIRED_PACKAGES.find(({ source }) => source === 'workspace')!;
+  sources.errors.push(...(await verifyPackageRoot(brand, sources.brandSource, 'brand bundle', 'canonical bundle directory', platform)).errors);
+  sources.errors.push(...(await verifyPackageRoot(workspace, sources.workspaceSource, 'workspace MCP source bundle', 'canonical bundle directory', platform)).errors);
+  sources.valid = sources.errors.length === 0;
   if (!sources.valid) {
     throw new Error(`Managed Web profile repair refused because app-owned sources are unsafe: ${sources.errors.join('; ')}`);
   }
@@ -465,8 +510,12 @@ export async function verifyManagedWebProfile(options: ManagedWebProfileOptions 
   const structure = await inspectManagedWebProfileStructure(paths, platform);
   const { profileDir, workspaceBundleDir } = structure;
   const brandBundleDir = resolve(join(paths.programRoot, DSH_BRAND_BUNDLE_RELATIVE));
-  const errors: string[] = [];
-  errors.push(...structure.errors);
+  const sources = await inspectManagedWebSources(paths, platform);
+  const errors = [...structure.errors, ...sources.errors];
+  if (sources.valid) {
+    const workspace = DESIRED_PACKAGES.find(({ source }) => source === 'workspace')!;
+    errors.push(...(await verifyPackageRoot(workspace, sources.workspaceSource, 'workspace MCP source bundle', 'canonical bundle directory', platform)).errors);
+  }
   const manifest = await readJson(join(profileDir, 'package.json'));
   if (!manifest) errors.push(`managed ${MANAGED_WEB_PROFILE} profile manifest is missing or invalid at ${join(profileDir, 'package.json')}`);
 
@@ -483,14 +532,6 @@ export async function verifyManagedWebProfile(options: ManagedWebProfileOptions 
   if (!rawBundles || rawBundles.length !== MANAGED_WEB_PROFILE_BUNDLE_NAMES.length || rawBundles.some((name, index) => name !== MANAGED_WEB_PROFILE_BUNDLE_NAMES[index])) {
     errors.push(`managed ${MANAGED_WEB_PROFILE} profile bundle registrations are not exact; expected ${MANAGED_WEB_PROFILE_BUNDLE_NAMES.join(', ')}`);
   }
-
-  errors.push(...(await verifyBrandSource(brandBundleDir, platform, paths.programRoot)).errors);
-  const workspaceMcpBundle = await verifyWorkspaceMcpBundle({
-    ...options,
-    profile: MANAGED_WEB_PROFILE,
-    bundleDir: workspaceBundleDir
-  });
-  errors.push(...workspaceMcpBundle.errors);
 
   const packages: ManagedWebPackageVerification[] = [];
   for (const desired of DESIRED_PACKAGES) {
@@ -512,8 +553,7 @@ export async function verifyManagedWebProfile(options: ManagedWebProfileOptions 
     profileDir,
     dependencies,
     bundles,
-    packages,
-    workspaceMcpBundle
+    packages
   };
 }
 
