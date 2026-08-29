@@ -279,7 +279,7 @@ describe('managed Web profile materialization', () => {
     }
   });
 
-  test('restores the prior profile with a structural guard when a failing runner damages an app-owned source', async () => {
+  test('restores the prior profile when a failing runner damages an app-owned source', async () => {
     const root = await temp('phase11-managed-profile-rollback-source-damage');
     try {
       const roots = await appRoots(root);

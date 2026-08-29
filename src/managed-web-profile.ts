@@ -87,9 +87,6 @@ interface ManagedProfileSnapshot {
   bundleExisted: boolean;
 }
 
-type ManagedProfileMutationGuard = () => Promise<void>;
-type ManagedProfileStructureGuard = () => Promise<void>;
-
 interface DesiredPackage {
   packageName: string;
   version: string;
@@ -177,17 +174,9 @@ function rawProfileBundles(manifest: JsonObject | undefined): unknown[] | undefi
 }
 
 interface ManagedWebProfileStructure {
-  valid: boolean;
   errors: string[];
-  dshHomeReal: string;
-  profilesRoot: string;
-  profilesRootReal: string;
   profileDir: string;
-  profileDirReal: string;
-  dataRoot: string;
-  dataRootReal: string;
   workspaceBundleDir: string;
-  workspaceBundleReal: string;
 }
 
 /**
@@ -220,26 +209,17 @@ async function inspectManagedWebProfileStructure(paths: HarnessPaths, platform: 
   }
 
   return {
-    valid: errors.length === 0,
     errors,
-    dshHomeReal,
-    profilesRoot,
-    profilesRootReal,
     profileDir,
-    profileDirReal,
-    dataRoot,
-    dataRootReal,
-    workspaceBundleDir,
-    workspaceBundleReal
+    workspaceBundleDir
   };
 }
 
-async function requireManagedWebProfileStructure(paths: HarnessPaths, platform: string): Promise<ManagedWebProfileStructure> {
+async function requireManagedWebProfileStructure(paths: HarnessPaths, platform: string): Promise<void> {
   const structure = await inspectManagedWebProfileStructure(paths, platform);
-  if (!structure.valid) {
+  if (structure.errors.length > 0) {
     throw new Error(`Managed Web profile repair refused because managed roots are unsafe: ${structure.errors.join('; ')}`);
   }
-  return structure;
 }
 
 function expectedDependency(desired: DesiredPackage, brandBundleDir: string, workspaceBundleDir: string): string {
@@ -540,24 +520,16 @@ export async function verifyManagedWebProfile(options: ManagedWebProfileOptions 
 async function snapshotManagedWebProfile(
   paths: HarnessPaths,
   profileDir: string,
-  bundleDir: string,
-  beforeMutation: ManagedProfileMutationGuard
+  bundleDir: string
 ): Promise<ManagedProfileSnapshot> {
-  await beforeMutation();
   const root = await mkdtemp(join(paths.dshHome, '.managed-web-profile-rollback-'));
   const profileBackup = join(root, 'profile');
   const bundleBackup = join(root, 'workspace-bundle');
   const profileExisted = await exists(profileDir);
   const bundleExisted = await exists(bundleDir);
   try {
-    if (profileExisted) {
-      await beforeMutation();
-      await cp(profileDir, profileBackup, { recursive: true, force: false, errorOnExist: true });
-    }
-    if (bundleExisted) {
-      await beforeMutation();
-      await cp(bundleDir, bundleBackup, { recursive: true, force: false, errorOnExist: true });
-    }
+    if (profileExisted) await cp(profileDir, profileBackup, { recursive: true, force: false, errorOnExist: true });
+    if (bundleExisted) await cp(bundleDir, bundleBackup, { recursive: true, force: false, errorOnExist: true });
     return { root, profileDir, profileBackup, profileExisted, bundleDir, bundleBackup, bundleExisted };
   } catch (error) {
     await rm(root, { recursive: true, force: true }).catch(() => undefined);
@@ -565,42 +537,31 @@ async function snapshotManagedWebProfile(
   }
 }
 
-async function restoreManagedWebProfile(snapshot: ManagedProfileSnapshot, beforeRestore: ManagedProfileStructureGuard): Promise<void> {
-  await beforeRestore();
+async function restoreManagedWebProfile(snapshot: ManagedProfileSnapshot): Promise<void> {
   await rm(snapshot.profileDir, { recursive: true, force: true });
   if (snapshot.profileExisted) {
-    await beforeRestore();
     await mkdir(dirname(snapshot.profileDir), { recursive: true });
-    await beforeRestore();
     await cp(snapshot.profileBackup, snapshot.profileDir, { recursive: true, force: false, errorOnExist: true });
   }
-  await beforeRestore();
   await rm(snapshot.bundleDir, { recursive: true, force: true });
   if (snapshot.bundleExisted) {
-    await beforeRestore();
     await mkdir(dirname(snapshot.bundleDir), { recursive: true });
-    await beforeRestore();
     await cp(snapshot.bundleBackup, snapshot.bundleDir, { recursive: true, force: false, errorOnExist: true });
   }
 }
 
-async function replaceWorkspaceBundle(source: string, target: string, platform: string, beforeMutation: ManagedProfileMutationGuard): Promise<void> {
+async function replaceWorkspaceBundle(source: string, target: string, platform: string): Promise<void> {
   if (samePath(source, target, platform)) return;
   const parent = dirname(target);
-  await beforeMutation();
   await mkdir(parent, { recursive: true });
   const staging = `${target}.staging-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  await beforeMutation();
   await rm(staging, { recursive: true, force: true });
   try {
-    await beforeMutation();
     await cp(source, staging, { recursive: true, force: false, errorOnExist: true });
-    await beforeMutation();
     await rm(target, { recursive: true, force: true });
-    await beforeMutation();
     await rename(staging, target);
   } finally {
-    await beforeMutation().then(() => rm(staging, { recursive: true, force: true })).catch(() => undefined);
+    await rm(staging, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -610,14 +571,12 @@ async function addProfilePackage(
   invocation: { command: string; prefix: string[] },
   env: Record<string, string | undefined>,
   pnpmEnv: Record<string, string | undefined>,
-  packageSpec: string,
-  beforeMutation: ManagedProfileMutationGuard
+  packageSpec: string
 ): Promise<void> {
   const args = ['plugin', '--profile', MANAGED_WEB_PROFILE, 'add', '--save-exact', '--ignore-scripts', packageSpec];
   const runner = options.commandRunner ?? runCommand;
   let result;
   try {
-    await beforeMutation();
     result = await runner(invocation.command, [...invocation.prefix, ...args], {
       cwd: paths.dshHome,
       env: pnpmEnv,
@@ -630,7 +589,7 @@ async function addProfilePackage(
   if (result.exitCode !== 0) throw new Error(redactSensitive(commandFailure(invocation.command, [...invocation.prefix, ...args], result, env).message, env));
 }
 
-async function writeManagedBundleRegistrations(profileDir: string, beforeMutation: ManagedProfileMutationGuard): Promise<void> {
+async function writeManagedBundleRegistrations(profileDir: string): Promise<void> {
   const manifestPath = join(profileDir, 'package.json');
   const manifest = await readJson(manifestPath);
   if (!manifest) throw new Error(`Managed Web profile package manager produced no readable manifest at ${manifestPath}`);
@@ -639,7 +598,6 @@ async function writeManagedBundleRegistrations(profileDir: string, beforeMutatio
   profile.bundles = [...MANAGED_WEB_PROFILE_BUNDLE_NAMES];
   dsh.profile = profile;
   manifest.dsh = dsh;
-  await beforeMutation();
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }
 
@@ -657,41 +615,25 @@ async function ensureManagedWebProfileUnlocked(options: ManagedWebProfileOptions
   const ambientEnv = options.env ?? process.env;
   const env = pluginEnvironment({ ...ambientEnv, DSH_HOME: paths.dshHome });
   await requireManagedWebProfileStructure(paths, platform);
-  const initialSources = await requireManagedWebSources(paths, platform);
-  const brandBundleDir = resolve(join(paths.programRoot, DSH_BRAND_BUNDLE_RELATIVE));
-  const workspaceBundleDir = resolve(workspaceMcpBundleDirFor(paths));
-  const workspaceSource = initialSources.workspaceSource;
   await mkdir(paths.dshHome, { recursive: true });
   const current = await verifyManagedWebProfile({ ...options, env });
   if (current.valid) return { ...current, materialized: false };
 
+  const sources = await requireManagedWebSources(paths, platform);
+  const brandBundleDir = resolve(join(paths.programRoot, DSH_BRAND_BUNDLE_RELATIVE));
+  const workspaceBundleDir = resolve(workspaceMcpBundleDirFor(paths));
+  const workspaceSource = sources.workspaceSource;
+
   // The app-owned pnpm runtime is resolved exactly once for this attempt and
   // its environment is reused for all four DSH plugin additions.
-  await requireManagedWebProfileStructure(paths, platform);
-  const sourcesBeforePnpm = await requireManagedWebSources(paths, platform);
-  if (!samePath(sourcesBeforePnpm.workspaceSource, workspaceSource, platform)) {
-    throw new Error('Managed Web profile repair refused because the app-owned workspace MCP source changed during preflight');
-  }
   const pnpm = await preparePnpmRuntime({ ...options, env, useAppOwnedPnpm: true }, paths);
   const dsh = options.dshExecutable ?? env.DSH_EXECUTABLE ?? await findDshExecutable(paths.runtimeDir, platform);
   if (!dsh) throw new Error('Pinned DSH executable was not found; cannot materialize the managed Web profile.');
   const invocation = await resolveDshInvocation(dsh, options, env);
   const profileDir = profileDirFor(paths, MANAGED_WEB_PROFILE);
-  const beforeRestore = async (): Promise<void> => {
-    await requireManagedWebProfileStructure(paths, platform);
-  };
-  const beforeMutation = async (): Promise<void> => {
-    await beforeRestore();
-    const sources = await requireManagedWebSources(paths, platform);
-    if (!samePath(sources.workspaceSource, workspaceSource, platform)) {
-      throw new Error('Managed Web profile repair refused because the app-owned workspace MCP source changed during preflight');
-    }
-  };
-  await beforeMutation();
-  const snapshot = await snapshotManagedWebProfile(paths, profileDir, workspaceBundleDir, beforeMutation);
+  const snapshot = await snapshotManagedWebProfile(paths, profileDir, workspaceBundleDir);
   try {
-    await replaceWorkspaceBundle(workspaceSource, workspaceBundleDir, platform, beforeMutation);
-    await beforeMutation();
+    await replaceWorkspaceBundle(workspaceSource, workspaceBundleDir, platform);
     await rm(profileDir, { recursive: true, force: true });
     await mkdir(paths.dshHome, { recursive: true });
     for (const desired of DESIRED_PACKAGES) {
@@ -700,9 +642,9 @@ async function ensureManagedWebProfileUnlocked(options: ManagedWebProfileOptions
         : desired.source === 'workspace'
           ? localDependencySpec(workspaceBundleDir)
           : `${desired.packageName}@${desired.version}`;
-      await addProfilePackage(options, paths, invocation, env, pnpm.env, spec, beforeMutation);
+      await addProfilePackage(options, paths, invocation, env, pnpm.env, spec);
     }
-    await writeManagedBundleRegistrations(profileDir, beforeMutation);
+    await writeManagedBundleRegistrations(profileDir);
     const verification = await verifyManagedWebProfile({ ...options, env });
     if (!verification.valid) throw new Error(`Managed Web profile materialization completed but verification failed: ${verification.errors.join('; ')}`);
     // Snapshot cleanup is best effort after successful verification. A cleanup
@@ -712,7 +654,7 @@ async function ensureManagedWebProfileUnlocked(options: ManagedWebProfileOptions
   } catch (error) {
     const original = error instanceof Error ? error : new Error(String(error));
     try {
-      await restoreManagedWebProfile(snapshot, beforeRestore);
+      await restoreManagedWebProfile(snapshot);
     } catch (restoreError) {
       throw new Error(`${original.message}; managed Web profile rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}; rollback snapshot preserved at ${snapshot.root}`);
     }
