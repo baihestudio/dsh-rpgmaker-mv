@@ -76,6 +76,10 @@ async function handleCall(toolName, params) {
     const value = { ok: true, errors: [], warnings: [] }
     return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value }
   }
+  if (toolName === 'set_project') {
+    const value = { ok: true, tool: toolName, path: params?.path }
+    return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value }
+  }
   if (toolName === 'get_project_info') {
     let gameTitle = 'Unknown Game'
     try {

@@ -5,7 +5,7 @@ description: Turn a user's DSH product complaint, workflow friction, capability 
 
 # Forgejo user feedback reporting
 
-Use this skill when a user describes friction, confusion, a missing capability, or an unsatisfactory experience in DSH RPGMaker MV itself. Treat their account as product feedback, not as an incident that needs the agent to reproduce.
+Use this skill when a user describes friction, confusion, a missing capability, or an unsatisfactory experience in RPG Maker Agent itself. Treat their account as product feedback, not as an incident that needs the agent to reproduce.
 
 ## Feedback interview
 

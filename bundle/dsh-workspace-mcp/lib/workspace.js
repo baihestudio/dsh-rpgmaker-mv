@@ -89,11 +89,6 @@ export async function classifyWorkspace(canonical) {
   return { valid: missing.length === 0, projectPath: canonical, engine, missing, markers: [record.marker], ambiguous: false }
 }
 
-/** Direct-children validation; retained as the narrow public classifier seam. */
-export async function validateWorkspace(canonical) {
-  return classifyWorkspace(canonical)
-}
-
 /** Deterministic internal server name; an engine/workspace identity, never a tool name. */
 export function privateServerName(engine, canonical) {
   if (!ENGINE_IDS.includes(engine)) throw new Error(`dsh-workspace-mcp: unknown RPG Maker engine ${String(engine)}`)

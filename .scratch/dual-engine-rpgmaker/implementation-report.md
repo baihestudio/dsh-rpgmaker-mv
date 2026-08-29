@@ -65,23 +65,54 @@ selection research and enhancement roadmap are included with the implementation.
   and both generator rewrite steps were removed. Redseb, Xerolo, and Forgejo
   third-party integrity pins remain.
 
+## Second full re-review remediation (2026-08-29)
+
+- Official DSH schema projection: raw Redseb input schemas are never passed
+  directly to registration or Code Mode. One recursive projection strips
+  unsupported keywords while retaining meaningful object, array, scalar, enum,
+  and annotation structure. Every one of the 119 projected MZ schemas passes
+  `@deepseek-ai/dsh-tools` `assertObjectJsonSchema`; official
+  `renderToolsSdk` output for `update_actor`, `update_map_event`, and
+  `paint_tiles` contains typed nested fields such as `actorId: number`,
+  `updates: Record<string, JsonValue>`, `dryRun?: boolean`, `eventId: number`,
+  and typed tile objects, with no `unknown` tool entries. Registration and
+  assembly use the same projection.
+- Pair identity and usability: MZ `set_project` now canonicalizes its input,
+  forwards a symlink alias that resolves to the acquired canonical workspace,
+  and rejects another workspace. The ordinary one-Host MV/MZ concurrency test
+  verifies independent pair keys, native/tool surfaces, and project state.
+- Active guidance and standards: MV Help-only content moved to the MV skill;
+  active shared Forgejo reporting copy says **RPG Maker Agent**; client source
+  absence assertions, formatting defects, and the generated declaration
+  semicolon were fixed; unused observation/private-bundle/engine-id exports
+  were removed.
+- The approval-gated real acceptance script contains a concurrent dual-mount
+  one-Host probe, but no real or Windows approval gate was run.
+
 ## Changed-LOC variance
 
 The original whole-spec implementation was already within its estimated
 1,950–3,350 changed lines. This review-remediation follow-up is a focused
 staged diff of 558 additions and 445 deletions (including scratch bookkeeping,
 docs, and lockfile updates); it does not add generated manifests or a private
-workspace bundle hash artifact.
+workspace bundle hash artifact. The second deterministic re-review batch is a
+further 399 additions and 186 deletions, including its focused tests and
+scratch remediation records.
 
 ## Verification evidence
 
-- `bun test tests/phase10.test.ts tests/phase12.test.ts tests/phase7.test.ts` —
-  66 passed, 0 failed (582 expect calls), including the disposable MZ Agent
+- `bun test tests/phase2.test.ts tests/phase7.test.ts tests/phase10.test.ts tests/phase11.test.ts tests/phase12.test.ts` —
+  86 passed, 0 failed (834 expect calls), including the disposable MZ Agent
   identity → dry-run → commit → reread → `validate_project` /
   `validate_references` scenario.
-- `bun test` — 107 passed, 0 failed (764 expect calls).
+- `bun test tests/phase12.test.ts` — 6 passed, 0 failed (193 expect calls),
+  including official validation of all 119 projected MZ schemas and typed
+  nested Code Mode arguments.
+- `bun test` — 108 passed, 0 failed (908 expect calls).
 - `bun run check` — passed (`tsc --noEmit`).
 - `git diff --check` — passed.
+- `node --check scripts/phase2-real-mount.mjs` — passed (syntax-only; no
+  acceptance gate was executed).
 - Bundle contract probe — MZ manifest has 119 tools, `verifyManifest('mz')`
   returns no errors, and its digest is
   `d3409ee3f4181875042020b593a488a6b5f102e9e6c50f3ef4f05b4299e83658`.

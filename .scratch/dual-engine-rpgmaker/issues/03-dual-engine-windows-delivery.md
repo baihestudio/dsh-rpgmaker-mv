@@ -18,3 +18,8 @@ Status: done
 - [x] Owned install fakes now model both exact engine packages and assert MZ install, repair, and verified-runtime reuse alongside MV.
 - [x] Obsolete single-engine fixtures, aliases, fallback verifier paths, and legacy workspace/Host overloads were removed from owned callers and tests.
 - [x] The private workspace bundle no longer uses `WORKSPACE_MCP_SHA256`, `workspaceMcpBundleDigest`, or internal profile hash checks; Redseb, Xerolo, and Forgejo integrity pins remain.
+
+## Second full re-review remediation (2026-08-29)
+
+- [x] Release/install-owned tests retain exact MV and MZ package identities and verify MZ install, repair, and reuse without restoring private bundle hashing.
+- [x] Source-text client assertions were removed in favor of runtime quick-start behavior checks; the phase-2 mount helper and phase-7 test indentation are normalized, and generated artifacts/declarations no longer expose removed wrappers or aliases.

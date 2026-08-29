@@ -33,7 +33,6 @@ export declare const RPGMAKER_ENGINES: Record<RpgMakerEngine, EngineDefinition>;
 export declare const MCPORTER_CALL_TIMEOUT_MS: number;
 export declare function canonicalWorkspace(cwd: unknown): Promise<string>;
 export declare function classifyWorkspace(canonical: string): Promise<WorkspaceValidation>;
-export declare function validateWorkspace(canonical: string): Promise<WorkspaceValidation>;
 export declare function privateServerName(engine: RpgMakerEngine, canonical: string): string;
 export declare function resolveEngineEntry(engine: RpgMakerEngine, runtime: string): Promise<string>;
 export declare function buildWorkspaceDefinition(

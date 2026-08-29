@@ -526,7 +526,7 @@ describe('Windows release gate foundations', () => {
       expect(invocation?.args).toEqual([mountScript]);
       expect(invocation?.cwd).toBe(neutralLanding);
       expect(invocation?.env?.[JS_RUNNER_ENV]).toBe(bun);
-        expect(invocation?.env?.[RPGMAKER_MCP_RUNTIME_ENV]).toBe(mcpRuntime);
+      expect(invocation?.env?.[RPGMAKER_MCP_RUNTIME_ENV]).toBe(mcpRuntime);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1453,9 +1453,6 @@ describe('Windows release gate foundations', () => {
       expect(quickStartButtons.map((button) => (button.props.children as Array<{ props: Record<string, unknown> }>)[0]?.props.children)).toEqual([
         '推敲剧情与玩法', '开发插件', '编辑对话与事件', '制作美术素材'
       ]);
-      expect(clientSource).not.toContain('/rpgmaker-mv');
-      expect(clientSource).not.toContain('RPG Maker MV 目标尺寸');
-
       const draftWrites: string[] = [];
       let submitCalls = 0;
       const actionSurface = quickStartSlots[0]!.component({
@@ -1474,6 +1471,9 @@ describe('Windows release gate foundations', () => {
       }
       expect(draftWrites).toHaveLength(4);
       expect(draftWrites.every((text) => text.length > 0)).toBe(true);
+      expect(draftWrites[1]).toContain('当前工作空间选择的 RPG Maker 引擎');
+      expect(draftWrites[2]).toContain('当前工作空间选择的 RPG Maker 引擎');
+      expect(draftWrites.every((text) => !text.includes('RPG Maker MV'))).toBe(true);
       expect(submitCalls).toBe(0);
       expect(quickStartSlots[0]!.component({
         session: { composerPhase: 'blank' },

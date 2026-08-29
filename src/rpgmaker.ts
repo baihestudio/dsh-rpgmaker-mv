@@ -33,7 +33,6 @@ export const CUSTOM_AGENT_PRESET_IDS = [RPGMAKER_PRESET_ID] as const;
 const REMOVED_PRESET_IDS = ['game-design', 'asset-workshop', 'build-release'] as const;
 const PRESET_OWNERSHIP_FILE = '.dsh-rpgmaker-owned.json';
 const MCP_LOCK_BIN = 'dist/index.js';
-export const RPGMAKER_ENGINE_IDS = ['mv', 'mz'] as const;
 
 export type RpgMakerLaunchOptions = LaunchOptions & {
   /** Generic spelling for the shared MV/MZ runtime; the on-disk path is unchanged. */

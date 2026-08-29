@@ -28,7 +28,7 @@ import {
   validateModelNames,
   verifyManifest
 } from './contract.js'
-import { createMcpTool, toModelName } from './tools.js'
+import { createMcpTool, projectDshObjectJsonSchema, toModelName } from './tools.js'
 import {
   ENGINE_IDS,
   MZ_PROJECT_MARKER,
@@ -39,7 +39,6 @@ import {
   canonicalWorkspace,
   classifyWorkspace,
   privateServerName,
-  validateWorkspace,
   MCPORTER_CALL_TIMEOUT_MS
 } from './workspace.js'
 
@@ -108,7 +107,7 @@ function replaceAssemblyTools(assembly, manifest) {
   const sdkSchemas = manifest.tools.map((tool) => ({
     name: toModelName(tool.name),
     description: tool.description,
-    parameters: tool.inputSchema,
+    parameters: projectDshObjectJsonSchema(tool.inputSchema),
     output: tool.outputSchema ?? {}
   }))
   const sdkText = renderToolsSdk(sdkSchemas)
@@ -195,7 +194,6 @@ export {
   RPGMAKER_ENGINES,
   canonicalWorkspace,
   classifyWorkspace,
-  validateWorkspace,
   privateServerName,
   resolveEngineEntry,
   buildWorkspaceDefinition,

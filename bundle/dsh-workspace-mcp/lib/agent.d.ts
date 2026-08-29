@@ -43,7 +43,6 @@ export {
   RPGMAKER_ENGINES,
   canonicalWorkspace,
   classifyWorkspace,
-  validateWorkspace,
   privateServerName,
   resolveEngineEntry,
   buildWorkspaceDefinition,

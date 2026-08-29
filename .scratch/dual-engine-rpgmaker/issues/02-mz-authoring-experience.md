@@ -16,3 +16,8 @@ Status: done
 ## Whole-spec review remediation (2026-08-29)
 
 - [x] Plugin, dialogue, and image quick starts now describe the workspace-selected engine rather than hard-coding RPG Maker MV; runtime assertions cover the active prompts.
+
+## Second full re-review remediation (2026-08-29)
+
+- [x] MV Help-only instructions live in the MV-specific skill, while shared game-design guidance remains engine-neutral.
+- [x] Active shared Forgejo reporting skills use the current **RPG Maker Agent** product name; historical research remains unchanged.

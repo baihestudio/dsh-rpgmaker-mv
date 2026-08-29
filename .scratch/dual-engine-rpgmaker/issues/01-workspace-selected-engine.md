@@ -19,3 +19,10 @@ Status: done
 - [x] MZ Code Mode uses the official typed SDK renderer while retaining only native `run_code`; MV presentation is preserved.
 - [x] MZ `set_project` is rejected for any path other than the acquired canonical workspace, and a same-Host MV/MZ concurrency regression proves pair isolation.
 - [x] The private workspace bundle hash pin and profile hash validation were removed; exact engine package and manifest integrity pins remain.
+
+## Second full re-review remediation (2026-08-29)
+
+- [x] A single recursive projection maps raw Redseb schemas to the official DSH object-schema subset for both native registration and `renderToolsSdk`; all 119 MZ projections pass `assertObjectJsonSchema`, and nested actor/event/tile arguments render as concrete types.
+- [x] MZ `set_project` accepts only a path canonicalizing to the acquired workspace (including a symlink alias), forwards that canonical path, and rejects an escape target while preserving pair identity.
+- [x] The one-Host ordinary regression mounts MV and MZ concurrently and verifies isolated pair keys, tool presentations, and project state; the approval-gated real helper has the corresponding concurrent dual-mount probe but remains unrun.
+- [x] Unused compatibility exports/wrappers and the obsolete engine-id alias were removed from the owned bundle and declarations.

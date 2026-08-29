@@ -158,10 +158,6 @@ export async function observeRpgMakerChildren({ project, entry, engine = 'mv', p
   }
 }
 
-export async function observeXeroloChildren({ project, entry, platform = process.platform, env = process.env }) {
-  return observeRpgMakerChildren({ project, entry, engine: 'mv', platform, env })
-}
-
 export async function observeLauncherProcesses({ installedRoot, platform = process.platform, env = process.env }) {
   const records = await listProcessRecords(platform, env)
   const rootToken = normalize(installedRoot, platform)

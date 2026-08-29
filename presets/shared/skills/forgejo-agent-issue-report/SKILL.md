@@ -5,7 +5,7 @@ description: Report an agent-observed, verified DSH product defect, release bloc
 
 # Forgejo agent incident reporting
 
-Use this skill when direct task work reveals a problem in DSH RPGMaker MV itself: a defect, safety or privacy flaw, release/workflow blocker, or malfunctioning agent tool or MCP integration. User-reported experience and capability feedback follows `forgejo-user-feedback-report` instead.
+Use this skill when direct task work reveals a problem in RPG Maker Agent itself: a defect, safety or privacy flaw, release/workflow blocker, or malfunctioning agent tool or MCP integration. User-reported experience and capability feedback follows `forgejo-user-feedback-report` instead.
 
 ## Qualification
 

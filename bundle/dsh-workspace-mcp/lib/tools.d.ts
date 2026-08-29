@@ -36,6 +36,7 @@ export interface McpToolDefinition {
   presentCall: (args: Record<string, unknown>) => Record<string, unknown>;
 }
 export declare function toModelName(rawName: string): string;
+export declare function projectDshObjectJsonSchema(schema: unknown): Record<string, unknown>;
 export declare function createMcpTool(
   rawTool: DiscoveredTool,
   capability: AgentInitializer,

@@ -20,7 +20,7 @@ const manifestPath = join(lib, 'mz-manifest.js');
 const contractPath = join(lib, 'contract.js');
 const expectedToolCount = 119;
 
-interface Tool { name: string; description?: string; inputSchema?: unknown }
+interface Tool { name: string; description?: string; inputSchema?: unknown; }
 
 function env(): Record<string, string> {
   return Object.fromEntries(Object.entries(withoutCredentials(process.env)).filter((entry): entry is [string, string] => entry[1] !== undefined));

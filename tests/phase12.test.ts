@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { assertObjectJsonSchema, renderToolsSdk } from '@deepseek-ai/dsh-tools';
 
 import {
   MCPORTER_NPM_INTEGRITY,
@@ -29,6 +30,7 @@ import { HarnessScope, createHarnessAgent } from './fixtures/dsh-agent-harness';
 const contract = await import('../bundle/dsh-workspace-mcp/lib/contract.js');
 const workspaceBundle = await import('../bundle/dsh-workspace-mcp/lib/workspace.js');
 const environment = await import('../bundle/dsh-workspace-mcp/lib/env.js');
+const toolsBundle = await import('../bundle/dsh-workspace-mcp/lib/tools.js');
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -182,6 +184,36 @@ describe('dual-engine RPG Maker seams', () => {
     }
   });
 
+  test('projects every MZ input schema onto the official DSH subset with typed nested arguments', () => {
+    const projected = contract.MZ_MANIFEST.tools.map((rawTool) => ({
+      rawTool,
+      schema: toolsBundle.projectDshObjectJsonSchema(rawTool.inputSchema)
+    }));
+    for (const { schema } of projected) expect(() => assertObjectJsonSchema(schema)).not.toThrow();
+
+    const selected = projected.filter(({ rawTool }) => ['update_actor', 'update_map_event', 'paint_tiles'].includes(rawTool.name));
+    const sdkText = renderToolsSdk(selected.map(({ rawTool, schema }) => ({
+      name: `rpgmaker_${rawTool.name}`,
+      description: rawTool.description,
+      parameters: schema,
+      output: {}
+    })));
+    expect(sdkText).toContain('rpgmaker_update_actor: {');
+    expect(sdkText).toContain('actorId: number;');
+    expect(sdkText).toContain('updates: Record<string, JsonValue>;');
+    expect(sdkText).toContain('dryRun?: boolean;');
+    expect(sdkText).toContain('rpgmaker_update_map_event: {');
+    expect(sdkText).toContain('eventId: number;');
+    expect(sdkText).toContain('rpgmaker_paint_tiles: {');
+    expect(sdkText).toContain('tiles: ({');
+    expect(sdkText).not.toContain('rpgmaker_update_actor: unknown');
+    expect(sdkText).not.toContain('rpgmaker_update_map_event: unknown');
+    expect(sdkText).not.toContain('rpgmaker_paint_tiles: unknown');
+
+    const registered = projected.map(({ rawTool }) => toolsBundle.createMcpTool(rawTool, { init: async () => { throw new Error('not executed'); } }, 'mz').parameters);
+    expect(registered).toEqual(projected.map(({ schema }) => schema));
+  });
+
   test('verifies both exact package identities and reports a tampered MZ lock independently', async () => {
     const root = await temp('dual-runtime');
     try {
@@ -236,6 +268,17 @@ describe('dual-engine RPG Maker seams', () => {
         expect(sdkText).toContain('interface ToolArgsMap');
         expect(sdkText).toContain('declare const tools');
         expect(sdkText).toContain('rpgmaker_update_game_title');
+        expect(sdkText).toContain('rpgmaker_update_actor: {');
+        expect(sdkText).toContain('actorId: number;');
+        expect(sdkText).toContain('updates: Record<string, JsonValue>;');
+        expect(sdkText).toContain('dryRun?: boolean;');
+        expect(sdkText).toContain('rpgmaker_update_map_event: {');
+        expect(sdkText).toContain('eventId: number;');
+        expect(sdkText).toContain('rpgmaker_paint_tiles: {');
+        expect(sdkText).toContain('tiles: ({');
+        expect(sdkText).not.toContain('rpgmaker_update_actor: unknown');
+        expect(sdkText).not.toContain('rpgmaker_update_map_event: unknown');
+        expect(sdkText).not.toContain('rpgmaker_paint_tiles: unknown');
         expect(sdkText).not.toContain('rpgmaker_get_project_info');
         expect(names).not.toContain('rpgmaker_get_project_info');
         const getProject = agent.ctx.tools.get('rpgmaker_get_project');
@@ -310,6 +353,9 @@ describe('dual-engine RPG Maker seams', () => {
         const mzInfo = await mzAgent.ctx.tools.get('rpgmaker_get_project')!.execute({}, { agent: mzAgent, signal: new AbortController().signal });
         expect(mvInfo).toMatchObject({ gameTitle: 'MV concurrent' });
         expect(mzInfo).toMatchObject({ gameTitle: 'MZ concurrent' });
+        const mzAlias = join(root, 'mz-project-alias');
+        await symlink(mzProject, mzAlias, process.platform === 'win32' ? 'junction' : 'dir');
+        await expect(mzAgent.ctx.tools.get('rpgmaker_set_project')!.execute({ path: mzAlias }, { agent: mzAgent, signal: new AbortController().signal })).resolves.toMatchObject({ ok: true, tool: 'set_project', path: await realpath(mzProject) });
         await expect(mzAgent.ctx.tools.get('rpgmaker_set_project')!.execute({ path: mvProject }, { agent: mzAgent, signal: new AbortController().signal })).rejects.toThrow(/cannot retarget.*workspace/i);
         expect(hostBundle.hostState(hostCtx).workspacePairs).toHaveLength(2);
         await Promise.all([mvAgent.ctx.dispose(), mzAgent.ctx.dispose()]);
