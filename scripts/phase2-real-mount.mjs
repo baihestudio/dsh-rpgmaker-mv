@@ -2,6 +2,8 @@ import { pathToFileURL } from 'node:url'
 import { realpath } from 'node:fs/promises'
 import { observeXeroloChildren } from './process-observation.mjs'
 
+if (process.platform !== 'win32') throw new Error('Phase 2 real mount is supported on Windows only.')
+
 const hostBundleEntry = process.env.WORKSPACE_HOST_BUNDLE_ENTRY
 const agentBundleEntry = process.env.WORKSPACE_AGENT_BUNDLE_ENTRY
 if (!hostBundleEntry || !agentBundleEntry) throw new Error('WORKSPACE_HOST_BUNDLE_ENTRY and WORKSPACE_AGENT_BUNDLE_ENTRY are required')
@@ -167,7 +169,7 @@ try {
   const xeroloProcessEvidence = await observeXeroloChildren({
     project: canonicalProject,
     entry: xeroloEntry,
-    platform: process.platform,
+    platform: 'win32',
     env: process.env
   })
   if (xeroloProcessEvidence.children.length === 0) {

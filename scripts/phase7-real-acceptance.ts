@@ -9,6 +9,7 @@ import { findCodeComposition, installPreset, renderPresetOnlyPatch } from '../sr
 import { runCommand } from '../src/process';
 
 const DATABASE_TYPES = ['Actors', 'Classes', 'Skills', 'Items', 'Weapons', 'Armors', 'Enemies', 'Troops', 'States', 'Animations', 'Tilesets', 'CommonEvents'];
+if (process.platform !== 'win32') throw new Error('Phase 7 real acceptance is supported on Windows only.');
 const root = await mkdtemp(join(tmpdir(), 'dsh-rpgmaker-phase7-real-'));
 const safeEnv: Record<string, string> = {};
 for (const key of ['PATH', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP', 'SystemRoot', 'ComSpec', 'COMSPEC', 'PATHEXT', 'LANG', 'LC_ALL', 'TERM', 'BUN_INSTALL', 'NODE_PATH', 'NODE_OPTIONS']) {
@@ -42,7 +43,7 @@ async function mount(compositionPath: string, preset: string, dshLib: string, en
   const probe = await runCommand(process.env.NODE_EXECUTABLE ?? 'node', [join(process.cwd(), 'scripts', 'phase7-real-mount.mjs')], {
     cwd: project,
     env: { ...safeEnv, PROFILE_FILE: join(dshLib, profileFile), ENVIRONMENT_MODULE: environmentModule, COMPOSITION_FILE: compositionPath, EXPECTED_PRESET: preset },
-    platform: process.platform,
+    platform: 'win32',
     timeoutMs: 120_000
   });
   if (probe.exitCode !== 0) throw new Error(`${preset} DSH mount failed: ${probe.stderr || probe.stdout}`);
@@ -53,9 +54,9 @@ async function mount(compositionPath: string, preset: string, dshLib: string, en
 
 try {
   await makeFixture();
-  const boot = await bootstrapRuntime({ platform: process.platform, dshHome, runtimeDir: runtime, programRoot: join(root, 'program'), mutableRoot: root, env: safeEnv });
+  const boot = await bootstrapRuntime({ platform: 'win32', dshHome, runtimeDir: runtime, programRoot: join(root, 'program'), mutableRoot: root, env: safeEnv });
   assert.equal(boot.verification.dshPackageVersion, DSH_VERSION);
-  const dsh = await findDshExecutable(runtime, process.platform);
+  const dsh = await findDshExecutable(runtime, 'win32');
   assert.ok(dsh, 'real DSH executable not found after pinned install');
   const dshLib = join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib');
   const environmentModule = join(runtime, 'node_modules', '@deepseek-ai', 'dsh-launch-environment', 'lib', 'index.js');
@@ -68,7 +69,7 @@ try {
     await writeFile(compositionPath, renderPresetOnlyPatch(installed.presetRoot, preset));
     mounted.push(await mount(compositionPath, preset, dshLib, environmentModule));
   }
-  console.log(JSON.stringify({ ok: true, dsh: DSH_VERSION, presets: mounted, windowsNwjs: process.platform === 'win32' ? 'requires installed MV hardware fixture' : 'unsupported hardware on this host; not claimed' }));
+  console.log(JSON.stringify({ ok: true, dsh: DSH_VERSION, presets: mounted, windowsNwjs: 'requires installed MV hardware fixture' }));
 } finally {
   await rm(root, { recursive: true, force: true });
 }

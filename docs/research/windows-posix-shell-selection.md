@@ -57,34 +57,9 @@ Important command conflicts from Microsoft's own table:
 
 The [Microsoft installer](https://github.com/microsoft/coreutils/blob/a350b9cf5c9c178b1089902cde89275688862e32/src/pwsh-install.ps1) confirms that profile integration is a separate PowerShell-profile mutation and that the command directory is an explicit installation input. DSH should therefore verify the installed command directory and PATH, but must not edit or require a user profile for correctness.
 
-## Direct probes
+## Required Windows verification
 
-### Probes run on this macOS host
-
-All probes used temporary state outside the repository.
-
-1. **Portable command-behavior substitute:** a Bash/Node probe created a temporary path containing spaces and CJK characters, then verified environment values, globbing, a `sort | tr` pipeline, CRLF bytes, symlink reading, Git availability, persistent state/cwd in a long-lived shell, process-group cancellation, and `fs.watch`. Observed: all setup/quoting/glob/pipeline/env/symlink/Git/watch checks succeeded; the long-lived shell retained `STATE=kept` and cwd; SIGTERM ended the substitute process with `-15`. This establishes the required behavioral shape, not Windows behavior.
-2. **`dsh-win32` source test suite:** extracted the pinned [dsh-win32](https://github.com/sjh9714/dsh-win32/tree/b39cbdc32c6cac1cac5d3d4cd1389a9f9eb4350b) source to `/tmp`, installed its dependencies there, built it, and ran `npm test`: **8 test files, 92 tests passed** on macOS. These are deterministic tests of the Windows inspector, terminal wrapper, shell decoding, filesystem fence, preset installation, and doctor envelope; they do not execute Windows APIs.
-3. **Win32-branch substitute:** ran `scripts/win32-sim.mjs` with `process.platform` forced to `win32`, using `/bin/bash` as a fixture. The doctor envelope ran and correctly classified the simulated checks: Node pass, Git Bash pass, PowerShell 7 warn (not installed on macOS), sandbox shell warn (only Git Bash preset), and no Windows ACL probe without a Windows preset. This verifies the diagnostic branch, not Windows installation.
-4. **Portable-eval probe:** built `dsh-win32` and passed the production-shaped `eval -- $'...'` wrapper through its `toPortableEval()` function. It rewrote to `eval $' ...'`, while unrelated input remained unchanged. This is the compatibility seam needed by the BusyBox-ash fallback.
-
-### Required Windows probe matrix before release
-
-| Requirement | macOS substitute | Windows hardware result still required |
-|---|---|---|
-| Spaces/CJK paths, quoting, globbing, pipes, env | Passed portable Bash/Node probe | Repeat under `pwsh -NoProfile` and Coreutils on NTFS paths, including `C:\...` and `~` |
-| Cwd persistence expectation | Long-lived shell retained cwd; DSH `pwsh` semantics read from source | Confirm each fresh `pwsh` call uses `workdir`; confirm agent guidance does not assume state persistence |
-| CRLF and UTF-8 | Observed CRLF bytes and UTF-8 path names | Confirm Coreutils and DSH UTF-8 preamble with CRLF files and CJK stdout |
-| Symlinks | Read existing symlink | Test Developer Mode/elevation policy for creation and project links |
-| Git | `git --version` passed | `Git.Git` install, Git Bash optional, native `git.exe` from `pwsh`, credential manager, worktrees |
-| Coreutils conflicts | No Microsoft Windows binary available on macOS | `Get-Command -All`, `find`, `grep`, `sort`, `ls.cmd`/`cat.cmd`, aliases, PATH refresh, upgrade/disable behavior |
-| Native `.exe` launch | No Windows executable | Launch NW.js, RPG Maker MV, Photoshop, and packaging tools with `Start-Process`; verify exit/working-directory behavior |
-| Cancellation/process tree | POSIX process-group kill substitute passed | Long-running Playtest and child process tree; DSH timeout, `run_in_background`, `job_kill`, `taskkill /T` cleanup |
-| File watching | Node `fs.watch` emitted an event | Watch RPG Maker project files from DSH and confirm no ACL/handle leak |
-| Sandbox | DSH unit fence tests passed; no Windows token | `read-only`/`workspace-write` writes, private temp, GUI child inheritance, partial-enforcement reporting, and exact escalation behavior |
-| Installation/update | `npm build` and 92 tests passed | `winget` install/upgrade/uninstall, PowerShell 7.4+ discovery, PATH and new-process visibility, no profile dependency |
-
-**Platform boundary:** the Windows rows above cannot be truthfully marked passed on this macOS host. The macOS substitute probes are complete for portable shell behavior and source logic. No additional macOS hardware test is needed to choose the Windows stack; a separate native macOS DSH regression run is optional if changing shared Cordis composition.
+Before release, verify spaces/CJK paths, quoting, pipelines, UTF-8 and CRLF behavior, native Git and Coreutils identity, `.exe` launch, process-tree cancellation, file watching, sandbox enforcement, and WinGet repair on Windows.
 
 ## Recommended implementation
 

@@ -1,12 +1,11 @@
-import { basename, dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { stat } from 'node:fs/promises';
 
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { verifyForgejoMcpRuntime } from './forgejo-mcp';
-import { ownedCoreutilsCommands, verifyWindowsPrerequisites } from './prerequisites';
+import { verifyWindowsPrerequisites } from './prerequisites';
 import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
-import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
 import {
@@ -58,67 +57,13 @@ export interface DoctorReport {
   runtime: RuntimeVerification;
 }
 
-function versionNumbers(text: string): [number, number, number] | undefined {
-  const match = text.match(/(?:^|\D)(\d+)\.(\d+)(?:\.(\d+))?/);
-  if (!match) return undefined;
-  return [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)];
-}
-
-function atLeast(version: [number, number, number] | undefined, minimum: [number, number, number]): boolean {
-  if (!version) return false;
-  for (let index = 0; index < 3; index += 1) {
-    if (version[index] !== minimum[index]) return version[index] > minimum[index];
-  }
-  return true;
-}
-
-async function commandVersion(
-  runner: CommandRunner,
-  command: string | undefined,
-  env: Record<string, string | undefined>,
-  args: string[] = ['--version']
-): Promise<{ ok: boolean; output: string }> {
-  if (!command) return { ok: false, output: '' };
-  try {
-    const result = await runner(command, args, { env, timeoutMs: 30_000 });
-    return { ok: result.exitCode === 0, output: `${result.stdout}\n${result.stderr}` };
-  } catch {
-    return { ok: false, output: '' };
-  }
-}
-
-// Non-Windows Doctor keeps its best-effort Coreutils contract locally; find/grep
-// banners are intentionally not used as identity.
-function managerContract(helpOutput: string, statusOutput: string): boolean {
-  return /Manage coreutils utilities and PowerShell profiles/i.test(helpOutput)
-    && /\benable\b/i.test(helpOutput)
-    && /\bdisable\b/i.test(helpOutput)
-    && /\bstatus\b/i.test(helpOutput)
-    && /^\s*find\s+enabled\s*$/im.test(statusOutput)
-    && /^\s*grep\s+enabled\s*$/im.test(statusOutput);
-}
-
-function coreutilsInstallDir(managerPath: string | undefined): string | undefined {
-  if (!managerPath) return undefined;
-  const parent = dirname(managerPath);
-  const name = basename(parent).toLowerCase();
-  return name === 'bin' || name === 'cmd' ? dirname(parent) : parent;
-}
-
-function isWithinInstallDir(candidate: string | undefined, installDir: string | undefined): boolean {
-  if (!candidate || !installDir) return false;
-  const normalize = (value: string): string => value.replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase();
-  const child = normalize(candidate);
-  const root = normalize(installDir);
-  return child === root || child.startsWith(`${root}/`);
-}
-
 function check(id: string, label: string, ok: boolean, detail: string, path?: string): DoctorCheck {
   return { id, label, ok, detail: redactSensitive(detail), ...(path ? { path } : {}) };
 }
 
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
   const platform = options.platform ?? process.platform;
+  if (platform !== 'win32') throw new Error('Doctor is supported on Windows only.');
   const env = options.env ?? process.env;
   const paths = resolveHarnessPaths({ ...options, platform, env });
   return withHarnessLock(paths.lockDir, () => runDoctorUnlocked(options, platform, env, paths), {
@@ -131,105 +76,24 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   const runner = options.commandRunner ?? runCommand;
   const commandEnv = withoutCredentials(env);
   const checks: DoctorCheck[] = [];
-  let pwsh: string | undefined;
-  let coreutils: string | undefined;
-  let coreutilsFind: string | undefined;
-  let coreutilsGrep: string | undefined;
-  let git: string | undefined;
-  let bun: string | undefined;
-  let node: string | undefined;
-  let npm: string | undefined;
-  let python: string | undefined;
-  let imageMagick: string | undefined;
-  let executablePaths: Record<string, string | undefined>;
-
-  if (platform === 'win32') {
-    const prerequisites = await verifyWindowsPrerequisites({
-      platform,
-      env,
-      commandRunner: runner,
-      nodeExecutable: options.nodeExecutable,
-      npmExecutable: options.npmExecutable,
-      pythonExecutable: options.pythonExecutable,
-      bunExecutable: options.bunExecutable,
-      pwshExecutable: options.pwshExecutable,
-      gitExecutable: options.gitExecutable,
-      coreutilsExecutable: options.coreutilsExecutable,
-      imageMagickExecutable: options.imageMagickExecutable
-    });
-    checks.push(...prerequisites.checks.map((item) => check(item.id, item.label, item.ok, item.detail, item.executable)));
-    executablePaths = { ...prerequisites.executablePaths };
-    pwsh = prerequisites.executablePaths.powershell;
-    coreutils = prerequisites.executablePaths.coreutilsManager;
-    coreutilsFind = prerequisites.executablePaths.coreutilsFind;
-    coreutilsGrep = prerequisites.executablePaths.coreutilsGrep;
-    git = prerequisites.executablePaths.git;
-    bun = prerequisites.executablePaths.bun;
-    node = prerequisites.executablePaths.node;
-    npm = prerequisites.executablePaths.npm;
-    python = prerequisites.executablePaths.python;
-    imageMagick = prerequisites.executablePaths.imageMagick;
-  } else {
-    pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform, env });
-    coreutils = options.coreutilsExecutable ?? env.COREUTILS_MANAGER ?? await resolveExecutable('coreutils-manager', { platform, env }) ?? await resolveExecutable('coreutils', { platform, env });
-    const ownedCoreutils = await ownedCoreutilsCommands(coreutils, env);
-    coreutilsFind = ownedCoreutils.find ?? await resolveExecutable('find', { platform, env });
-    coreutilsGrep = ownedCoreutils.grep ?? await resolveExecutable('grep', { platform, env });
-    git = options.gitExecutable ?? env.GIT_EXECUTABLE ?? await resolveExecutable('git', { platform, env });
-    bun = options.bunExecutable ?? env.BUN_EXECUTABLE ?? await resolveExecutable('bun', { platform, env });
-    node = options.nodeExecutable ?? env.NODE_EXECUTABLE ?? await resolveExecutable('node', { platform, env });
-    npm = options.npmExecutable ?? env.NPM_EXECUTABLE ?? await resolveExecutable('npm', { platform, env });
-    python = options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? await resolveExecutable('python', { platform, env });
-    executablePaths = { powershell: pwsh, coreutilsManager: coreutils, coreutilsFind, coreutilsGrep, git, bun, node, npm, python };
-
-    const pwshVersion = await commandVersion(runner, pwsh, commandEnv);
-    const pwshParsed = versionNumbers(pwshVersion.output);
-    checks.push(check(
-      'powershell',
-      'PowerShell 7.4+',
-      pwshVersion.ok && /PowerShell\s+\d+\.\d+/i.test(pwshVersion.output) && atLeast(pwshParsed, [7, 4, 0]),
-      pwsh ? (pwshVersion.ok && pwshParsed ? `PowerShell ${pwshParsed.join('.')} at ${pwsh}` : `PowerShell at ${pwsh} is missing or older than 7.4`) : 'PowerShell 7.4+ was not found; install Microsoft.PowerShell',
-      pwsh
-    ));
-
-    const coreutilsHelp = await commandVersion(runner, coreutils, commandEnv, ['--help']);
-    const coreutilsStatus = await commandVersion(runner, coreutils, commandEnv, ['status']);
-    const coreutilsFindVersion = await commandVersion(runner, coreutilsFind, commandEnv);
-    const coreutilsGrepVersion = await commandVersion(runner, coreutilsGrep, commandEnv);
-    const coreutilsRoot = coreutilsInstallDir(coreutils);
-    const coreutilsOk = coreutilsHelp.ok && coreutilsStatus.ok
-      && managerContract(coreutilsHelp.output, coreutilsStatus.output)
-      && coreutilsFindVersion.ok && coreutilsGrepVersion.ok
-      && isWithinInstallDir(coreutilsFind, coreutilsRoot)
-      && isWithinInstallDir(coreutilsGrep, coreutilsRoot);
-    checks.push(check(
-      'coreutils',
-      'Microsoft Coreutils',
-      coreutilsOk,
-      coreutilsOk
-        ? `Microsoft Coreutils manager contract and enabled find/grep are available under ${coreutilsRoot}`
-        : 'Microsoft Coreutils manager contract and installation-relative enabled find/grep were not verified; install Microsoft.Coreutils with WinGet',
-      coreutils
-    ));
-
-    const gitVersion = await commandVersion(runner, git, commandEnv);
-    checks.push(check(
-      'git',
-      'Git',
-      gitVersion.ok && /(?:^|\r?\n)\s*git version\s+\d+\.\d+\.\d+/i.test(gitVersion.output),
-      gitVersion.ok ? `Git is available at ${git}` : 'Git was not found; install Git for Windows',
-      git
-    ));
-
-    const bunVersion = await commandVersion(runner, bun, commandEnv);
-    checks.push(check(
-      'bun',
-      'Bun',
-      bunVersion.ok && /(?:^|\r?\n)\s*\d+\.\d+\.\d+/i.test(bunVersion.output) && Boolean(versionNumbers(bunVersion.output)),
-      bunVersion.ok ? `Bun is available at ${bun}` : 'Bun was not found; install Bun and reopen the launcher',
-      bun
-    ));
-  }
+  const prerequisites = await verifyWindowsPrerequisites({
+    platform,
+    env,
+    commandRunner: runner,
+    nodeExecutable: options.nodeExecutable,
+    npmExecutable: options.npmExecutable,
+    pythonExecutable: options.pythonExecutable,
+    bunExecutable: options.bunExecutable,
+    pwshExecutable: options.pwshExecutable,
+    gitExecutable: options.gitExecutable,
+    coreutilsExecutable: options.coreutilsExecutable,
+    imageMagickExecutable: options.imageMagickExecutable
+  });
+  checks.push(...prerequisites.checks.map((item) => check(item.id, item.label, item.ok, item.detail, item.executable)));
+  const executablePaths: Record<string, string | undefined> = { ...prerequisites.executablePaths };
+  const pwsh = prerequisites.executablePaths.powershell;
+  const bun = prerequisites.executablePaths.bun;
+  const node = prerequisites.executablePaths.node;
 
   const runtime = await verifyRuntime(paths.runtimeDir, { bunExecutable: bun ?? 'bun', commandRunner: runner, env: commandEnv, platform });
   checks.push(check(
@@ -260,91 +124,88 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     credentials.path
   ));
 
-  if (platform === 'win32') {
-    const verifyAgentDependencies = options.verifyAgentDependencies ?? (async (context) => {
-      const mcpRuntime = join(context.paths.programRoot, 'runtime', 'mcp');
-      const mcp = await verifyMcpRuntime(mcpRuntime, context.platform);
-      return {
-        mcp: check('rpgmaker-mcp', 'RPG Maker MV MCP runtime', mcp.valid, mcp.valid ? `Pinned RPG Maker MV MCP ${mcp.packageVersion} is verified` : mcp.errors.join('; '), mcp.executable ?? mcpRuntime)
-      };
-    });
-    const agentDependencies = await verifyAgentDependencies({ platform, env: commandEnv, paths, commandRunner: runner });
-    checks.push(agentDependencies.mcp);
+  const verifyAgentDependencies = options.verifyAgentDependencies ?? (async (context) => {
+    const mcpRuntime = join(context.paths.programRoot, 'runtime', 'mcp');
+    const mcp = await verifyMcpRuntime(mcpRuntime, context.platform);
+    return {
+      mcp: check('rpgmaker-mcp', 'RPG Maker MV MCP runtime', mcp.valid, mcp.valid ? `Pinned RPG Maker MV MCP ${mcp.packageVersion} is verified` : mcp.errors.join('; '), mcp.executable ?? mcpRuntime)
+    };
+  });
+  const agentDependencies = await verifyAgentDependencies({ platform, env: commandEnv, paths, commandRunner: runner });
+  checks.push(agentDependencies.mcp);
 
-    const managedWebProfile = await (options.managedWebProfileVerifier ?? verifyManagedWebProfile)({
-      platform,
-      env: commandEnv,
-      dshHome: paths.dshHome,
-      programRoot: paths.programRoot,
-      mutableRoot: paths.mutableRoot,
-      runtimeDir: paths.runtimeDir,
-      dshExecutable,
-      npmExecutable: options.npmExecutable,
-      pnpmExecutable: undefined,
-      commandRunner: runner
-    });
-    checks.push(check(
-      'managed-web-profile',
-      'Managed Web profile',
-      managedWebProfile.valid,
-      managedWebProfile.valid
-        ? `Managed ${managedWebProfile.profile} profile has the exact pinned Web, image-generation, RPG Maker Agent brand, and workspace MCP packages`
-        : managedWebProfile.errors.join('; '),
-      managedWebProfile.profileDir
-    ));
+  const managedWebProfile = await (options.managedWebProfileVerifier ?? verifyManagedWebProfile)({
+    platform,
+    env: commandEnv,
+    dshHome: paths.dshHome,
+    programRoot: paths.programRoot,
+    mutableRoot: paths.mutableRoot,
+    runtimeDir: paths.runtimeDir,
+    dshExecutable,
+    npmExecutable: options.npmExecutable,
+    pnpmExecutable: undefined,
+    commandRunner: runner
+  });
+  checks.push(check(
+    'managed-web-profile',
+    'Managed Web profile',
+    managedWebProfile.valid,
+    managedWebProfile.valid
+      ? `Managed ${managedWebProfile.profile} profile has the exact pinned Web, image-generation, RPG Maker Agent brand, and workspace MCP packages`
+      : managedWebProfile.errors.join('; '),
+    managedWebProfile.profileDir
+  ));
 
-    const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env: commandEnv, programRoot: paths.programRoot, commandRunner: runner });
-    executablePaths.forgejoMcp = forgejoMcp.executablePath;
-    checks.push(check(
-      'forgejo-mcp',
-      'App-owned Forgejo MCP',
-      forgejoMcp.valid,
-      forgejoMcp.valid ? 'Pinned Forgejo MCP 2.34.1 is verified' : forgejoMcp.errors.join('; '),
-      forgejoMcp.executablePath
-    ));
+  const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env: commandEnv, programRoot: paths.programRoot, commandRunner: runner });
+  executablePaths.forgejoMcp = forgejoMcp.executablePath;
+  checks.push(check(
+    'forgejo-mcp',
+    'App-owned Forgejo MCP',
+    forgejoMcp.valid,
+    forgejoMcp.valid ? 'Pinned Forgejo MCP 2.34.1 is verified' : forgejoMcp.errors.join('; '),
+    forgejoMcp.executablePath
+  ));
 
-    const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome);
-    const effectivePolicyErrors: string[] = [];
-    if (dshExecutable) {
-      try {
-        await validateEffectiveTimeoutPolicyComposition(
-          dshExecutable,
-          timeoutPolicy.hostCompositionPath,
-          paths.mutableRoot,
-          platform,
-          { ...commandEnv, DSH_HOME: paths.dshHome },
-          runner
-        );
-      } catch (error) {
-        effectivePolicyErrors.push(error instanceof Error ? error.message : String(error));
-      }
-    } else {
-      effectivePolicyErrors.push('Pinned DSH executable was not found; the effective timeout policy was not validated.');
+  const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome);
+  const effectivePolicyErrors: string[] = [];
+  if (dshExecutable) {
+    try {
+      await validateEffectiveTimeoutPolicyComposition(
+        dshExecutable,
+        timeoutPolicy.hostCompositionPath,
+        paths.mutableRoot,
+        platform,
+        { ...commandEnv, DSH_HOME: paths.dshHome },
+        runner
+      );
+    } catch (error) {
+      effectivePolicyErrors.push(error instanceof Error ? error.message : String(error));
     }
-    const timeoutPolicyErrors = [...timeoutPolicy.errors, ...effectivePolicyErrors];
-    const timeoutPolicyValid = timeoutPolicyErrors.length === 0;
-    checks.push(check(
-      'tool-call-timeout-policy',
-      'Shared DSH tool-call timeout policy',
-      timeoutPolicyValid,
-      timeoutPolicyValid
-        ? `Pinned DSH ${RPGMAKER_DSH_PROFILE} profile supplies exactly one official ${DSH_TOOL_TIMEOUT_POLICY_PACKAGE} Host row across ${timeoutPolicy.coveredPresets.length} custom Agent presets`
-        : timeoutPolicyErrors.join('; '),
-      timeoutPolicy.hostCompositionPath
-    ));
-
-    const layoutPaths = [paths.mutableRoot, paths.dshHome, paths.logsDir, paths.cacheDir];
-    const layoutValues = await Promise.all(layoutPaths.map(async (path) => (await stat(path).catch(() => undefined))?.isDirectory() ?? false));
-    const layoutOk = layoutValues.every(Boolean);
-    checks.push(check(
-      'app-layout',
-      'Per-user DSH state layout',
-      layoutOk,
-      layoutOk ? `Program files use ${paths.programRoot}; mutable state uses ${paths.mutableRoot} with DSH_HOME at ${paths.dshHome}` : `Mutable state layout is incomplete under ${paths.mutableRoot}; run Install.cmd or repair the installation`,
-      paths.mutableRoot
-    ));
-
+  } else {
+    effectivePolicyErrors.push('Pinned DSH executable was not found; the effective timeout policy was not validated.');
   }
+  const timeoutPolicyErrors = [...timeoutPolicy.errors, ...effectivePolicyErrors];
+  const timeoutPolicyValid = timeoutPolicyErrors.length === 0;
+  checks.push(check(
+    'tool-call-timeout-policy',
+    'Shared DSH tool-call timeout policy',
+    timeoutPolicyValid,
+    timeoutPolicyValid
+      ? `Pinned DSH ${RPGMAKER_DSH_PROFILE} profile supplies exactly one official ${DSH_TOOL_TIMEOUT_POLICY_PACKAGE} Host row across ${timeoutPolicy.coveredPresets.length} custom Agent presets`
+      : timeoutPolicyErrors.join('; '),
+    timeoutPolicy.hostCompositionPath
+  ));
+
+  const layoutPaths = [paths.mutableRoot, paths.dshHome, paths.logsDir, paths.cacheDir];
+  const layoutValues = await Promise.all(layoutPaths.map(async (path) => (await stat(path).catch(() => undefined))?.isDirectory() ?? false));
+  const layoutOk = layoutValues.every(Boolean);
+  checks.push(check(
+    'app-layout',
+    'Per-user DSH state layout',
+    layoutOk,
+    layoutOk ? `Program files use ${paths.programRoot}; mutable state uses ${paths.mutableRoot} with DSH_HOME at ${paths.dshHome}` : `Mutable state layout is incomplete under ${paths.mutableRoot}; run Install.cmd or repair the installation`,
+    paths.mutableRoot
+  ));
 
   if (options.workspace) {
     checks.push(...await inspectWorkspaceSandbox({

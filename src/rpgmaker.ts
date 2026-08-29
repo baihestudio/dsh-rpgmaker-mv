@@ -636,6 +636,7 @@ export async function deployRpgMakerPresets(options: RpgMakerPresetDeploymentOpt
 
 export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Promise<RpgMakerLaunchPreparation> {
   const platform = options.platform ?? process.platform;
+  if (platform !== 'win32') throw new RpgMakerStartupError('RPG Maker Agent is supported on Windows only.');
   const ambientEnv = options.env ?? process.env;
   const paths = resolveHarnessPaths({ ...options, platform, env: ambientEnv });
   const env = { ...ambientEnv, DSH_HOME: paths.dshHome };
@@ -744,6 +745,7 @@ export interface RpgMakerLaunchResult extends LaunchResult {
 }
 
 export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Promise<RpgMakerLaunchResult> {
+  if ((options.platform ?? process.platform) !== 'win32') throw new RpgMakerStartupError('RPG Maker Agent is supported on Windows only.');
   if (options.webHost !== undefined && options.webHost !== WINDOWS_DSH_HOST) throw new RpgMakerStartupError(`The DSH web binding is fixed at ${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}.`);
   if (options.webPort !== undefined && options.webPort !== WINDOWS_DSH_PORT) throw new RpgMakerStartupError(`The DSH web binding is fixed at ${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}.`);
   if (options.dshArgs?.some((argument) => argument === '--project' || argument.startsWith('--project='))) {

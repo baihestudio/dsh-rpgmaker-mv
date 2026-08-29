@@ -270,7 +270,6 @@ describe('Windows release gate foundations', () => {
     expect(out.PATH).toBe('x;y');
     expect(Object.prototype.hasOwnProperty.call(out, 'Path')).toBe(false);
     expect(out.DSH_HOME).toBe('c');
-    expect(withEnvironmentPath({ PATH: 'a' }, 'x', 'darwin').PATH).toBe('x');
   });
 
   test('waits for process observation cleanup after a timeout', async () => {
@@ -1054,6 +1053,7 @@ describe('Windows release gate foundations', () => {
     const output: string[] = [];
     const errors: string[] = [];
     const exitCode = await runCli(['doctor', '--sandbox-probe'], {
+      platform: 'win32',
       io: {
         stdout: { write: (text) => output.push(String(text)) },
         stderr: { write: (text) => errors.push(String(text)) }

@@ -190,14 +190,7 @@ async function resolved(name: string, explicit: string | undefined, env: Record<
 export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOptions = {}): Promise<WindowsPrerequisiteReport> {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
-  if (platform !== 'win32') {
-    return {
-      ok: false,
-      checks: WINDOWS_PREREQUISITE_IDS.map((id) => check(id, id, id, false, 'Windows prerequisites are release-gated and were not checked on this host.')),
-      missing: [...WINDOWS_PREREQUISITE_IDS],
-      executablePaths: {}
-    };
-  }
+  if (platform !== 'win32') throw new Error('Windows prerequisite verification can only run on Windows.');
 
   const runner = options.commandRunner ?? runCommand;
   const node = await resolved('node', options.nodeExecutable ?? env.NODE_EXECUTABLE, env);

@@ -14,13 +14,12 @@ Forgejo API marks the tag signature as verified by the upstream release agent.
 [tag verification metadata](https://git.b4mad.industries/api/v1/repos/agentic-forges/forgejo-mcp/git/tags/2b696f7e387decf364e48a02f377e8e25a98fdc8)
 
 **It does not publish a Windows executable or Windows archive.** The
-`v2.34.1` release assets contain Linux and Darwin archives/MCPB packages,
+`v2.34.1` release assets contain only non-Windows archives/MCPB packages,
 SBOMs, and checksums, but no `windows_*` asset.
 [release page](https://git.b4mad.industries/agentic-forges/forgejo-mcp/releases/tag/v2.34.1),
 [release API asset list](https://git.b4mad.industries/api/v1/repos/agentic-forges/forgejo-mcp/releases/tags/v2.34.1)
-The tagged GoReleaser configuration is explicit: it builds only `linux` and
-`darwin` for `amd64` and `arm64`; its Windows archive override is therefore
-currently unreachable.
+The tagged GoReleaser configuration is explicit: it does not build Windows;
+its Windows archive override is therefore currently unreachable.
 [`.goreleaser.yml` at `v2.34.1`](https://git.b4mad.industries/agentic-forges/forgejo-mcp/raw/tag/v2.34.1/.goreleaser.yml)
 
 ## 1. What a reproducible Windows build would require
@@ -103,7 +102,7 @@ that actually exist; it cannot authenticate a nonexistent Windows asset.
 
 ## 4. Smallest credible recommendation
 
-For this Windows-first repository, choose **A for the first fully automatic
+For this Windows-only repository, choose **A for the first fully automatic
 install**: build and vendor one pinned `forgejo-mcp.exe` in the DSH Release
 ZIP. Pin `v2.34.1` and commit `223874f...` (or a later upstream release only
 after repeating this check). Keep the build recipe and provenance manifest
