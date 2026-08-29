@@ -4,8 +4,10 @@ export interface HostState {
   closed: boolean;
   runtimeDir?: string;
   workspaces: string[];
+  workspacePairs?: Array<{ engine: 'mv' | 'mz'; canonical: string; name?: string }>;
 }
 export interface AcquiredWorkspaceServer {
+  engine?: 'mv' | 'mz';
   name: string;
   canonical: string;
   tools: DiscoveredTool[];
@@ -23,12 +25,31 @@ export interface Host {
     canonical: string,
     definition: Record<string, unknown>
   ): Promise<AcquiredWorkspaceServer>;
+  acquireWorkspaceServer(
+    paths: { mcporterRuntime: string },
+    engine: 'mv' | 'mz',
+    canonical: string,
+    definition: Record<string, unknown>
+  ): Promise<AcquiredWorkspaceServer>;
   listWorkspaceTools(
     paths: { mcporterRuntime: string },
     canonical: string
   ): Promise<DiscoveredTool[]>;
+  listWorkspaceTools(
+    paths: { mcporterRuntime: string },
+    engine: 'mv' | 'mz',
+    canonical: string
+  ): Promise<DiscoveredTool[]>;
   callWorkspaceTool(
     paths: { mcporterRuntime: string },
+    canonical: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    options?: { signal?: AbortSignal }
+  ): Promise<unknown>;
+  callWorkspaceTool(
+    paths: { mcporterRuntime: string },
+    engine: 'mv' | 'mz',
     canonical: string,
     toolName: string,
     args: Record<string, unknown>,
@@ -42,6 +63,7 @@ export interface Host {
     options?: { signal?: AbortSignal }
   ): Promise<unknown>;
   closeWorkspaceServer(paths: { mcporterRuntime: string }, canonical: string): Promise<void>;
+  closeWorkspaceServer(paths: { mcporterRuntime: string }, engine: 'mv' | 'mz', canonical: string): Promise<void>;
   closeServer(paths: { mcporterRuntime: string }, serverName: string): Promise<void>;
   closeHost(): Promise<void>;
   normalizeMcpResult(result: unknown): NormalizedMcpResult | unknown;
@@ -67,11 +89,19 @@ export declare function acquireWorkspaceServer(
   canonical: string,
   definition: Record<string, unknown>
 ): Promise<AcquiredWorkspaceServer>;
+export declare function acquireWorkspaceServer(
+  host: Host,
+  paths: { mcporterRuntime: string },
+  engine: 'mv' | 'mz',
+  canonical: string,
+  definition: Record<string, unknown>
+): Promise<AcquiredWorkspaceServer>;
 export declare function listWorkspaceTools(
   host: Host,
   paths: { mcporterRuntime: string },
   canonical: string
 ): Promise<DiscoveredTool[]>;
+export declare function listWorkspaceTools(host: Host, paths: { mcporterRuntime: string }, engine: 'mv' | 'mz', canonical: string): Promise<DiscoveredTool[]>;
 export declare function callWorkspaceTool(
   host: Host,
   paths: { mcporterRuntime: string },
@@ -80,6 +110,7 @@ export declare function callWorkspaceTool(
   args: Record<string, unknown>,
   options?: { signal?: AbortSignal }
 ): Promise<unknown>;
+export declare function callWorkspaceTool(host: Host, paths: { mcporterRuntime: string }, engine: 'mv' | 'mz', canonical: string, toolName: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown>;
 export declare function callServerTool(
   host: Host,
   paths: { mcporterRuntime: string },
@@ -89,6 +120,7 @@ export declare function callServerTool(
   options?: { signal?: AbortSignal }
 ): Promise<unknown>;
 export declare function closeWorkspaceServer(host: Host, paths: { mcporterRuntime: string }, canonical: string): Promise<void>;
+export declare function closeWorkspaceServer(host: Host, paths: { mcporterRuntime: string }, engine: 'mv' | 'mz', canonical: string): Promise<void>;
 export declare function closeServer(host: Host, paths: { mcporterRuntime: string }, serverName: string): Promise<void>;
 export declare function closeHost(host: Host): Promise<void>;
 export declare const MCPORTER_CANCELLATION_CLEANUP_GRACE_MS: number;

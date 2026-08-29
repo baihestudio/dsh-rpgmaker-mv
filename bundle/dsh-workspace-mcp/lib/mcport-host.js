@@ -35,11 +35,11 @@ export function createHost() {
     resetHostState: () => resetHostState(state),
     getHostRuntime: (paths) => getHostRuntime(state, paths),
     registerServer: (paths, definition) => registerServer(state, paths, definition),
-    acquireWorkspaceServer: (paths, canonical, definition) => acquireWorkspaceServer(state, paths, canonical, definition),
-    listWorkspaceTools: (paths, canonical) => listWorkspaceTools(state, paths, canonical),
-    callWorkspaceTool: (paths, canonical, toolName, args, options) => callWorkspaceTool(state, paths, canonical, toolName, args, options),
+    acquireWorkspaceServer: (...args) => acquireWorkspaceServer(state, ...args),
+    listWorkspaceTools: (...args) => listWorkspaceTools(state, ...args),
+    callWorkspaceTool: (...args) => callWorkspaceTool(state, ...args),
     callServerTool: (paths, serverName, toolName, args, options) => callServerTool(state, paths, serverName, toolName, args, options),
-    closeWorkspaceServer: (paths, canonical) => closeWorkspaceServer(state, paths, canonical),
+    closeWorkspaceServer: (...args) => closeWorkspaceServer(state, ...args),
     closeServer: (paths, serverName) => closeServer(state, paths, serverName),
     closeHost: () => closeHost(state),
     normalizeMcpResult,
@@ -60,10 +60,12 @@ function createHostState() {
 
 /** Test/ops introspection: never model-facing. */
 export function hostState(host) {
+  const pairs = [...host.workspaceServers.values()].map((entry) => ({ engine: entry.engine, canonical: entry.canonical, name: entry.name }))
   return {
     closed: host.closed,
     runtimeDir: host.runtimeDir ?? undefined,
-    workspaces: [...host.workspaceServers.keys()]
+    workspaces: pairs.map((pair) => pair.engine === 'mv' ? pair.canonical : `${pair.engine}:${pair.canonical}`),
+    workspacePairs: pairs
   }
 }
 
@@ -119,9 +121,19 @@ export async function registerServer(host, paths, definition) {
  * server and lists its tools; concurrent and later callers await the same
  * promise. A failed acquisition stays failed for this Host generation.
  */
-export function acquireWorkspaceServer(host, paths, canonical, definition) {
+function parseWorkspaceArgs(engineOrCanonical, canonicalOrDefinition, maybeDefinition) {
+  if (maybeDefinition === undefined) return { engine: 'mv', canonical: engineOrCanonical, definition: canonicalOrDefinition }
+  return { engine: engineOrCanonical, canonical: canonicalOrDefinition, definition: maybeDefinition }
+}
+
+function workspaceKey(engine, canonical) {
+  return `${engine}\u0000${canonical}`
+}
+
+export function acquireWorkspaceServer(host, paths, engineOrCanonical, canonicalOrDefinition, maybeDefinition) {
+  const { engine, canonical, definition } = parseWorkspaceArgs(engineOrCanonical, canonicalOrDefinition, maybeDefinition)
   if (host.closed) return Promise.reject(new Error('dsh-workspace-mcp: the Host MCPorter runtime is closed'))
-  const existing = host.workspaceServers.get(canonical)
+  const existing = host.workspaceServers.get(workspaceKey(engine, canonical))
   if (existing) return existing.promise
   const promise = (async () => {
     const runtime = await getHostRuntime(host, paths)
@@ -130,7 +142,7 @@ export function acquireWorkspaceServer(host, paths, canonical, definition) {
       runtime.registerDefinition(definition, { overwrite: false })
       const tools = await runtime.listTools(definition.name, { includeSchema: true, disableOAuth: true })
       if (host.closed) throw new Error('dsh-workspace-mcp: the Host closed during workspace server acquisition')
-      return { name: definition.name, canonical, tools }
+      return { name: definition.name, engine, canonical, tools }
     } finally {
       // Host shutdown may close the Runtime before this listing establishes
       // its child. Close this capability after listing settles so a late
@@ -138,13 +150,15 @@ export function acquireWorkspaceServer(host, paths, canonical, definition) {
       if (host.closed) await runtime.close(definition.name).catch(() => undefined)
     }
   })()
-  host.workspaceServers.set(canonical, { promise })
+  host.workspaceServers.set(workspaceKey(engine, canonical), { promise, engine, canonical, name: definition.name })
   return promise
 }
 
 /** Schema-bearing tool listing for one registered workspace server. */
-export async function listWorkspaceTools(host, paths, canonical) {
-  const entry = host.workspaceServers.get(canonical)
+export async function listWorkspaceTools(host, paths, engineOrCanonical, maybeCanonical) {
+  const engine = maybeCanonical === undefined ? 'mv' : engineOrCanonical
+  const canonical = maybeCanonical === undefined ? engineOrCanonical : maybeCanonical
+  const entry = host.workspaceServers.get(workspaceKey(engine, canonical))
   if (!entry) throw new Error(`dsh-workspace-mcp: no workspace server is registered for ${canonical}`)
   const runtime = await getHostRuntime(host, paths)
   const { name } = await entry.promise
@@ -156,8 +170,14 @@ export async function listWorkspaceTools(host, paths, canonical) {
  * contained by closing that server (killing its pooled child), mirroring the
  * pi-fabric provider; mcporter reconnects on the next call.
  */
-export async function callWorkspaceTool(host, paths, canonical, toolName, args, options = {}) {
-  const entry = host.workspaceServers.get(canonical)
+export async function callWorkspaceTool(host, paths, engineOrCanonical, canonicalOrToolName, toolOrArgs, argsOrOptions, maybeOptions = {}) {
+  const explicitEngine = engineOrCanonical === 'mv' || engineOrCanonical === 'mz'
+  const engine = explicitEngine ? engineOrCanonical : 'mv'
+  const canonical = explicitEngine ? canonicalOrToolName : engineOrCanonical
+  const toolName = explicitEngine ? toolOrArgs : canonicalOrToolName
+  const args = explicitEngine ? argsOrOptions : toolOrArgs
+  const options = explicitEngine ? (maybeOptions ?? {}) : (argsOrOptions ?? {})
+  const entry = host.workspaceServers.get(workspaceKey(engine, canonical))
   if (!entry) throw new Error(`dsh-workspace-mcp: no workspace server is registered for ${canonical}`)
   const { name } = await entry.promise
   return callServerTool(host, paths, name, toolName, args, options)
@@ -238,8 +258,10 @@ export function callServerTool(host, paths, serverName, toolName, args, options 
 }
 
 /** Per-server close: the definition stays registered; the pooled child is gone. */
-export async function closeWorkspaceServer(host, paths, canonical) {
-  const entry = host.workspaceServers.get(canonical)
+export async function closeWorkspaceServer(host, paths, engineOrCanonical, maybeCanonical) {
+  const engine = maybeCanonical === undefined ? 'mv' : engineOrCanonical
+  const canonical = maybeCanonical === undefined ? engineOrCanonical : maybeCanonical
+  const entry = host.workspaceServers.get(workspaceKey(engine, canonical))
   if (!entry) return
   const { name } = await entry.promise
   await closeServer(host, paths, name)

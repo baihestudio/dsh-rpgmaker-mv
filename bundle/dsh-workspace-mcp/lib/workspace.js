@@ -1,19 +1,36 @@
 /**
- * Canonical workspace resolution and the fixed stdio server definition for one
- * RPG Maker MV workspace. The session header cwd is treated as the COMPLETE
- * project root: `Game.rpgproject`, `data`, and `js` must sit directly beneath
- * it. Parents are never searched and no path is accepted from workspace files.
+ * Canonical workspace resolution and fixed stdio definitions for the two
+ * supported RPG Maker engines. The session header cwd is treated as the
+ * COMPLETE project root. Parents and workspace-authored MCP configuration are
+ * never searched.
  */
 import { createHash } from 'node:crypto'
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { join, relative, resolve, sep } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { neutralizedServerEnv } from './env.js'
 
 export const MV_PROJECT_MARKER = 'Game.rpgproject'
 export const MV_REQUIRED_DIRECTORIES = ['data', 'js']
+export const MZ_PROJECT_MARKER = 'game.rmmzproject'
+export const MZ_REQUIRED_DIRECTORIES = ['data', 'js']
 export const XEROLO_PACKAGE = '@xerolo44/rpgmaker-mv-mcp'
+export const XEROLO_VERSION = '0.1.0'
 export const XEROLO_ENTRY = join('dist', 'index.js')
+export const MZ_PACKAGE = 'rpgmaker-mz-mcp'
+export const MZ_VERSION = '1.3.0'
+export const MZ_ENTRY = join('dist', 'index.js')
+export const ENGINE_IDS = ['mv', 'mz']
+export const RPGMAKER_ENGINES = {
+  mv: {
+    id: 'mv', marker: MV_PROJECT_MARKER, requiredDirectories: MV_REQUIRED_DIRECTORIES,
+    package: XEROLO_PACKAGE, version: XEROLO_VERSION, entry: XEROLO_ENTRY
+  },
+  mz: {
+    id: 'mz', marker: MZ_PROJECT_MARKER, requiredDirectories: MZ_REQUIRED_DIRECTORIES,
+    package: MZ_PACKAGE, version: MZ_VERSION, entry: MZ_ENTRY
+  }
+}
 /** Fixed timeout passed to every MCPorter runtime.callTool invocation. */
 export const MCPORTER_CALL_TIMEOUT_MS = 60_000
 
@@ -44,64 +61,110 @@ export async function canonicalWorkspace(cwd) {
   return canonical
 }
 
-/** Direct-children markers only; never searches parents. */
-export async function validateWorkspace(canonical) {
+/**
+ * Classify a canonical workspace from direct children only. A marker is an
+ * engine claim; both markers are deliberately ambiguous even if the rest of
+ * the layout happens to be valid. Missing directories are reported for the
+ * selected marker, or for both expected markers when no marker exists.
+ */
+export async function classifyWorkspace(canonical) {
+  const markerPresence = await Promise.all(ENGINE_IDS.map(async (id) => [id, await exists(join(canonical, RPGMAKER_ENGINES[id].marker), 'file')]))
+  const present = markerPresence.filter(([, value]) => value).map(([id]) => id)
+  if (present.length > 1) {
+    return {
+      valid: false, projectPath: canonical, engine: undefined, missing: [], markers: present.map((id) => RPGMAKER_ENGINES[id].marker), ambiguous: true
+    }
+  }
+  if (present.length === 0) {
+    return {
+      valid: false, projectPath: canonical, engine: undefined, missing: [MV_PROJECT_MARKER, MZ_PROJECT_MARKER, ...new Set([...MV_REQUIRED_DIRECTORIES, ...MZ_REQUIRED_DIRECTORIES])], markers: [], ambiguous: false
+    }
+  }
+  const engine = present[0]
+  const record = RPGMAKER_ENGINES[engine]
   const missing = []
-  if (!(await exists(join(canonical, MV_PROJECT_MARKER), 'file'))) missing.push(MV_PROJECT_MARKER)
-  for (const directory of MV_REQUIRED_DIRECTORIES) {
+  for (const directory of record.requiredDirectories) {
     if (!(await exists(join(canonical, directory), 'directory'))) missing.push(directory)
   }
-  return { valid: missing.length === 0, missing, projectPath: canonical }
+  return { valid: missing.length === 0, projectPath: canonical, engine, missing, markers: [record.marker], ambiguous: false }
 }
 
-/** Deterministic internal server name; a workspace identity, never a tool name. */
-export function privateServerName(canonical) {
+/** Direct-children validation; retained as the narrow public classifier seam. */
+export async function validateWorkspace(canonical) {
+  return classifyWorkspace(canonical)
+}
+
+/** Deterministic internal server name; an engine/workspace identity, never a tool name. */
+export function privateServerName(engineOrCanonical, maybeCanonical) {
+  // Keep the historical `(canonical)` and `(canonical, 'mz')` forms useful
+  // to callers while making `(engine, canonical)` the explicit contract.
+  const firstIsEngine = ENGINE_IDS.includes(engineOrCanonical)
+  const secondIsEngine = maybeCanonical === 'mv' || maybeCanonical === 'mz'
+  const reverse = secondIsEngine && !firstIsEngine
+  const engine = maybeCanonical === undefined ? 'mv' : reverse ? maybeCanonical : engineOrCanonical
+  const canonical = maybeCanonical === undefined ? engineOrCanonical : reverse ? engineOrCanonical : maybeCanonical
+  if (!ENGINE_IDS.includes(engine)) throw new Error(`dsh-workspace-mcp: unknown RPG Maker engine ${String(engine)}`)
   const digest = createHash('sha256').update(canonical).digest('hex')
-  return `rpgmaker-ws-${digest.slice(0, 12)}`
+  return `rpgmaker-${engine}-ws-${digest.slice(0, 12)}`
 }
 
-/** Resolve the pinned Xerolo JavaScript entry inside the owned runtime. */
-export async function resolveXeroloEntry(xeroloRuntime) {
-  const packageDir = join(xeroloRuntime, 'node_modules', XEROLO_PACKAGE)
+/** Resolve one pinned engine JavaScript entry inside the owned runtime. */
+export async function resolveEngineEntry(engineOrRuntime, maybeRuntime) {
+  const engine = maybeRuntime === undefined ? 'mv' : engineOrRuntime
+  const runtime = maybeRuntime === undefined ? engineOrRuntime : maybeRuntime
+  const record = RPGMAKER_ENGINES[engine]
+  if (!record) throw new Error(`dsh-workspace-mcp: unknown RPG Maker engine ${String(engine)}`)
+  const packageDir = join(runtime, 'node_modules', ...record.package.split('/'))
   const manifest = await readFile(join(packageDir, 'package.json'), 'utf8')
     .then((text) => JSON.parse(text))
     .catch(() => undefined)
   const bins = asRecord(manifest?.bin)
-  const entry = typeof manifest?.bin === 'string' ? manifest.bin : bins?.['rpgmaker-mv-mcp']
+  const binName = engine === 'mv' ? 'rpgmaker-mv-mcp' : 'rpgmaker-mz-mcp'
+  const entry = typeof manifest?.bin === 'string' ? manifest.bin : bins?.[binName]
   if (typeof entry !== 'string' || !/\.(?:c?m?js)$/i.test(entry)) {
-    throw new Error(`dsh-workspace-mcp: the pinned ${XEROLO_PACKAGE} package has no JavaScript entry`)
+    throw new Error(`dsh-workspace-mcp: the pinned ${record.package} package has no JavaScript entry`)
   }
   const candidate = resolve(packageDir, entry)
   if (!(await exists(candidate, 'file'))) {
-    throw new Error(`dsh-workspace-mcp: the pinned Xerolo entry does not exist: ${candidate}`)
+    throw new Error(`dsh-workspace-mcp: the pinned ${engine.toUpperCase()} entry does not exist: ${candidate}`)
   }
-  let runtimeReal = xeroloRuntime
+  let runtimeReal = runtime
   let entryReal = candidate
   try {
-    runtimeReal = await realpath(xeroloRuntime)
+    runtimeReal = await realpath(runtime)
     entryReal = await realpath(candidate)
   } catch {
     // The direct checks above already established existence; a realpath
     // failure here means an odd filesystem, so keep the lexical paths.
   }
   const remainder = relative(runtimeReal, entryReal)
-  if (remainder === '..' || remainder.startsWith(`..${sep}`)) {
-    throw new Error('dsh-workspace-mcp: the pinned Xerolo entry escapes the app-owned runtime')
+  if (isAbsolute(remainder) || remainder === '..' || remainder.startsWith(`..${sep}`)) {
+    throw new Error(`dsh-workspace-mcp: the pinned ${engine.toUpperCase()} entry escapes the app-owned runtime`)
   }
   return candidate
 }
 
-/** The fixed stdio definition for one workspace; nothing is model-supplied. */
-export async function buildWorkspaceDefinition(canonical, paths, env = process.env) {
-  const entry = await resolveXeroloEntry(paths.xeroloRuntime)
+export async function resolveXeroloEntry(xeroloRuntime) {
+  return resolveEngineEntry('mv', xeroloRuntime)
+}
+
+/** The fixed stdio definition for one engine/workspace pair; nothing is model-supplied. */
+export async function buildWorkspaceDefinition(engineOrCanonical, canonicalOrPaths, pathsOrEnv, maybeEnv) {
+  const explicitEngine = typeof engineOrCanonical === 'string' && ENGINE_IDS.includes(engineOrCanonical)
+  const engine = explicitEngine ? engineOrCanonical : 'mv'
+  const canonical = explicitEngine ? canonicalOrPaths : engineOrCanonical
+  const paths = explicitEngine ? pathsOrEnv : canonicalOrPaths
+  const env = explicitEngine ? (maybeEnv ?? process.env) : (pathsOrEnv ?? process.env)
+  const record = RPGMAKER_ENGINES[engine]
+  const entry = await resolveEngineEntry(engine, paths.rpgmakerRuntime ?? paths.xeroloRuntime)
+  const command = engine === 'mv'
+    ? { kind: 'stdio', command: paths.runner, args: [entry, '--project', canonical], cwd: canonical }
+    : { kind: 'stdio', command: paths.runner, args: [entry], cwd: canonical }
+  const childEnv = neutralizedServerEnv(env)
+  if (engine === 'mz') childEnv.RPGMAKER_PROJECT_PATH = canonical
   return {
-    name: privateServerName(canonical),
-    command: {
-      kind: 'stdio',
-      command: paths.runner,
-      args: [entry, '--project', canonical],
-      cwd: canonical
-    },
-    env: neutralizedServerEnv(env)
+    name: privateServerName(engine, canonical),
+    command,
+    env: childEnv
   }
 }

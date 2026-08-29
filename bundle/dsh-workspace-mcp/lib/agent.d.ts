@@ -12,11 +12,19 @@ export declare function apply(ctx: {
 }): void;
 export {
   XEROLO_MANIFEST,
+  MZ_MANIFEST,
+  RPGMAKER_MV_MANIFEST,
+  RPGMAKER_MZ_MANIFEST,
   XEROLO_TOOL_NAMES,
+  MZ_TOOL_NAMES,
   XEROLO_MANIFEST_SHA256,
+  MZ_MANIFEST_SHA256,
   TOOL_NAME_PREFIX,
   RESERVED_DSH_TOOL_NAME,
   schemaProblem,
+  manifestFor,
+  contractFor,
+  missingCriticalTools,
   manifestDigest,
   verifyManifest,
   validateDiscoveredTools,
@@ -27,16 +35,24 @@ export {
   neutralizedServerEnv,
   SECRET_MARKER,
   MCPORTER_RUNTIME_ENV,
+  RPGMAKER_MCP_RUNTIME_ENV,
+  RPGMAKER_RUNTIME_ENV,
   XEROLO_RUNTIME_ENV,
   JS_RUNNER_ENV
 } from './env.js';
 export {
+  ENGINE_IDS,
+  RPGMAKER_ENGINES,
   canonicalWorkspace,
+  classifyWorkspace,
   validateWorkspace,
   privateServerName,
+  resolveEngineEntry,
   buildWorkspaceDefinition,
   MV_PROJECT_MARKER,
   MV_REQUIRED_DIRECTORIES,
+  MZ_PROJECT_MARKER,
+  MZ_REQUIRED_DIRECTORIES,
   MCPORTER_CALL_TIMEOUT_MS
 } from './workspace.js';
 export { toModelName, createMcpTool } from './tools.js';

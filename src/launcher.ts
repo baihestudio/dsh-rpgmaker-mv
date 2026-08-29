@@ -22,9 +22,9 @@ import {
 
 export const SINGLE_WRITER_NOTICE = [
   'Agent single-writer contract',
-  'Choose an RPG Maker MV workspace in DSH Web; the agent and its RPG Maker tools are the sole writers while that session is running.',
+  'Choose an RPG Maker MV or MZ workspace in DSH Web; the selected engine agent and its RPG Maker tools are the sole writers while that session is running.',
   'Do not have multiple Agents write to the same project at the same time.',
-  'If the RPG Maker MV editor is open, it is read-only: do not save from the editor.',
+  'If the RPG Maker MV or MZ editor is open, it is read-only: do not save from the editor.',
   'Reopen the project in the editor before inspecting changes made by the agent.'
 ].join('\n');
 

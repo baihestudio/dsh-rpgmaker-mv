@@ -28,18 +28,18 @@ export function toModelName(rawName) {
 }
 
 /** One generated tool bound to a capability-local Agent initializer. */
-export function createMcpTool(rawTool, capability) {
+export function createMcpTool(rawTool, capability, engine = 'mv') {
   const name = toModelName(rawTool.name)
   return {
     name,
-    description: typeof rawTool.description === 'string' ? rawTool.description : `RPG Maker MV ${rawTool.name}`,
+    description: typeof rawTool.description === 'string' ? rawTool.description : `RPG Maker ${String(engine).toUpperCase()} ${rawTool.name}`,
     parameters: normalizeSchema(rawTool.inputSchema),
     output: { schema: {}, render: renderResult },
     execute: async (args, exec) => {
       const agent = exec?.agent
       if (!agent) throw new Error(`dsh-workspace-mcp: ${name} execution supplied no Agent`)
-      const { host, canonical, paths } = await capability.init(agent)
-      const result = await host.callWorkspaceTool(paths, canonical, rawTool.name, args ?? {}, {
+      const { host, engine, canonical, paths } = await capability.init(agent)
+      const result = await host.callWorkspaceTool(paths, engine, canonical, rawTool.name, args ?? {}, {
         signal: exec.signal
       })
       return canonicalMcpValue(result)

@@ -1,11 +1,15 @@
 ---
 name: playtest-debug
-description: Static validation plus NW.js-or-browser RPG Maker MV Playtest diagnosis.
+description: Static validation plus NW.js-or-browser RPG Maker MV Playtest diagnosis; MZ runtime control is explicitly unsupported.
 ---
 
 # Playtest Debug
 
 ## Scope
+
+This Skill applies only to MV workspaces. If the selected workspace is RPG Maker
+MZ, report Playtest launch/status/log/stop, screenshots, input, and build/release
+requests as unsupported and do not call the MV Playtest tools.
 
 This Agent reports process, log, and workspace evidence through the stable workspace tools. It may analyze images the user attaches in DSH Web, including visible text and visual details, but a supplied image proves only what it depicts and does not replace process/log evidence or automated gameplay observation; it does not provide AI image generation.
 

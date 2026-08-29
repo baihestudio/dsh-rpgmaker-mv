@@ -139,16 +139,27 @@ function summarize(record, project, entry, platform) {
   }
 }
 
-export async function observeXeroloChildren({ project, entry, platform = process.platform, env = process.env }) {
+export async function observeRpgMakerChildren({ project, entry, engine = 'mv', platform = process.platform, env = process.env }) {
   const records = await listProcessRecords(platform, env)
   const summaries = records.map((record) => summarize(record, project, entry, platform))
-  const children = summaries.filter((record) => record.entryObserved && record.projectObserved && record.projectArgumentObserved)
+  // MZ deliberately carries the canonical project only through cwd and the
+  // fixed RPGMAKER_PROJECT_PATH environment variable; neither appears in a
+  // Windows process command line. Entry identity plus the absence of a
+  // project argv is therefore the observable MZ child contract. MV retains
+  // its explicit --project/project-token match.
+  const children = summaries.filter((record) => engine === 'mz'
+    ? record.entryObserved && !record.projectArgumentObserved
+    : record.entryObserved && record.projectObserved && record.projectArgumentObserved)
   const shellProcesses = summaries.filter((record) => record.projectObserved && record.projectArgumentObserved && shellImage(record.image))
   return {
     processTableSize: records.length,
     children,
     shellProcesses
   }
+}
+
+export async function observeXeroloChildren({ project, entry, platform = process.platform, env = process.env }) {
+  return observeRpgMakerChildren({ project, entry, engine: 'mv', platform, env })
 }
 
 export async function observeLauncherProcesses({ installedRoot, platform = process.platform, env = process.env }) {

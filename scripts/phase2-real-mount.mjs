@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url'
 import { realpath } from 'node:fs/promises'
-import { observeXeroloChildren } from './process-observation.mjs'
+import { observeRpgMakerChildren } from './process-observation.mjs'
 
 if (process.platform !== 'win32') throw new Error('Phase 2 real mount is supported on Windows only.')
 
@@ -39,10 +39,11 @@ function stableNames(schemas) {
   return schemas.filter((schema) => typeof schema?.name === 'string' && schema.name.startsWith('rpgmaker_')).map((schema) => schema.name).sort()
 }
 
+const engine = process.env.RPGMAKER_ENGINE === 'mz' ? 'mz' : 'mv'
 const project = process.env.PROJECT_PATH
 const neutralLanding = process.env.NEUTRAL_LANDING_DIR
-const xeroloEntry = process.env.XEROLO_ENTRY
-if (!project || !neutralLanding || !xeroloEntry) throw new Error('PROJECT_PATH, NEUTRAL_LANDING_DIR, and XEROLO_ENTRY are required')
+const rpgmakerEntry = engine === 'mz' ? process.env.MZ_ENTRY : process.env.XEROLO_ENTRY
+if (!project || !neutralLanding || !rpgmakerEntry) throw new Error(`PROJECT_PATH, NEUTRAL_LANDING_DIR, and ${engine === 'mz' ? 'MZ_ENTRY' : 'XEROLO_ENTRY'} are required`)
 const [actualNeutralLanding, expectedNeutralLanding] = await Promise.all([realpath(process.cwd()), realpath(neutralLanding)])
 if (actualNeutralLanding !== expectedNeutralLanding) throw new Error(`DSH did not start from the neutral landing directory: ${process.cwd()}`)
 if (!/[\u4e00-\u9fff]/.test(project) || !project.includes(' ')) throw new Error(`CJK/space project fixture was lost: ${project}`)
@@ -56,7 +57,7 @@ try {
   mounted = await profileModule.runProfile({
     profile: 'web',
     patchFiles: [process.env.COMPOSITION_FILE],
-    // The Agent/Xerolo probe needs the pinned DSH Web profile services, not its
+    // The Agent/RPG Maker probe needs the pinned DSH Web profile services, not its
     // default listener. The pinned DSH accepts port 0 as an OS-assigned port, so this
     // disposable mount stays off 3080.
     args: ['--port', '0'],
@@ -95,7 +96,7 @@ try {
   }
   const immediateSchemas = first.agent?.ctx?.tools?.schemas?.(first.agent?.ctx?.agent)
   if (!Array.isArray(immediateSchemas)) throw new Error('Agent tool provider did not expose synchronous schemas')
-  const expectedNames = agentBundle.XEROLO_TOOL_NAMES.map((name) => `rpgmaker_${name}`).sort()
+  const expectedNames = (engine === 'mz' ? agentBundle.MZ_TOOL_NAMES : agentBundle.XEROLO_TOOL_NAMES).map((name) => `rpgmaker_${name}`).sort()
   if (JSON.stringify(stableNames(immediateSchemas)) !== JSON.stringify(expectedNames)) {
     throw new Error(`stable manifest tools were not synchronously collected: ${stableNames(immediateSchemas).length}`)
   }
@@ -131,7 +132,8 @@ try {
   if (stateAfterAgents.runtimeDir !== runtimePaths.mcporterRuntime) {
     throw new Error(`Host used an unexpected MCPorter runtime: ${stateAfterAgents.runtimeDir}`)
   }
-  if (stateAfterAgents.workspaces.length !== 1 || stateAfterAgents.workspaces[0] !== canonicalProject) {
+  const expectedWorkspace = engine === 'mz' ? `mz:${canonicalProject}` : canonicalProject
+  if (stateAfterAgents.workspaces.length !== 1 || stateAfterAgents.workspaces[0] !== expectedWorkspace) {
     throw new Error(`expected one pooled canonical workspace server, got ${JSON.stringify(stateAfterAgents.workspaces)}`)
   }
 
@@ -158,17 +160,18 @@ try {
     return result.value ?? result
   }
 
-  const infoA = unwrap(await call(first, 'get_project_info', {}))
-  if (typeof infoA?.gameTitle !== 'string' || infoA.gameTitle.length === 0) throw new Error(`unexpected project info: ${JSON.stringify(infoA)}`)
+  const infoA = unwrap(await call(first, engine === 'mz' ? 'get_project' : 'get_project_info', {}))
+  if (engine === 'mz' ? !infoA || typeof infoA !== 'object' : typeof infoA?.gameTitle !== 'string' || infoA.gameTitle.length === 0) throw new Error(`unexpected project info: ${JSON.stringify(infoA)}`)
   assertValidation('real workspace', await call(second, 'validate_project', {}))
   const stateAfterCalls = hostBundle.hostState(mounted.ctx)
   if (stateAfterCalls.runtimeDir !== runtimePaths.mcporterRuntime || stateAfterCalls.workspaces.length !== 1) {
     throw new Error('pooled workspace calls did not remain on the single Host runtime/server')
   }
 
-  const xeroloProcessEvidence = await observeXeroloChildren({
+  const xeroloProcessEvidence = await observeRpgMakerChildren({
     project: canonicalProject,
-    entry: xeroloEntry,
+    entry: rpgmakerEntry,
+    engine,
     platform: 'win32',
     env: process.env
   })
@@ -182,6 +185,7 @@ try {
     hostRuntime: stateAfterCalls.runtimeDir,
     workspaceServers: stateAfterCalls.workspaces.length,
     pooledXeroloChildren: xeroloProcessEvidence.children.length,
+    engine,
     stableTools: expectedNames.length,
     directAgentToolCalls,
     xeroloProcessEvidence

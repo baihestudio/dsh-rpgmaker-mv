@@ -1,12 +1,12 @@
 # RPG Maker Agent
-The AI production agent for RPG Maker MV
+The AI production agent for RPG Maker MV and MZ
 
 用户如何使用制作猿及其内置 Skills，请看 [用户指南](docs/user-guide.md)。安装、更新和
 卸载则看 [Windows 安装与维护指南](docs/windows-release.md)。
 
 ## Windows Release ZIP (Phase 7)
 
-For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs Python 3.13 and ImageMagick 7 as Windows-wide Agent utilities, installs the pinned DSH and RPG Maker MCP, and creates the per-user Start Menu shortcut **RPG Maker Agent**. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
+For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs Python 3.13 and ImageMagick 7 as Windows-wide Agent utilities, installs the pinned DSH plus both RPG Maker MV and MZ editing MCPs, and creates the per-user Start Menu shortcut **RPG Maker Agent**. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
 
 The full first-run, repair, port-conflict, workspace-selection, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata and preserves rollback/recovery state, mutable state, credentials, logs, and projects; `uninstall.ps1 -Purge` is explicit.
 
@@ -22,7 +22,7 @@ The harness keeps the official DeepSeek Harness runtime in an app-owned tree and
 The real workspace acceptance uses only disposable state: `bun run phase2:real`
 prepares the project-neutral Host from a neutral landing directory, checks the
 CJK/space workspace, one pooled Host server, synchronously collected stable
-`rpgmaker_*` tools, direct Agent-scoped calls, and observed Xerolo child
+`rpgmaker_*` tools, direct Agent-scoped calls, and observed engine/workspace child
 identity. Its machine JSON reports the actual child/process evidence and shell
 process observations; it does not claim a picker or permission retry from a
 constant. The installed-tree Windows gate is the exact NUC command sequence:
@@ -52,9 +52,9 @@ On Windows, program-owned DSH/MCP/tool runtimes default under `%LOCALAPPDATA%\\P
 The Windows launcher is project-neutral: it never opens a folder picker, reads
 recent projects, writes app-owned project-selection state, or accepts
 `launch --project`. The Release ZIP carries the prebuilt
-`bundle/dsh-workspace-mcp` package and generated Xerolo manifest. Launch
+`bundle/dsh-workspace-mcp` package and generated MV/MZ manifests. Launch
 prepares and verifies the pinned DSH, pnpm 10.15.1, MCPorter 0.12.3, Xerolo
-0.1.0, the exact app-managed `web` profile (four direct packages and six
+0.1.0 and Redseb MZ MCP 1.3.0, the exact app-managed `web` profile (four direct packages and six
 ordered bundle layers: the DSH base/web-app template followed by Web, image
 generation, brand, and workspace MCP), the default preset, and the effective composition before
 starting official DSH. DSH starts in
@@ -66,14 +66,16 @@ their logged model choice. User-attached PNG, JPEG, WebP, and GIF images may be
 read as image input; this does not add image generation, remote URL ingestion,
 or automated gameplay capture.
 
-The workspace bundle validates `Game.rpgproject`, `data`, and `js` directly
-under the DSH Web workspace. Each Agent receives stable names such as
+The workspace bundle validates either `Game.rpgproject` (MV) or
+`game.rmmzproject` (MZ), plus `data` and `js`, directly under the DSH Web
+workspace. Each Agent receives stable names such as
 `rpgmaker_validate_project`; workspace hashes, session identifiers, and MCP
 transport names never appear in prompts or history. Agents in one workspace
-share one warm connection, while different workspaces remain isolated. The
+share one warm connection for the selected engine, while different
+engine/workspace pairs remain isolated. The
 workspace server is Host-lifetime: it stays warm after its last Agent leaves and
 closes only when the Host shuts down. There is no concurrent-writer locking or
-serialization and no idle eviction. If a pooled Xerolo child crashes, affected
+serialization and no idle eviction. If a pooled engine child crashes, affected
 workspace Agents fail until the Host restarts; automatic child restart is not
 provided.
 
@@ -81,7 +83,7 @@ The launcher always shows this editing contract:
 
 - The agent and its `rpgmaker_*` tools are the sole writers while the session is running.
 - Do not have multiple Agents write to the same project at the same time.
-- If the RPG Maker MV editor is open, it is read-only; do not save from it.
+- If the RPG Maker MV or MZ editor is open, it is read-only; do not save from it.
 - Reopen the project in the editor before inspecting agent changes.
 
 If neither `DEEPSEEK_API_KEY` nor DSH's local credential metadata is present, DSH's loopback-only local onboarding is called out before launch. The launcher never reads back, stores, or prints the credential value, and does not put it in generated settings, project files, or logs.
@@ -91,21 +93,21 @@ If neither `DEEPSEEK_API_KEY` nor DSH's local credential metadata is present, DS
 ```powershell
 bun test
 bun run check
-# Optional real project-neutral DSH + Xerolo workspace acceptance
+# Optional real project-neutral DSH + dual-engine workspace acceptance
 bun run phase2:real
 ```
 
-Tests use disposable runtime, DSH home, credential, and MV project directories. They do not touch a user's installed DSH state, RPG Maker projects, applications, or credentials. The ordinary suite uses fake prerequisite/runtime executables; `bun run phase2:real` additionally installs the pinned DSH/MCPorter/Xerolo packages into a disposable temp runtime and verifies the project-neutral workspace Host, 41 stable tools, CJK/space paths, one pooled server, and shutdown. The two-workspace mutation matrix remains in the ordinary workspace test; it is not duplicated in the Windows gate. Real PowerShell/Coreutils identity, Windows `.cmd` launch, and installed MV checks remain the complementary Windows runner gate.
+Tests use disposable runtime, DSH home, credential, and MV/MZ project directories. They do not touch a user's installed DSH state, RPG Maker projects, applications, or credentials. The ordinary suite uses fake prerequisite/runtime executables; the optional real gate installs the pinned DSH/MCPorter/Xerolo/Redseb packages only into a disposable temp runtime and verifies the selected engine tool contract. Real PowerShell/Coreutils identity, Windows `.cmd` launch, and installed project checks remain the complementary Windows runner gate.
 
 ## Phase 2: RPG Maker Agent and MCP editing loop
 
-`launch.ps1` prepares the exact-pinned app-owned MCPorter and Xerolo runtimes,
+`launch.ps1` prepares the exact-pinned app-owned MCPorter and dual-engine RPG Maker runtimes,
 the complete managed `web` profile (including the local `dsh-workspace-mcp`
 Host bundle), the default `rpgmaker` preset, and a project-neutral
 `web --dump-config` composition before launch. The picker displays
-`🐒 制作猿`. The access layer supplies stable `rpgmaker_<raw Xerolo name>` tools
+`🐒 制作猿`. The access layer supplies stable `rpgmaker_<raw engine tool name>` tools
 synchronously and validates the live workspace connection before the first request.
-Invalid workspaces fail before a server starts.
+Invalid or ambiguous workspaces fail before a server starts.
 
 Every shipped preset mounts the official DSH `@deepseek-ai/dsh-mcp-client`
 for the upstream Forgejo MCP server, so its full tool surface is published with
@@ -155,6 +157,12 @@ exactly one effective official row in the custom Agent preset; the
 preset compositions never contain it. Re-running preparation rewrites the
 app-owned patch, repairing older generated patches that inserted a duplicate.
 
+MZ workspaces use Redseb's pinned 119-tool editing surface, including targeted
+database/map/event/tile writes, dry-run previews, and project/reference
+validation. MZ Playtest launch/status/log/stop, screenshots, runtime input, and
+build/release automation are intentionally unsupported; the Playtest Debug
+preset reports that boundary instead of launching an MV runtime.
+
 ## Phase 3: 游戏设计与文档
 
 `🐒 制作猿` 在机制、叙事、节奏、数值、玩家目标或设计文档任务中按需读取
@@ -164,7 +172,7 @@ app-owned patch, repairing older generated patches that inserted a duplicate.
 
 ## Phase 4: Playtest 调试
 
-`🐒 制作猿` 直接完成真实 Playtest 与日志诊断。发起调试时，它先通过 Skill 工具读取并遵循 `presets/rpgmaker/skills/playtest-debug/` Skill，按有界序列编排稳定的 `rpgmaker_*` 工具：静态验证、空闲预检、有界 Steam App ID `363890` 发现、存在 `nwjs-win\Game.exe` 时 NW.js 启动、否则浏览器模式回退、有界状态/日志观察、MCP stop 与停止后状态确认。它绝不递归扫描磁盘，拒绝已运行的 Playtest，不认领 PID 也不调用 OS 进程控制，MCP 状态无法确认清理时如实报告 unverified。浏览器回退返回可玩 URL，但 `rpgmaker_playtest_log` 无法捕获浏览器 DevTools 控制台输出。
+`🐒 制作猿` 在 MV 工作空间直接完成真实 Playtest 与日志诊断。发起调试时，它先通过 Skill 工具读取并遵循 `presets/rpgmaker/skills/playtest-debug/` Skill，按有界序列编排稳定的 `rpgmaker_*` 工具：静态验证、空闲预检、有界 Steam App ID `363890` 发现、存在 `nwjs-win\Game.exe` 时 NW.js 启动、否则浏览器模式回退、有界状态/日志观察、MCP stop 与停止后状态确认。MZ 工作空间不提供 Playtest、截图、运行时输入或构建发布，相关请求会如实报告不支持。它绝不递归扫描磁盘，拒绝已运行的 Playtest，不认领 PID 也不调用 OS 进程控制，MCP 状态无法确认清理时如实报告 unverified。浏览器回退返回可玩 URL，但 `rpgmaker_playtest_log` 无法捕获浏览器 DevTools 控制台输出。
 
 报告区分静态验证、进程启动、崩溃/日志证据、清理确认与行为/视觉验证。进程启动和干净日志不是行为验证。Harness 拥有的进程树清理属于独立的 automated-playtest 能力；截图/输入/gameplay 自动化不在本仓库范围。
 
@@ -179,11 +187,11 @@ app-owned patch, repairing older generated patches that inserted a duplicate.
 
 All launcher, preset, Windows shell, MCP, and Playtest contracts are mounted and checked against the official `@deepseek-ai/dsh@0.1.1-rc.2` runtime. The staged runtime verifies Bun installation/trust, the exact top-level package version and npm integrity, the DSH executable, and `koffi` before an atomic swap. Post-swap verification restores the prior runtime on failure and preserves the unverified tree for inspection; no live runtime is mutated in place.
 
-The Xerolo MCP lock check is deliberately limited to its stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata and unrelated Bun lock internals are not pinned. The production editing contract is the mounted RPG Maker skills plus stable `rpgmaker_*` tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, and schema rejection.
+The MV and MZ MCP lock checks are deliberately limited to their stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata and unrelated Bun lock internals are not pinned. The production editing contract is the mounted RPG Maker skills plus stable `rpgmaker_*` tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, and schema rejection.
 
 ## Editing model
 
-In the first release, the agent is the sole writer while an RPG Maker MV workspace is under agent control; do not have multiple Agents write to it simultaneously. The editor may remain open only for read-only reference: users must not save from it, and must reopen the project before inspecting agent changes.
+In the first release, the agent is the sole writer while an RPG Maker MV or MZ workspace is under agent control; do not have multiple Agents write to it simultaneously. The editor may remain open only for read-only reference: users must not save from it, and must reopen the project before inspecting agent changes.
 
 ## Phase 7: Windows release gate
 

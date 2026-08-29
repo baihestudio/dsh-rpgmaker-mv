@@ -1,6 +1,6 @@
 ---
 name: image-assets
-description: Handle an RPG Maker MV image asset when the task needs new art, a visual edit, pixel scaling, transparency cleanup, cropping, or sprite-sheet preparation.
+description: Handle an RPG Maker MV or MZ image asset when the task needs new art, a visual edit, pixel scaling, transparency cleanup, cropping, or sprite-sheet preparation.
 ---
 
 # RPG Maker image assets
@@ -20,7 +20,7 @@ as PNG and inspect the result with `magick identify`. Preserve fixed grids: do n
 trim, resize, or crop a tileset or sprite sheet until its cell dimensions are
 known.
 
-- Pixel art: use integer nearest-neighbour scaling (`-filter point -resize`).
+- Pixel art for either RPG Maker engine: use integer nearest-neighbour scaling (`-filter point -resize`).
 - Green screen: confirm whether green foreground detail must survive, then tune
   `-fuzz` with `-transparent '#00FF00'`; use `-trim +repage` only when changing
   canvas origin is safe.
@@ -28,4 +28,5 @@ known.
   requested cell size before using `-crop <cellWidth>x<cellHeight> +repage`.
 
 After preparation, place or reference the approved PNG through the normal RPG
-Maker task flow and validate the project when the change affects game content.
+Maker task flow and validate the selected project when the change affects game
+content. The image workflow does not add MZ Playtest or build support.

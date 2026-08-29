@@ -12,7 +12,7 @@ export const WORKSPACE_MCP_BUNDLE_PATCH = './cordis.patch.yml';
 export const WORKSPACE_MCP_ROW_ID = 'workspace-mcp';
 export const WORKSPACE_MCP_AGENT_ROW_ID = 'workspace-mcp-agent';
 /** Deterministic digest over the shipped prebuilt bundle; see scripts/release notes. */
-export const WORKSPACE_MCP_SHA256 = 'c316a730f28205d37df67d1365f696554c724c29ae765ce2818464dd19e40433';
+export const WORKSPACE_MCP_SHA256 = 'd790562f419914fc68ecff50376bf66ea789f4e9b069fedb010dadfabe8f8000';
 export const WORKSPACE_MCP_BUNDLE_RELATIVE = join('bundle', 'dsh-workspace-mcp');
 export const WORKSPACE_MCP_DATA_BUNDLE_RELATIVE = join('rpgmaker-mv', 'bundle', 'dsh-workspace-mcp');
 /** Archive entries always use POSIX separators, including on Windows. */
@@ -21,6 +21,10 @@ export const WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE = 'bundle/dsh-workspace-mcp';
 /** Host env contract consumed by the prebuilt workspace bundle. */
 export const MCPORTER_RUNTIME_ENV = 'DSH_RPGMAKER_MCPORTER_RUNTIME';
 export const XEROLO_RUNTIME_ENV = 'DSH_RPGMAKER_XEROLO_RUNTIME';
+/** Generic name for the shared runtime containing both MV and MZ packages. */
+export const RPGMAKER_MCP_RUNTIME_ENV = 'DSH_RPGMAKER_MCP_RUNTIME';
+/** Short alias used by the prebuilt bundle's generic engine contract. */
+export const RPGMAKER_RUNTIME_ENV = RPGMAKER_MCP_RUNTIME_ENV;
 export const JS_RUNNER_ENV = 'DSH_RPGMAKER_JS_RUNNER';
 
 export function workspaceMcpBundleDirFor(paths: Pick<HarnessPaths, 'dshHome'>): string {

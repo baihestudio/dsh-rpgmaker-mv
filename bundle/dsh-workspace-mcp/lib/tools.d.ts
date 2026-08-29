@@ -1,4 +1,5 @@
 import type { DiscoveredTool } from './contract.js';
+import type { RpgMakerEngine } from './workspace.js';
 import type { RuntimePaths } from './env.js';
 import type { Host } from './mcport-host.js';
 
@@ -13,6 +14,7 @@ export interface AgentBinding {
 }
 export interface AgentCapability {
   readonly host: Host;
+  readonly engine: RpgMakerEngine;
   readonly canonical: string;
   readonly paths: RuntimePaths;
 }
@@ -36,5 +38,6 @@ export interface McpToolDefinition {
 export declare function toModelName(rawName: string): string;
 export declare function createMcpTool(
   rawTool: DiscoveredTool,
-  capability: AgentInitializer
+  capability: AgentInitializer,
+  engine?: RpgMakerEngine
 ): McpToolDefinition;

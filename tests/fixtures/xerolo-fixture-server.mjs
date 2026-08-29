@@ -1,13 +1,13 @@
 /**
  * GENERATED TEST FIXTURE — do not edit by hand.
  *
- * Deterministic stand-in for the exact-pinned @xerolo44/rpgmaker-mv-mcp server.
- * phase10 seeds this template with the pinned bundle manifest (the schema
- * SSOT) at test setup and installs the result as the fixture runtime's
- * `node_modules/@xerolo44/rpgmaker-mv-mcp/dist/index.js`, so live `tools/list`
- * exactly matches `validateDiscoveredTools` without any external install. It
- * implements a small deterministic subset of call behaviors over a test-owned
- * in-memory store; nothing here touches live state.
+ * Deterministic stand-in for the exact-pinned MV and MZ editing servers.
+ * phase10/phase12 seed this template with the selected bundle manifest (the
+ * schema SSOT) at test setup and install the result under the corresponding
+ * package, so live `tools/list` exactly matches `validateDiscoveredTools`
+ * without any external install. It implements a small deterministic subset of
+ * call behaviors over test-owned project files and an in-memory store; nothing
+ * here touches live state.
  *
  * The __XEROLO_MANIFEST__ placeholder below is replaced with the manifest JSON.
  */
@@ -35,6 +35,47 @@ const tools = process.env.XEROLO_FIXTURE_FAIL_PROJECT === projectRoot ? [] : XER
 const store = new Map() // type -> records[]
 
 async function handleCall(toolName, params) {
+  if (toolName === 'get_project') {
+    let gameTitle = 'Unknown Game'
+    try {
+      const system = JSON.parse(await readFile(join(projectRoot, 'data', 'System.json'), 'utf8'))
+      if (system && typeof system.gameTitle === 'string') gameTitle = system.gameTitle
+    } catch {
+      // The disposable project may not exist yet; the fixture stays deterministic.
+    }
+    const value = { projectRoot, valid: true, gameTitle }
+    return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value }
+  }
+  if (toolName === 'update_game_title') {
+    const title = typeof params?.title === 'string' ? params.title : ''
+    let system = {}
+    try {
+      system = JSON.parse(await readFile(join(projectRoot, 'data', 'System.json'), 'utf8'))
+    } catch {
+      // The disposable project fixture starts with a minimal System.json.
+    }
+    const value = { gameTitle: title }
+    if (params?.dryRun === true) {
+      return { content: [{ type: 'text', text: JSON.stringify({ dryRun: true, before: system.gameTitle ?? '', after: title }) }], structuredContent: { dryRun: true, before: system.gameTitle ?? '', after: title } }
+    }
+    const updated = { ...system, gameTitle: title }
+    await writeFile(join(projectRoot, 'data', 'System.json'), `${JSON.stringify(updated)}\n`)
+    return { content: [{ type: 'text', text: JSON.stringify(updated) }], structuredContent: updated }
+  }
+  if (toolName === 'get_game_title') {
+    let gameTitle = 'Unknown Game'
+    try {
+      const system = JSON.parse(await readFile(join(projectRoot, 'data', 'System.json'), 'utf8'))
+      if (system && typeof system.gameTitle === 'string') gameTitle = system.gameTitle
+    } catch {
+      // The disposable project may not exist yet; the fixture stays deterministic.
+    }
+    return { content: [{ type: 'text', text: JSON.stringify({ gameTitle }) }], structuredContent: { gameTitle } }
+  }
+  if (toolName === 'validate_project' || toolName === 'validate_references') {
+    const value = { ok: true, errors: [], warnings: [] }
+    return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value }
+  }
   if (toolName === 'get_project_info') {
     let gameTitle = 'Unknown Game'
     try {
