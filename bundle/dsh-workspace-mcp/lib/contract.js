@@ -8,8 +8,6 @@ import { createHash } from 'node:crypto'
 import { MZ_MANIFEST } from './mz-manifest.js'
 import { XEROLO_MANIFEST } from './xerolo-manifest.js'
 export { XEROLO_MANIFEST, MZ_MANIFEST }
-export const RPGMAKER_MV_MANIFEST = XEROLO_MANIFEST
-export const RPGMAKER_MZ_MANIFEST = MZ_MANIFEST
 
 export const XEROLO_PACKAGE = '@xerolo44/rpgmaker-mv-mcp'
 export const XEROLO_VERSION = '0.1.0'
@@ -26,8 +24,6 @@ export const ENGINE_CONTRACTS = Object.freeze({
 
 export const XEROLO_TOOL_NAMES = XEROLO_MANIFEST.tools.map((tool) => tool.name)
 export const MZ_TOOL_NAMES = MZ_MANIFEST.tools.map((tool) => tool.name)
-export const XEROLO_TOOL_SET = new Set(XEROLO_TOOL_NAMES)
-export const MZ_TOOL_SET = new Set(MZ_TOOL_NAMES)
 
 /** Critical contract tools for MV, including its existing Playtest lifecycle. */
 export const CRITICAL_XEROLO_TOOLS = [
@@ -42,13 +38,13 @@ export const CRITICAL_MZ_TOOLS = [
   'set_map_tile', 'validate_project', 'validate_references'
 ]
 
-function normalizeEngine(engineOrManifest) {
-  if (engineOrManifest === 'mz' || engineOrManifest?.id === 'mz' || engineOrManifest?.package === MZ_PACKAGE) return 'mz'
-  return 'mv'
+function engineContract(engine) {
+  if (engine !== 'mv' && engine !== 'mz') throw new Error(`unsupported RPG Maker engine ${String(engine)}; expected "mv" or "mz"`)
+  return ENGINE_CONTRACTS[engine]
 }
 
-export function missingCriticalTools(names, engineOrManifest = 'mv') {
-  const engine = normalizeEngine(engineOrManifest)
+export function missingCriticalTools(names, engine) {
+  engineContract(engine)
   const required = engine === 'mz' ? CRITICAL_MZ_TOOLS : CRITICAL_XEROLO_TOOLS
   return required.filter((name) => !names.includes(name))
 }
@@ -58,12 +54,12 @@ export const TOOL_NAME_PREFIX = 'rpgmaker_'
 export const RESERVED_DSH_TOOL_NAME = 'run_code'
 const SUPPORTED_SCHEMA_TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'])
 
-export function manifestFor(engineOrManifest = 'mv') {
-  return ENGINE_CONTRACTS[normalizeEngine(engineOrManifest)].manifest
+export function manifestFor(engine) {
+  return engineContract(engine).manifest
 }
 
-export function contractFor(engineOrManifest = 'mv') {
-  return ENGINE_CONTRACTS[normalizeEngine(engineOrManifest)]
+export function contractFor(engine) {
+  return engineContract(engine)
 }
 
 /** First unsupported-schema problem, or undefined when the node is supported. */
@@ -127,11 +123,10 @@ function hasDryRunCapability(manifest) {
   })
 }
 
-/** Fail-closed verification of one pinned manifest. */
-export function verifyManifest(manifestOrEngine = XEROLO_MANIFEST) {
-  const engine = typeof manifestOrEngine === 'string' ? normalizeEngine(manifestOrEngine) : normalizeEngine(manifestOrEngine)
+/** Fail-closed verification of one pinned or explicitly supplied manifest. */
+export function verifyManifest(engine, manifestOverride) {
   const contract = contractFor(engine)
-  const manifest = typeof manifestOrEngine === 'string' || manifestOrEngine === undefined ? contract.manifest : manifestOrEngine
+  const manifest = manifestOverride === undefined ? contract.manifest : manifestOverride
   const errors = []
   const digest = manifestDigest(manifest)
   if (digest !== contract.digest) errors.push(`pinned ${contract.label} manifest digest mismatch (got ${digest.slice(0, 12)}, expected ${contract.digest.slice(0, 12)})`)
@@ -155,10 +150,9 @@ export function verifyManifest(manifestOrEngine = XEROLO_MANIFEST) {
 }
 
 /** Validate complete live tools/list parity against the selected manifest. */
-export function validateDiscoveredTools(tools, engineOrManifest = 'mv') {
-  const engine = normalizeEngine(engineOrManifest)
+export function validateDiscoveredTools(tools, engine) {
   const contract = contractFor(engine)
-  const manifest = typeof engineOrManifest === 'object' && engineOrManifest?.tools ? engineOrManifest : contract.manifest
+  const manifest = contract.manifest
   const manifestTools = manifest.tools ?? []
   const expectedNames = manifestTools.map((tool) => tool.name)
   const expectedSet = new Set(expectedNames)

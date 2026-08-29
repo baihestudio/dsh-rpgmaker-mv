@@ -23,3 +23,7 @@ Status: done
 
 - [x] Release/install-owned tests retain exact MV and MZ package identities and verify MZ install, repair, and reuse without restoring private bundle hashing.
 - [x] Source-text client assertions were removed in favor of runtime quick-start behavior checks; the phase-2 mount helper and phase-7 test indentation are normalized, and generated artifacts/declarations no longer expose removed wrappers or aliases.
+
+## Final full-review remediation (2026-08-29)
+
+- [x] The private bundle's public declarations and implementation no longer offer default-MV or manifest-inference compatibility paths. Explicit engine arguments are required by every owned contract/tool factory caller; third-party package and manifest integrity pins are unchanged.

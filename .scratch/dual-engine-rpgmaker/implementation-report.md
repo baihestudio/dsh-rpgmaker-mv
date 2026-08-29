@@ -89,6 +89,36 @@ selection research and enhancement roadmap are included with the implementation.
 - The approval-gated real acceptance script contains a concurrent dual-mount
   one-Host probe, but no real or Windows approval gate was run.
 
+## Final full-review remediation (2026-08-29)
+
+- Schema projection is fail-closed. `projectDshObjectJsonSchema` now propagates
+  the official DSH validator error instead of substituting
+  `EMPTY_OBJECT_SCHEMA`; the focused hostile-schema regression demonstrates
+  that an invalid projection fails registration rather than silently advertising
+  no arguments. The existing official validation still passes for all 119 MZ
+  schemas.
+- Active plugin guidance is split by engine without changing the **RPG Maker
+  Agent** brand. Shared persona copy is engine-neutral; the MV skill retains
+  `js/rpg_*.js`, ES5, MV/NW.js, and `fs` rules, while the MZ skill directs
+  authors to `js/rmmz_*.js` and the pinned MZ runtime's actual JavaScript and
+  file-API expectations.
+- Private contract/tool APIs now require an explicit `mv` or `mz` engine.
+  Manifest-object inference and default-to-MV overloads were removed from
+  `contract.js`/`.d.ts`; obsolete manifest/tool-set aliases were removed;
+  `createMcpTool` rejects a missing engine. All owned callers, generators, and
+  tests were updated to pass the engine explicitly.
+
+## Final batch verification
+
+- `bun test tests/phase10.test.ts tests/phase12.test.ts` — 26 passed, 0 failed
+  (408 expect calls), including explicit-engine rejection, the hostile
+  projection failure, and official validation of all 119 MZ schemas.
+- `bun test` — 110 passed, 0 failed (918 expect calls).
+- `bun run check` — passed (`tsc --noEmit`).
+- `git diff --check` — passed.
+- No real-package, approval-gated DSH, native Windows, or deployment gate was
+  run.
+
 ## Changed-LOC variance
 
 The original whole-spec implementation was already within its estimated
@@ -97,7 +127,9 @@ staged diff of 558 additions and 445 deletions (including scratch bookkeeping,
 docs, and lockfile updates); it does not add generated manifests or a private
 workspace bundle hash artifact. The second deterministic re-review batch is a
 further 399 additions and 186 deletions, including its focused tests and
-scratch remediation records.
+scratch remediation records. The final full-review batch is a further 127
+additions and 63 deletions, including explicit-engine contract coverage,
+engine-specific guidance, and the fail-closed projection regression.
 
 ## Verification evidence
 

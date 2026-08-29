@@ -214,6 +214,16 @@ describe('dual-engine RPG Maker seams', () => {
     expect(registered).toEqual(projected.map(({ schema }) => schema));
   });
 
+  test('fails closed when a projected schema cannot satisfy the official DSH validator', () => {
+    const hostileSchema = JSON.parse('{"type":"object","properties":{"__proto__":{"type":"string"}}}');
+    expect(() => toolsBundle.projectDshObjectJsonSchema(hostileSchema)).toThrow(/unsupported JSON schema/);
+    expect(() => toolsBundle.createMcpTool(
+      { name: 'hostile_schema', inputSchema: hostileSchema },
+      { init: async () => { throw new Error('not executed'); } },
+      'mz'
+    )).toThrow(/unsupported JSON schema/);
+  });
+
   test('verifies both exact package identities and reports a tampered MZ lock independently', async () => {
     const root = await temp('dual-runtime');
     try {

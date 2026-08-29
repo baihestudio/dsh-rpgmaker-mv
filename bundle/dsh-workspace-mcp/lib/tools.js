@@ -119,13 +119,8 @@ export function projectDshObjectJsonSchema(schema) {
     ? projected
     : projected.oneOf?.find((branch) => branch?.type === 'object')
   const result = objectBranch ?? { ...EMPTY_OBJECT_SCHEMA, ...Object.fromEntries(ANNOTATION_KEYS.filter((key) => Object.hasOwn(projected, key)).map((key) => [key, projected[key]])) }
-  try {
-    assertObjectJsonSchema(result)
-    return result
-  } catch {
-    assertObjectJsonSchema(EMPTY_OBJECT_SCHEMA)
-    return EMPTY_OBJECT_SCHEMA
-  }
+  assertObjectJsonSchema(result)
+  return result
 }
 
 function renderResult(_args, value) {
@@ -139,7 +134,8 @@ export function toModelName(rawName) {
 }
 
 /** One generated tool bound to a capability-local Agent initializer. */
-export function createMcpTool(rawTool, capability, engine = 'mv') {
+export function createMcpTool(rawTool, capability, engine) {
+  if (engine !== 'mv' && engine !== 'mz') throw new Error(`unsupported RPG Maker engine ${String(engine)}; expected "mv" or "mz"`)
   const name = toModelName(rawTool.name)
   return {
     name,

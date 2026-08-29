@@ -21,3 +21,7 @@ Status: done
 
 - [x] MV Help-only instructions live in the MV-specific skill, while shared game-design guidance remains engine-neutral.
 - [x] Active shared Forgejo reporting skills use the current **RPG Maker Agent** product name; historical research remains unchanged.
+
+## Final full-review remediation (2026-08-29)
+
+- [x] Shared plugin guidance is engine-neutral; MV-only `js/rpg_*.js`, ES5, MV/NW.js, and `fs` instructions remain in the MV skill, and the MZ skill now names `js/rmmz_*.js` plus the pinned MZ runtime's actual JavaScript/file-API expectations. The active product brand remains **RPG Maker Agent**.

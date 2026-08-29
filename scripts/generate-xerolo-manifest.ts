@@ -11,8 +11,8 @@
  *
  *   1. writes bundle/dsh-workspace-mcp/lib/xerolo-manifest.js,
  *   2. recomputes and patches XEROLO_MANIFEST_SHA256 in the bundle contract,
- *   3. machine-validates the regenerated manifest through the bundle's own
- *      verifyManifest() and validateDiscoveredTools(),
+ *   3. machine-validates the regenerated MV manifest through the bundle's own
+ *      verifyManifest('mv') and validateDiscoveredTools(..., 'mv'),
  *
  * Run `bun run scripts/generate-xerolo-manifest.ts` only when the pinned Xerolo
  * version changes or a verified upstream tool contract update must be absorbed.
@@ -217,10 +217,10 @@ async function main(): Promise<void> {
 
     // Machine-validate through the bundle's own verification surface.
     const contract = await import(pathToFileURL(CONTRACT_MODULE).href);
-    const verified = contract.verifyManifest();
+    const verified = contract.verifyManifest('mv');
     if (verified.errors.length > 0) fail(`regenerated manifest failed bundle verification: ${verified.errors.join('; ')}`);
     const contractTools = contract.XEROLO_MANIFEST.tools.map((tool: XeroloTool) => ({ name: tool.name, inputSchema: tool.inputSchema }));
-    const discovered = contract.validateDiscoveredTools(contractTools);
+    const discovered = contract.validateDiscoveredTools(contractTools, 'mv');
     if (discovered.errors.length > 0) fail(`regenerated manifest failed live-contract validation: ${discovered.errors.join('; ')}`);
 
     console.log(`generate-xerolo-manifest: wrote ${MANIFEST_MODULE}`);

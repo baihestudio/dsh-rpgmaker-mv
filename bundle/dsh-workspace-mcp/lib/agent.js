@@ -10,8 +10,6 @@ import { hostForRoot } from './index.js'
 import {
   ENGINE_CONTRACTS,
   MZ_MANIFEST,
-  RPGMAKER_MV_MANIFEST,
-  RPGMAKER_MZ_MANIFEST,
   MZ_MANIFEST_SHA256,
   MZ_TOOL_NAMES,
   XEROLO_MANIFEST,
@@ -163,8 +161,6 @@ function workspaceError(canonical, validation) {
 export {
   ENGINE_CONTRACTS,
   MZ_MANIFEST,
-  RPGMAKER_MV_MANIFEST,
-  RPGMAKER_MZ_MANIFEST,
   MZ_MANIFEST_SHA256,
   MZ_TOOL_NAMES,
   XEROLO_MANIFEST,

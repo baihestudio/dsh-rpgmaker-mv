@@ -280,38 +280,53 @@ class TrackedAbortSignal {
 }
 
 describe('Xerolo tool contract fail-closed', () => {
+  test('requires an explicit engine and never infers MV or MZ from a manifest argument', async () => {
+    const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
+    const tools = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/tools.js')>('tools.js');
+    const rawTool = contract.XEROLO_MANIFEST.tools[0];
+    const capability = { init: async () => { throw new Error('not executed'); } };
+    expect(() => Reflect.apply(contract.manifestFor, undefined, [])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(contract.manifestFor, undefined, [contract.MZ_MANIFEST])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(contract.contractFor, undefined, [])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(contract.missingCriticalTools, undefined, [contract.XEROLO_TOOL_NAMES])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(contract.verifyManifest, undefined, [])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(contract.verifyManifest, undefined, [contract.XEROLO_MANIFEST])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(contract.validateDiscoveredTools, undefined, [rawTool ? [rawTool] : []])).toThrow(/unsupported RPG Maker engine/);
+    expect(() => Reflect.apply(tools.createMcpTool, undefined, [rawTool, capability])).toThrow(/unsupported RPG Maker engine/);
+  });
+
   test('accepts the complete fixed set and rejects missing, unknown, and duplicate names', async () => {
     const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
     expect(contract.XEROLO_MANIFEST.tools.length).toBe(41);
     const full = contract.XEROLO_MANIFEST.tools.map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema }));
-    expect(contract.validateDiscoveredTools(full).errors).toEqual([]);
-    expect(contract.validateDiscoveredTools([]).errors.join(' ')).toContain('no tools');
-    expect(contract.validateDiscoveredTools([{ name: '', inputSchema: {} }]).errors.join(' ')).toContain('without a name');
-    expect(contract.validateDiscoveredTools([{ name: 'echo' }, { name: 'echo' }]).errors.join(' ')).toContain('duplicate');
+    expect(contract.validateDiscoveredTools(full, 'mv').errors).toEqual([]);
+    expect(contract.validateDiscoveredTools([], 'mv').errors.join(' ')).toContain('no tools');
+    expect(contract.validateDiscoveredTools([{ name: '', inputSchema: {} }], 'mv').errors.join(' ')).toContain('without a name');
+    expect(contract.validateDiscoveredTools([{ name: 'echo' }, { name: 'echo' }], 'mv').errors.join(' ')).toContain('duplicate');
     const withUnknown = [...full.slice(0, 10), { name: 'not_in_contract', inputSchema: { type: 'object' } }];
-    expect(contract.validateDiscoveredTools(withUnknown).errors.join(' ')).toContain('outside the fixed Xerolo contract');
+    expect(contract.validateDiscoveredTools(withUnknown, 'mv').errors.join(' ')).toContain('outside the fixed Xerolo contract');
     const missingOne = full.slice(1);
-    expect(contract.validateDiscoveredTools(missingOne).errors.join(' ')).toContain('missing required RPG Maker tools');
+    expect(contract.validateDiscoveredTools(missingOne, 'mv').errors.join(' ')).toContain('missing required RPG Maker tools');
   });
 
   test('verifies the pinned manifest digest and rejects tampering and live schema drift', async () => {
     const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
     expect(contract.manifestDigest()).toBe(contract.XEROLO_MANIFEST_SHA256);
-    expect(contract.verifyManifest().errors).toEqual([]);
+    expect(contract.verifyManifest('mv').errors).toEqual([]);
 
     const tampered = {
       ...contract.XEROLO_MANIFEST,
       tools: [{ ...contract.XEROLO_MANIFEST.tools[0], description: 'edited by hand' }, ...contract.XEROLO_MANIFEST.tools.slice(1)]
     };
-    expect(contract.verifyManifest(tampered).errors.join(' ')).toContain('digest mismatch');
+    expect(contract.verifyManifest('mv', tampered).errors.join(' ')).toContain('digest mismatch');
 
     const noTools = { ...contract.XEROLO_MANIFEST, tools: [] };
-    expect(contract.verifyManifest(noTools).errors.join(' ')).toContain('no tools');
+    expect(contract.verifyManifest('mv', noTools).errors.join(' ')).toContain('no tools');
 
     // A live set with the right names but unsupported schemas drifts from the
     // pinned manifest and must fail closed before any execution.
     const drifted = contract.XEROLO_MANIFEST.tools.map((tool) => ({ name: tool.name, inputSchema: { type: 'object', properties: {} } }));
-    expect(contract.validateDiscoveredTools(drifted).errors.join(' ')).toContain('drifted');
+    expect(contract.validateDiscoveredTools(drifted, 'mv').errors.join(' ')).toContain('drifted');
   });
 
   test('rejects schemas outside the DSH vocabulary and invalid generated names', async () => {
@@ -335,15 +350,15 @@ describe('Xerolo tool contract fail-closed', () => {
   test('requires the critical editing, validation, backup/restore, and Playtest subset in the manifest and live set', async () => {
     const contract = await bundleModule<typeof import('../bundle/dsh-workspace-mcp/lib/contract.js')>('contract.js');
     // The pinned manifest itself carries every critical contract tool.
-    expect(contract.missingCriticalTools(contract.XEROLO_TOOL_NAMES)).toEqual([]);
-    expect(contract.validateDiscoveredTools(contract.XEROLO_MANIFEST.tools.map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema }))).errors).toEqual([]);
+    expect(contract.missingCriticalTools(contract.XEROLO_TOOL_NAMES, 'mv')).toEqual([]);
+    expect(contract.validateDiscoveredTools(contract.XEROLO_MANIFEST.tools.map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema })), 'mv').errors).toEqual([]);
 
     // Removing any critical tool fails the live set before execution.
     const withoutPlaytestStop = contract.XEROLO_MANIFEST.tools
       .filter((tool) => tool.name !== 'playtest_stop')
       .map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema }));
-    expect(contract.missingCriticalTools(withoutPlaytestStop.map((tool) => tool.name))).toEqual(['playtest_stop']);
-    const liveErrors = contract.validateDiscoveredTools(withoutPlaytestStop).errors.join(' ');
+    expect(contract.missingCriticalTools(withoutPlaytestStop.map((tool) => tool.name), 'mv')).toEqual(['playtest_stop']);
+    const liveErrors = contract.validateDiscoveredTools(withoutPlaytestStop, 'mv').errors.join(' ');
     expect(liveErrors).toContain('missing critical RPG Maker tools');
     expect(liveErrors).toContain('playtest_stop');
 
@@ -353,7 +368,7 @@ describe('Xerolo tool contract fail-closed', () => {
       ...contract.XEROLO_MANIFEST,
       tools: contract.XEROLO_MANIFEST.tools.filter((tool) => tool.name !== 'restore_backup')
     };
-    const manifestErrors = contract.verifyManifest(regressed).errors.join(' ');
+    const manifestErrors = contract.verifyManifest('mv', regressed).errors.join(' ');
     expect(manifestErrors).toContain('missing critical RPG Maker tools');
     expect(manifestErrors).toContain('restore_backup');
   });

@@ -26,3 +26,8 @@ Status: done
 - [x] MZ `set_project` accepts only a path canonicalizing to the acquired workspace (including a symlink alias), forwards that canonical path, and rejects an escape target while preserving pair identity.
 - [x] The one-Host ordinary regression mounts MV and MZ concurrently and verifies isolated pair keys, tool presentations, and project state; the approval-gated real helper has the corresponding concurrent dual-mount probe but remains unrun.
 - [x] Unused compatibility exports/wrappers and the obsolete engine-id alias were removed from the owned bundle and declarations.
+
+## Final full-review remediation (2026-08-29)
+
+- [x] Official DSH schema validation now fails closed during projection and tool registration; no invalid projection is replaced with an empty argument schema. The focused regression covers an unrepresentable schema and the 119-tool MZ validation remains green.
+- [x] `manifestFor`, `contractFor`, `missingCriticalTools`, `verifyManifest`, `validateDiscoveredTools`, and `createMcpTool` all require an explicit engine. Manifest-object inference and default MV behavior are gone from the private bundle and owned callers/tests use explicit engine arguments.

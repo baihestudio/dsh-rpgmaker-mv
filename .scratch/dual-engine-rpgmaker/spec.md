@@ -105,3 +105,11 @@ Status: implemented; the official DSH schema and pair-identity blockers are clos
 - [x] MZ `set_project` canonicalizes its argument, forwards an alias resolving to the acquired canonical workspace, and rejects a different canonical target without changing the `(engine, canonical workspace)` pair.
 - [x] The real-acceptance helper's dual-mount branch is consistently reindented; focused runtime tests no longer inspect client source text, and the generated MZ interface declaration has the required semicolon.
 - [x] The MV Help guidance is scoped to the MV skill, active Forgejo reporting copy uses **RPG Maker Agent**, and unused observation/private-bundle/RPG Maker engine aliases are removed from owned code and declarations.
+
+## Final full-review remediation (2026-08-29)
+
+Status: implemented; final deterministic blockers are closed.
+
+- [x] Model-schema projection now fails closed: official `assertObjectJsonSchema` errors propagate instead of being replaced by an empty schema. The hostile-schema regression proves initialization/registration cannot silently advertise no arguments, while all 119 MZ projections remain officially valid.
+- [x] Shared plugin guidance is engine-neutral. MV retains its `js/rpg_*.js`, ES5, MV/NW.js, and `fs` rules in the MV skill; MZ now directs authors to `js/rmmz_*.js` and the pinned MZ runtime's actual JavaScript/file-API expectations. The **RPG Maker Agent** brand is preserved.
+- [x] Private contract APIs require an explicit `mv` or `mz` engine. Manifest-object inference and default-to-MV overloads were removed from `contract.js`/`.d.ts`, and `createMcpTool` rejects a missing/invalid engine; all owned callers, generators, and tests pass the engine explicitly.

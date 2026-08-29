@@ -13,6 +13,11 @@ maps, events, tiles, plugins, and validation.
 
 ## Safe authoring sequence
 
+Before editing an MZ plugin, inspect the selected project's `js/rmmz_*.js`
+core scripts and the pinned MZ runtime's actual JavaScript and file-API
+expectations. Use only APIs and syntax those files and that runtime
+demonstrate; do not apply MV/NW.js or ES5-only assumptions.
+
 Before a material change:
 
 1. Read project identity with `rpgmaker_get_project` and inspect the smallest
