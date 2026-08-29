@@ -1,4 +1,4 @@
-import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, sep, win32 } from 'node:path';
 
 import { findDshExecutable } from './bootstrap';
@@ -7,7 +7,6 @@ import { isRegularFile } from './files';
 import { withHarnessOperationLock } from './lock';
 import { commandFailure, redactSensitive, runCommand, type CommandRunner } from './process';
 import {
-  defaultWorkspaceMcpBundleDir,
   workspaceMcpBundleDigest,
   workspaceMcpBundleDirFor,
   WORKSPACE_MCP_AGENT_ENTRYPOINT,
@@ -294,28 +293,15 @@ function expectedSource(desired: DesiredPackage, brandBundleDir: string, workspa
   return undefined;
 }
 
-/**
- * Real pnpm file: dependencies can be represented by raw profile links to a
- * package inside the profile's virtual store. Keep that exception narrow:
- * only the app-owned source, the exact canonical raw package path, or a
- * strict descendant of a canonical in-profile .pnpm root is accepted.
- */
-async function localPackageInstallAllowed(
+async function packageInstallIsCanonical(
   profileDir: string,
   packageName: string,
   installedReal: string,
-  sourceReal: string,
   platform: string
 ): Promise<boolean> {
-  if (samePath(installedReal, sourceReal, platform)) return true;
   const profileCanonical = await canonicalPath(profileDir);
   const rawPackagePath = join(profileCanonical, 'node_modules', ...packageName.split('/'));
-  if (samePath(installedReal, rawPackagePath, platform)) return true;
-  const nodeModulesReal = await canonicalPath(join(profileCanonical, 'node_modules'));
-  const virtualStoreReal = await canonicalPath(join(profileCanonical, 'node_modules', '.pnpm'));
-  return pathIsStrictlyWithin(profileCanonical, nodeModulesReal, platform)
-    && pathIsStrictlyWithin(nodeModulesReal, virtualStoreReal, platform)
-    && pathIsStrictlyWithin(virtualStoreReal, installedReal, platform);
+  return samePath(installedReal, rawPackagePath, platform);
 }
 
 async function verifyBundlePackage(
@@ -338,6 +324,9 @@ async function verifyBundlePackage(
     const installed = await verifyPackageRoot(desired, installedReal, `installed profile package ${desired.packageName}`, 'canonical package directory', platform);
     installedVersion = installed.version;
     packageErrors.push(...installed.errors);
+    if (!(await packageInstallIsCanonical(profileDir, desired.packageName, installedReal, platform))) {
+      packageErrors.push(`installed profile package ${desired.packageName} does not resolve to its canonical profile directory`);
+    }
   }
 
   if (!desired.source && dependency !== expectedDependencyValue) {
@@ -363,14 +352,6 @@ async function verifyBundlePackage(
         }
       }
     }
-    if (installedExists) {
-      if (!(await localPackageInstallAllowed(profileDir, desired.packageName, installedReal, sourceReal, platform))) {
-        packageErrors.push(`installed profile package ${desired.packageName} does not resolve to the app-owned bundle, canonical profile copy, or its in-profile pnpm virtual store`);
-      }
-    }
-  } else if (installedExists) {
-    const profileCanonical = await canonicalPath(profileDir);
-    if (!pathIsWithin(profileCanonical, installedReal, platform)) packageErrors.push(`installed profile package ${desired.packageName} resolves outside the canonical profile tree`);
   }
 
   errors.push(...packageErrors);
@@ -467,21 +448,11 @@ async function inspectManagedWebSources(paths: HarnessPaths, platform: string): 
     errors.push(`brand bundle path ${brandSource} is not inside the app-owned program root ${paths.programRoot}`);
   }
 
-  const packagedWorkspace = resolve(join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE));
-  let packagedWorkspaceExists = false;
-  try {
-    await lstat(packagedWorkspace);
-    packagedWorkspaceExists = true;
-  } catch {
-    // Development may use the canonical repository bundle.
-  }
-  const workspaceSource = packagedWorkspaceExists ? packagedWorkspace : resolve(defaultWorkspaceMcpBundleDir());
+  const workspaceSource = resolve(join(paths.programRoot, WORKSPACE_MCP_BUNDLE_RELATIVE));
   const workspaceReal = await canonicalPath(workspaceSource);
-  const defaultWorkspaceReal = await canonicalPath(defaultWorkspaceMcpBundleDir());
-  const workspaceAllowed = packagedWorkspaceExists
-    ? pathIsStrictlyWithin(programRoot, workspaceReal, platform)
-    : samePath(workspaceReal, defaultWorkspaceReal, platform);
-  if (!workspaceAllowed) errors.push(`workspace MCP source bundle ${workspaceSource} is outside its allowed app-owned root`);
+  if (!pathIsStrictlyWithin(programRoot, workspaceReal, platform)) {
+    errors.push(`workspace MCP source bundle ${workspaceSource} is outside its allowed app-owned root`);
+  }
   return { valid: errors.length === 0, errors, brandSource, workspaceSource: workspaceReal };
 }
 

@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import type { HarnessPaths } from './config';
 
@@ -23,10 +22,6 @@ export const WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE = 'bundle/dsh-workspace-mcp';
 export const MCPORTER_RUNTIME_ENV = 'DSH_RPGMAKER_MCPORTER_RUNTIME';
 export const XEROLO_RUNTIME_ENV = 'DSH_RPGMAKER_XEROLO_RUNTIME';
 export const JS_RUNNER_ENV = 'DSH_RPGMAKER_JS_RUNNER';
-
-export function defaultWorkspaceMcpBundleDir(): string {
-  return fileURLToPath(new URL(`../${WORKSPACE_MCP_BUNDLE_RELATIVE}/`, import.meta.url));
-}
 
 export function workspaceMcpBundleDirFor(paths: Pick<HarnessPaths, 'dshHome'>): string {
   return join(paths.dshHome, WORKSPACE_MCP_DATA_BUNDLE_RELATIVE);

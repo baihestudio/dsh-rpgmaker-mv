@@ -156,24 +156,6 @@ async function appRoots(root: string) {
   };
 }
 
-async function relocateLocalPackagesToVirtualStore(dshHome: string, packageNames: readonly string[]): Promise<void> {
-  const profileDir = join(dshHome, 'profiles', 'web');
-  for (const packageName of packageNames) {
-    const rawPackage = join(profileDir, 'node_modules', ...packageName.split('/'));
-    const virtualPackage = join(
-      profileDir,
-      'node_modules',
-      '.pnpm',
-      `${packageName.replace(/\//g, '+')}@fixture`,
-      'node_modules',
-      ...packageName.split('/')
-    );
-    await mkdir(dirname(virtualPackage), { recursive: true });
-    await rename(rawPackage, virtualPackage);
-    await symlink(virtualPackage, rawPackage, directoryLinkType());
-  }
-}
-
 function optionsFor(
   roots: Awaited<ReturnType<typeof appRoots>>,
   commandRunner: ReturnType<typeof managedRunner>
@@ -324,29 +306,6 @@ describe('managed Web profile materialization', () => {
       expect(repaired.materialized).toBe(true);
       expect((await stat(clientPath)).isFile()).toBe(true);
       expect(await readFile(join(outsideClient, 'marker.txt'), 'utf8')).toBe('external installed client\n');
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('accepts real pnpm virtual-store links for both local packages without rematerializing', async () => {
-    const root = await temp('phase11-managed-profile-pnpm-virtual-store');
-    try {
-      const roots = await appRoots(root);
-      await writeFile(roots.npmExecutable, '@echo off\r\n');
-      await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
-      await relocateLocalPackagesToVirtualStore(roots.dshHome, [DSH_BRAND_PACKAGE, WORKSPACE_MCP_PACKAGE]);
-
-      const verification = await verifyManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, [])));
-      expect(verification.valid).toBe(true);
-      expect(verification.packages.find((pkg) => pkg.packageName === DSH_BRAND_PACKAGE)?.installedDir).toContain('.pnpm');
-      expect(verification.packages.find((pkg) => pkg.packageName === WORKSPACE_MCP_PACKAGE)?.installedDir).toContain('.pnpm');
-
-      const calls: string[] = [];
-      const noop = await ensureManagedWebProfile(optionsFor(roots, managedRunner(roots.dshHome, calls)));
-      expect(noop.valid).toBe(true);
-      expect(noop.materialized).toBe(false);
-      expect(calls).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
