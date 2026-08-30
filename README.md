@@ -202,3 +202,21 @@ bun run phase2:real
 ```
 
 The foundation stops before automated gameplay/CDP supervision, which remains on its separate draft/hold marker.
+
+## Electrobun Windows desktop adapter
+
+The reusable Electrobun/Cottontail/WebView2 host lives in the separate
+`dsh-electronbun` repository. This product repository supplies only the thin
+RPG Maker sidecar adapter and a generated host manifest; it does not copy the
+host's supervisor, startup state machine, or runtime recovery logic. See
+[`docs/windows-electrobun.md`](docs/windows-electrobun.md) and stage a
+test-owned host workspace with:
+
+```sh
+bun run desktop:stage -- --host-root /path/to/dsh-electronbun --output-root /tmp/dsh-rpgmaker-electrobun
+```
+
+The adapter currently pins the verified Windows Bun `1.3.14`, dynamically
+loads the installed product launcher, and lets the native WebView2 host load
+the existing project-neutral DSH Web session on `127.0.0.1:3081`. It does not
+replace the existing installer or claim stable Windows packaging evidence.

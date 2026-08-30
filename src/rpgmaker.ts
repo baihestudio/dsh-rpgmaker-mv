@@ -48,6 +48,7 @@ export type RpgMakerLaunchOptions = LaunchOptions & {
   mcporterRuntimePreparer?: (options: McporterRuntimeOptions, runtimeDir: string) => Promise<McporterRuntimeVerification>;
   mcpRuntimePreparer?: typeof prepareRpgMakerMcpRuntime;
   managedWebProfilePreparer?: (options: ManagedWebProfileOptions) => Promise<ManagedWebProfileResult>;
+  openWebBrowser?: boolean;
 };
 
 export interface RpgMakerLaunchPreparation {
@@ -770,7 +771,14 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
     webHost: WINDOWS_DSH_HOST,
     webPort: WINDOWS_DSH_PORT,
     extraEnv: { ...(options.extraEnv ?? {}), ...ownedEnvironment },
-    dshArgs: ['--profile', RPGMAKER_DSH_PROFILE, ...(options.dshArgs ?? []), '--patch', deployment.compositionPath]
+    dshArgs: [
+      '--profile',
+      RPGMAKER_DSH_PROFILE,
+      ...(options.dshArgs ?? []),
+      '--patch',
+      deployment.compositionPath,
+      ...(options.openWebBrowser === false ? ['--no-open'] : [])
+    ]
   });
   return { ...result, deployment };
 }

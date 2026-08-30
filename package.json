@@ -16,7 +16,8 @@
     "phase2:real": "bun run scripts/phase2-real-acceptance.ts",
     "phase7:real": "bun run scripts/phase7-real-acceptance.ts",
     "phase7:windows-installed": "bun run scripts/phase7-windows-installed-gate.ts",
-    "release:zip": "bun run scripts/build-release-zip.ts"
+    "release:zip": "bun run scripts/build-release-zip.ts",
+    "desktop:stage": "bun run scripts/stage-electrobun-adapter.ts"
   },
   "type": "module"
 }
