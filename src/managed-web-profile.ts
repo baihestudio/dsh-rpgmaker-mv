@@ -7,14 +7,12 @@ import { isRegularFile } from './files';
 import { withHarnessOperationLock } from './lock';
 import { commandFailure, redactSensitive, runCommand, type CommandRunner } from './process';
 import {
-  workspaceMcpBundleDigest,
   workspaceMcpBundleDirFor,
   WORKSPACE_MCP_AGENT_ENTRYPOINT,
   WORKSPACE_MCP_BUNDLE_PATCH,
   WORKSPACE_MCP_BUNDLE_RELATIVE,
   WORKSPACE_MCP_LICENSE,
   WORKSPACE_MCP_PACKAGE,
-  WORKSPACE_MCP_SHA256,
   WORKSPACE_MCP_VERSION,
 } from './workspace-mcp';
 import {
@@ -92,7 +90,6 @@ interface DesiredPackage {
   license?: string;
   patch?: string;
   requiredFiles?: readonly string[];
-  sha256?: string;
 }
 
 const DESIRED_PACKAGES: readonly DesiredPackage[] = [
@@ -111,8 +108,7 @@ const DESIRED_PACKAGES: readonly DesiredPackage[] = [
     source: 'workspace',
     license: WORKSPACE_MCP_LICENSE,
     patch: WORKSPACE_MCP_BUNDLE_PATCH,
-    requiredFiles: [WORKSPACE_MCP_AGENT_ENTRYPOINT],
-    sha256: WORKSPACE_MCP_SHA256
+    requiredFiles: [WORKSPACE_MCP_AGENT_ENTRYPOINT]
   }
 ] as const;
 
@@ -424,10 +420,6 @@ async function verifyPackageRoot(
   for (const required of desired.requiredFiles ?? []) {
     const kind = required === 'lib/client.js' ? 'client entrypoint' : 'Agent entrypoint';
     await verifyContainedFile(rootReal, resolve(root, required), `${label} ${kind} ${required}`, containment, platform, errors);
-  }
-  if (desired.sha256) {
-    const digest = await workspaceMcpBundleDigest(root).catch(() => undefined);
-    if (digest !== desired.sha256) errors.push(`${label} release hash mismatch (got ${digest?.slice(0, 12) ?? 'none'}, expected ${desired.sha256.slice(0, 12)})`);
   }
   return { errors, version };
 }

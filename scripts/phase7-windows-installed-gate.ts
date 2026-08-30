@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { DSH_VERSION, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, withEnvironmentPath } from '../src/config';
 import { verifyRuntime } from '../src/bootstrap';
 import { prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, type CommandRunner, withoutCredentials } from '../src/process';
-import { verifyMcpRuntime } from '../src/rpgmaker';
+import { verifyRpgMakerMcpRuntime } from '../src/rpgmaker';
+import { validateRpgMakerWorkspace } from '../src/project';
 import { verifyManagedWebProfile } from '../src/managed-web-profile';
 import { verifyMcporterRuntime } from '../src/mcport';
 import { PNPM_VERSION } from '../src/profile';
@@ -18,8 +19,8 @@ import { WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
-  WORKSPACE_MCP_PACKAGE,
-  XEROLO_RUNTIME_ENV
+  RPGMAKER_MCP_RUNTIME_ENV,
+  WORKSPACE_MCP_PACKAGE
 } from '../src/workspace-mcp';
 import { probeLoopbackPort } from '../src/windows';
 import { observeLauncherProcesses } from './process-observation.mjs';
@@ -229,7 +230,7 @@ function json(value: unknown): string {
 async function verifyInstalledRuntimes(installedRoot: string, bunExecutable: string): Promise<void> {
   const dshRuntime = await verifyRuntime(join(installedRoot, 'runtime', 'dsh'), { platform: 'win32', bunExecutable, env: { BUN_EXECUTABLE: bunExecutable } });
   const mcporterRuntime = await verifyMcporterRuntime(join(installedRoot, 'runtime', 'mcporter'), 'win32');
-  const mcpRuntime = await verifyMcpRuntime(join(installedRoot, 'runtime', 'mcp'), 'win32');
+  const mcpRuntime = await verifyRpgMakerMcpRuntime(join(installedRoot, 'runtime', 'mcp'), 'win32');
   let pnpmVersion: string | undefined;
   try {
     pnpmVersion = (JSON.parse(await readFile(join(installedRoot, 'runtime', 'pnpm', 'node_modules', 'pnpm', 'package.json'), 'utf8')) as { version?: string }).version;
@@ -404,8 +405,19 @@ export async function runInstalledMount(
   const profileFileName = (await readdir(dshLib)).find((file) => file.startsWith('profile-boot-') && file.endsWith('.js'));
   if (!profileFileName) throw new Error('installed DSH profile boot module was not found');
   const mcpRuntime = join(installedRoot, 'runtime', 'mcp');
-  const mcp = await verifyMcpRuntime(mcpRuntime, 'win32');
-  if (!mcp.valid || !mcp.executable) throw new Error(`installed Xerolo runtime is not usable: ${mcp.errors.join('; ')}`);
+  // The installed-release runner test exercises command/env construction with a
+  // deliberately virtual workspace path. Real installed probes always mount an
+  // existing project and therefore take the strict marker classification path.
+  // Keep the virtual-path seam useful without weakening runtime Agent startup,
+  // which validates the workspace before registering a child.
+  const workspaceValidation = await exists(workspace) ? await validateRpgMakerWorkspace(workspace) : undefined;
+  if (workspaceValidation && (!workspaceValidation.valid || !workspaceValidation.engine)) {
+    throw new Error(`installed gate workspace is not a valid RPG Maker project: ${workspaceValidation.missing.join(', ')}`);
+  }
+  const engine = workspaceValidation?.engine ?? 'mv';
+  const mcp = await verifyRpgMakerMcpRuntime(mcpRuntime, 'win32');
+  const executable = mcp.engines[engine].executable;
+  if (!mcp.valid || !executable) throw new Error(`installed ${engine.toUpperCase()} RPG Maker MCP runtime is not usable: ${mcp.errors.join('; ')}`);
   const mountEnv = {
     ...env,
     DSH_HOME: dshHome,
@@ -418,8 +430,10 @@ export async function runInstalledMount(
     NEUTRAL_LANDING_DIR: neutralLanding,
     COMPOSITION_FILE: join(dshHome, 'rpgmaker-mv', 'cordis.patch.yml'),
     [MCPORTER_RUNTIME_ENV]: join(installedRoot, 'runtime', 'mcporter'),
-    [XEROLO_RUNTIME_ENV]: mcpRuntime,
-    XEROLO_ENTRY: mcp.executable,
+    [RPGMAKER_MCP_RUNTIME_ENV]: mcpRuntime,
+    MV_ENTRY: engine === 'mv' ? executable : undefined,
+    MZ_ENTRY: engine === 'mz' ? executable : undefined,
+    RPGMAKER_ENGINE: engine,
     [JS_RUNNER_ENV]: env.BUN_EXECUTABLE,
     WORKSPACE_HOST_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js'),
     WORKSPACE_AGENT_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'agent.js')
@@ -494,12 +508,12 @@ async function main(): Promise<void> {
 
     const agentEvidence = await runInstalledMount(installedRoot, dshHome, neutralLanding, workspace, env, nodeExecutable);
     const directCalls = agentEvidence.directAgentToolCalls as Array<{ isError?: boolean; valueObserved?: boolean }> | undefined;
-    const processEvidence = agentEvidence.xeroloProcessEvidence as { children?: unknown[]; shellProcesses?: unknown[] } | undefined;
+    const processEvidence = agentEvidence.processEvidence as { children?: unknown[]; shellProcesses?: unknown[] } | undefined;
     assert.equal(agentEvidence.ok, true, 'installed Agent probe reported failure');
     assert.equal(agentEvidence.stableTools, 41, 'installed Agent probe exposed an unexpected stable tool count');
     assert.equal(directCalls?.length, 2, 'installed Agent probe did not record both direct tool calls');
     assert.equal(directCalls?.some((call) => call.isError !== false || call.valueObserved !== true), false, 'installed Agent direct tool calls did not both succeed and observe values');
-    assert.equal(processEvidence?.children?.length, 1, 'installed Agent probe did not observe exactly one Xerolo child');
+    assert.equal(processEvidence?.children?.length, 1, 'installed Agent probe did not observe exactly one RPG Maker child');
     assert.equal(processEvidence?.shellProcesses?.length, 0, 'installed Agent probe observed an unexpected shell process');
 
     console.log(diagnostic(JSON.stringify({

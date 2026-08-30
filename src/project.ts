@@ -4,6 +4,15 @@ import { isRegularFile } from './files';
 
 export const MV_PROJECT_MARKER = 'Game.rpgproject';
 export const MV_REQUIRED_DIRECTORIES = ['data', 'js'] as const;
+export const MZ_PROJECT_MARKER = 'game.rmmzproject';
+export const MZ_REQUIRED_DIRECTORIES = ['data', 'js'] as const;
+export type RpgMakerEngine = 'mv' | 'mz';
+
+export interface RpgMakerWorkspaceValidation extends ProjectValidation {
+  engine?: RpgMakerEngine;
+  markers: string[];
+  ambiguous: boolean;
+}
 
 export interface ProjectValidation {
   valid: boolean;
@@ -50,6 +59,59 @@ export async function validateMvProject(projectPath: string): Promise<ProjectVal
 
   if (reason && missing.length === 0) missing.push(reason);
   return { valid: missing.length === 0, projectPath: normalized, markerPath, missing, reason };
+}
+
+/** Classify a selected project from direct-child markers only. */
+export async function validateRpgMakerWorkspace(projectPath: string): Promise<RpgMakerWorkspaceValidation> {
+  const normalized = resolve(projectPath);
+  const markerPaths = {
+    mv: join(normalized, MV_PROJECT_MARKER),
+    mz: join(normalized, MZ_PROJECT_MARKER)
+  } as const;
+  const [mvMarker, mzMarker] = await Promise.all([
+    exists(markerPaths.mv, 'file'),
+    exists(markerPaths.mz, 'file')
+  ]);
+  const markers = [mvMarker ? MV_PROJECT_MARKER : undefined, mzMarker ? MZ_PROJECT_MARKER : undefined].filter((value): value is string => Boolean(value));
+  const ambiguous = markers.length > 1;
+  const engine = markers.length === 1 ? markers[0] === MV_PROJECT_MARKER ? 'mv' : 'mz' : undefined;
+  const missing: string[] = [];
+  if (markers.length === 0) missing.push(MV_PROJECT_MARKER, MZ_PROJECT_MARKER);
+  if (engine) {
+    for (const directory of engine === 'mv' ? MV_REQUIRED_DIRECTORIES : MZ_REQUIRED_DIRECTORIES) {
+      if (!(await exists(join(normalized, directory), 'directory'))) missing.push(directory);
+    }
+  } else if (!ambiguous) {
+    for (const directory of MV_REQUIRED_DIRECTORIES) {
+      if (!(await exists(join(normalized, directory), 'directory'))) missing.push(directory);
+    }
+  }
+  let reason: string | undefined;
+  try {
+    const info = await stat(normalized);
+    if (!info.isDirectory()) reason = `${basename(normalized)} is not a directory`;
+  } catch {
+    reason = 'directory does not exist';
+  }
+  if (reason && missing.length === 0) missing.push(reason);
+  return {
+    valid: !ambiguous && missing.length === 0 && Boolean(engine),
+    projectPath: normalized,
+    markerPath: engine ? markerPaths[engine] : markerPaths.mv,
+    missing,
+    reason,
+    engine,
+    markers,
+    ambiguous
+  };
+}
+
+export function assertValidRpgMakerWorkspace(projectPath: string): Promise<RpgMakerWorkspaceValidation> {
+  return validateRpgMakerWorkspace(projectPath).then((result) => {
+    if (result.valid) return result;
+    if (result.ambiguous) throw new Error(`Ambiguous RPG Maker workspace: ${result.projectPath}. Keep exactly one direct-child marker (${MV_PROJECT_MARKER} or ${MZ_PROJECT_MARKER}).`);
+    throw new Error(`Not a valid RPG Maker workspace: ${result.projectPath}. Missing direct-child markers or directories: ${result.missing.join(', ')}. Expected exactly one of ${MV_PROJECT_MARKER} or ${MZ_PROJECT_MARKER}, plus data and js.`);
+  });
 }
 
 export async function assertValidMvProject(projectPath: string): Promise<ProjectValidation> {

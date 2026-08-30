@@ -70,11 +70,6 @@ and pacing, accessibility, and feasibility against confirmed constraints. Do not
 present a familiar pattern as a universal rule—record the desired player experience
 and the evidence or assumption behind each material choice.
 
-For RPG Maker-specific constraints, prefer the official [RPG Maker MV Help](https://rpgmakerofficial.com/product/MV_Help/page/01_01_01.html), including its
-[Maps](https://rpgmakerofficial.com/product/MV_Help/page/01_01_01_02.html),
-[Database](https://rpgmakerofficial.com/product/MV_Help/page/01_01_01_04.html),
-[Events](https://rpgmakerofficial.com/product/MV_Help/page/01_01_01_06.html), and
-[Plugins](https://rpgmakerofficial.com/product/MV_Help/page/01_01_01_03.html) pages.
 For the design vocabulary, use [MDA: A Formal Approach to Game Design and Game Research](https://users.cs.northwestern.edu/~hunicke/MDA.pdf) and paraphrase it. For a named reference game, prefer its publisher/developer site, manual, or patch notes; use [Steam](https://store.steampowered.com/) only for store-level facts. Treat wikis, forums, videos, and generic design posts as leads to cross-check, not authority. Cite a URL and access date wherever an external source materially changes a maintained design note; never copy a third-party corpus into the workspace.
 
 For every named reference, record both the transferable principle and the project-

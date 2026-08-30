@@ -12,7 +12,7 @@
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
    - ImageMagick 7 (`ImageMagick.ImageMagick`; installed system-wide and exposed as `magick` on Windows PATH)
-4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the pinned DSH `0.1.2-alpha.2` runtime with Bun (npm integrity `sha512-4TvTC5kRKlgtSU2UTBv+cID9a2Z+6+m6mpvjXWJfVzuTkflCff6s4MsQpFJTCmwFh/k7zNWe7qFXcLYMV/5VvA==`), materializes one exact app-managed `web` profile with four direct managed dependencies (`@guionai/dsh-web@0.3.1`, `@lamplitisles/dsh-imagegen@0.2.1`, the release-owned `@baihestudio/dsh-rpgmaker-brand` bundle, and the app-owned `@baihestudio/dsh-workspace-mcp` bundle) plus the six ordered DSH bundle layers beginning with `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`, installs the exact RPG Maker MCP, then creates a per-user Start Menu shortcut named **RPG Maker Agent**. Normal launch additionally prepares the app-owned MCPorter runtime, Xerolo runtime, default preset, and neutral composition as needed.
+4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the pinned DSH `0.1.2-alpha.2` runtime with Bun (npm integrity `sha512-4TvTC5kRKlgtSU2UTBv+cID9a2Z+6+m6mpvjXWJfVzuTkflCff6s4MsQpFJTCmwFh/k7zNWe7qFXcLYMV/5VvA==`), materializes one exact app-managed `web` profile with four direct managed dependencies (`@guionai/dsh-web@0.3.1`, `@lamplitisles/dsh-imagegen@0.2.1`, the release-owned `@baihestudio/dsh-rpgmaker-brand` bundle, and the app-owned `@baihestudio/dsh-workspace-mcp` bundle) plus the six ordered DSH bundle layers beginning with `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`, installs both exact RPG Maker editing MCPs (`@xerolo44/rpgmaker-mv-mcp@0.1.0` and `rpgmaker-mz-mcp@1.3.0`), then creates a per-user Start Menu shortcut named **RPG Maker Agent**. Normal launch additionally prepares the app-owned MCPorter runtime, the dual-engine RPG Maker runtime, default preset, and neutral composition as needed.
 
 The four direct package dependencies and six bundle layers belong to one DSH-managed profile state. DSH's `web` template layers (`@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`) remain in-box template bundles rather than profile dependencies. If a package command or final verification fails after initializing that state, the installer reports the materialization failure and restores the prior working profile (and its app-owned workspace bundle); rerun `Install.cmd` to complete the profile setup. Credentials, recent workspaces, presets, caches, logs, and other mutable state remain outside this rollback boundary.
 
@@ -59,11 +59,11 @@ Use the Start Menu shortcut, or run `Launch.cmd` from the installed program root
 The launcher is project-neutral: it opens no folder picker, reads no recent
 project list, writes no app-owned project-selection state, and rejects
 `launch --project`. The Release ZIP carries the prebuilt
-`bundle/dsh-workspace-mcp` package, including its generated Xerolo manifest;
+`bundle/dsh-workspace-mcp` package, including its generated MV and MZ manifests;
 launch copies it to the stable app-owned data directory before materializing
 the managed profile. Before spawning DSH, launch verifies or repairs the
-exact-pinned app-owned pnpm 10.15.1, MCPorter 0.12.3, Xerolo RPG Maker MCP
-0.1.0, and the complete `web` profile with four direct packages and six ordered bundle layers, installs the default preset, and verifies
+exact-pinned app-owned pnpm 10.15.1, MCPorter 0.12.3, Xerolo MV MCP 0.1.0, Redseb MZ MCP 1.3.0,
+and the complete `web` profile with four direct packages and six ordered bundle layers, installs the default preset, and verifies
 the effective composition from the neutral landing directory. The bundle's
 profile patch inserts only the Host service entry point; each shipped preset
 composition mounts the `/agent` entry point in Agent scope. The generated
@@ -87,19 +87,20 @@ User-attached PNG, JPEG, WebP, and GIF images may be read as image input only;
 no image generation, remote URL ingestion, or automated gameplay capture is
 added.
 
-Choose a game folder in DSH Web. The workspace must contain `Game.rpgproject`,
-`data`, and `js` directly beneath its root; parents and workspace-authored
-configuration are never searched. You can switch workspaces in the Web UI
-without restarting DSH. Stable Agent tools use names such as
-`rpgmaker_validate_project`; the internal workspace server name and session
-identity never enter model-facing names. Agents in one workspace share one warm
-MCP connection, while different workspaces receive isolated servers. The
-workspace server is Host-lifetime: it stays warm after its last Agent leaves and
-closes only when the DSH Host shuts down. There is no concurrent-writer locking
-or serialization and no idle eviction; do not have multiple Agents write to the
-same project at the same time. If a pooled Xerolo child crashes, the affected
-workspace Agents fail until the DSH Host is restarted; automatic child restart
-is not provided.
+Choose a game folder in DSH Web. An MV workspace must contain `Game.rpgproject`,
+and an MZ workspace must contain `game.rmmzproject`; both must contain direct-child
+`data` and `js` directories. Parents and workspace-authored configuration are
+never searched, and a folder containing both markers is rejected as ambiguous.
+You can switch workspaces in the Web UI without restarting DSH. Stable Agent
+tools use names such as `rpgmaker_validate_project`; the internal engine/workspace
+server name and session identity never enter model-facing names. Agents sharing
+one `(engine, canonical workspace)` pair share one warm MCP connection, while
+different pairs receive isolated servers. The workspace server is Host-lifetime:
+it stays warm after its last Agent leaves and closes only when the DSH Host shuts
+down. There is no concurrent-writer locking or serialization and no idle
+eviction; do not have multiple Agents write to the same project at the same time.
+If a pooled child crashes, affected workspace Agents fail until the DSH Host is
+restarted; automatic child restart is not provided.
 
 The agent and its `rpgmaker_*` tools are the sole writers. If the RPG Maker
 editor is open, it is read-only: do not save from it, and reopen it before
@@ -147,14 +148,10 @@ From a checkout on a machine authorized to fetch the pinned packages, run:
 bun run phase2:real
 ```
 
-This provisions temporary DSH, MCPorter, and Xerolo runtimes plus one temporary
-CJK/space MV workspace, then removes them. It performs no model request and no
-workspace mutation. Its final JSON records the neutral launch seam, one Host
-runtime/server, 41 stable schemas, successful direct Agent-scoped calls, and
-`xeroloProcessEvidence` containing the observed child PID/image/parent identity
-and matching `--project`/entry observations. It also records matching shell
-processes; an empty list is the evidence for no shell escalation. Subprocess
-failure diagnostics pass through the repository redaction boundary.
+This provisions temporary DSH, MCPorter, and pinned MV/MZ MCP runtimes plus
+temporary CJK/space workspaces, then removes them. It performs no model request
+and no workspace mutation. The ordinary suite covers the disposable seams;
+real-package and native Windows gates remain explicit and unrun here.
 
 ### Authorized NUC installed-release gate
 
@@ -165,15 +162,15 @@ Set-Location "$env:LOCALAPPDATA\Programs\BaiheStudio\DSH-RPGMaker-MV"
 bun run phase7:windows-installed -- --installed-root (Get-Location).Path
 ```
 
-This first verifies the installed DSH, pnpm, MCPorter, and Xerolo runtimes
+This first verifies the installed DSH, pnpm, MCPorter, and both RPG Maker MCP runtimes
 without downloading anything. It then provisions only disposable DSH state, a
 disposable CJK/space workspace, and temporary profile data. It launches the supported installed `Launch.cmd`,
 waits for an HTTP response on `127.0.0.1:3081`, observes the real launcher
 processes and neutral-landing message with zero `--project` arguments, shuts
 the process tree down with Windows `taskkill /T /F`, deliberately removes the
 local `web` profile bundle entry, repeats `Launch.cmd` for repair evidence, and
-runs the installed-tree Agent probe for 41 stable tools and one observed Xerolo
-child. The JSON emits `firstLaunch`, `repair`, `agentEvidence`, and
+runs the installed-tree Agent probe for the selected MV/MZ stable tools and one
+observed engine/workspace child. The JSON emits `firstLaunch`, `repair`, `agentEvidence`, and
 `shutdown.firstPortClosed`/`shutdown.repairPortClosed` evidence. It sends no
 model request, mutates no real game, and uses no external service beyond the
 local loopback Web process. The gate cleans its temporary roots and every
@@ -187,7 +184,7 @@ From the installed program root:
 ./doctor.ps1
 ```
 
-Doctor reports the resolved Node/npm, Python, Bun, PowerShell, Git, Coreutils, global ImageMagick, DSH runtime, RPG Maker MCP runtime, exact managed Web profile, credential metadata, and mutable-layout facts without reading credential values. Python is verified independently as a general Agent utility. Doctor only verifies the managed profile; it never repairs it. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
+Doctor reports the resolved Node/npm, Python, Bun, PowerShell, Git, Coreutils, global ImageMagick, DSH runtime, MV MCP runtime, MZ MCP runtime, exact managed Web profile, credential metadata, and mutable-layout facts without reading credential values. Python is verified independently as a general Agent utility. Each RPG Maker engine check is reported independently. Doctor only verifies the managed profile; it never repairs it. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
 
 ### Diagnose a selected workspace sandbox
 
@@ -233,10 +230,16 @@ Purge is not automatic and still does not delete projects outside the app-data r
 
 The default `rpgmaker` preset uses the shared MCP composition and stable Agent-scoped
 `rpgmaker_*` tools for database, event, dialogue, map metadata, plugin work, image
-assets, Playtest debug, and game-design documentation through local Skills.
+assets, Playtest debug (MV only), and game-design documentation through local Skills.
+
+MZ workspaces use Redseb's pinned 119-tool editing manifest with `dryRun`, targeted
+database/map/event/tile writes, and project/reference validation. MZ Playtest
+launch/status/log/stop, screenshots, runtime input, and build/release automation
+are intentionally unsupported; the Playtest Debug skill reports that boundary
+instead of launching an MV runtime.
 
 The RPG Maker image-assets Skill uses Kepos for image generation/editing and the global `magick` CLI for deterministic preparation; no app-owned image transformation plugin is installed.
 
-The `rpgmaker` preset's Playtest debug skill can truthfully report process launch, logs, MCP stop, and post-stop status. A launched process is not a gameplay or visual assertion. Actual RPG Maker MV/NW.js launch, installed MV discovery, and behavior remain Windows hardware-gate observations. Photoshop, Aseprite, and TexturePacker are optional user-owned enhancements.
+The `rpgmaker` preset's Playtest debug skill can truthfully report process launch, logs, MCP stop, and post-stop status for MV. A launched process is not a gameplay or visual assertion. Actual RPG Maker MV/NW.js launch, installed MV discovery, and behavior remain Windows hardware-gate observations. Photoshop, Aseprite, and TexturePacker are optional user-owned enhancements.
 
 This foundation release does **not** include automatic updates, MSI authoring, signing/notarization, store uploads, generated-game installers, concurrent-writer locking for Agents sharing one project, or automated gameplay/CDP supervision. The separate automated-playtest work remains on its documented draft/hold marker until this foundation is reviewed.

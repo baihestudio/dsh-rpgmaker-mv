@@ -8,6 +8,10 @@
  * Agent. The composition context deliberately has no `ctx.agent`; it never
  * touches a live DSH home, profile, or runtime.
  */
+import { access } from 'node:fs/promises';
+import { join } from 'node:path';
+import { renderToolsSdk } from '@deepseek-ai/dsh-tools';
+
 export interface HarnessToolSchema {
   name: string;
   description: string;
@@ -34,6 +38,20 @@ export interface PromptAssembly {
   tools: HarnessToolSchema[];
   variables: Record<string, string | undefined>;
 }
+
+const RUN_CODE_SCHEMA: HarnessToolSchema = {
+  name: 'run_code',
+  description: 'Run a TypeScript program that can call the typed tool SDK.',
+  parameters: {
+    type: 'object',
+    properties: {
+      code: { type: 'string' },
+      description: { type: 'string' }
+    },
+    required: ['code', 'description'],
+    additionalProperties: false
+  }
+};
 
 type Listener = (...args: unknown[]) => unknown;
 type HarnessAssemblyContext = {
@@ -167,13 +185,18 @@ export class HarnessScope {
 
   /** Run the `system-prompt/assemble` waterfall for this scope's assembly. */
   async assemble(): Promise<PromptAssembly> {
+    const isMz = await access(join(this.assemblyAgent.session.header.cwd ?? '', 'game.rmmzproject')).then(() => true).catch(() => false);
+    const visible = this.tools.schemas();
+    const initialSdk = isMz
+      ? renderToolsSdk(visible.map((tool) => ({ ...tool, output: {} })))
+      : visible.map((tool) => tool.name).join('\n');
     const assembly: PromptAssembly = {
       sections: [{
         name: 'tools:sdk',
-        text: this.tools.schemas().map((tool) => tool.name).join('\n')
+        text: initialSdk
       }],
       contexts: [],
-      tools: this.tools.schemas(),
+      tools: isMz ? [RUN_CODE_SCHEMA, ...visible] : visible,
       variables: {}
     };
     const listeners = [...(this.listeners.get('system-prompt/assemble') ?? [])];
