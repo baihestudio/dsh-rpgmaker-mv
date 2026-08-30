@@ -159,7 +159,7 @@ describe('staged DSH runtime bootstrap', () => {
   });
 
 
-  test('requires the rc.8 lock entry and npm integrity', async () => {
+  test('requires the pinned DSH lock entry and npm integrity', async () => {
     const root = await disposableDirectory('runtime-integrity');
     try {
       const runtime = join(root, 'runtime');
