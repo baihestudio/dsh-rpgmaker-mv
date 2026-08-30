@@ -2,6 +2,8 @@ import { cp, mkdir, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 
+import { redactSensitive } from '../src/process';
+
 /**
  * The adapter consumes the reusable host as a pinned source tree. It generates
  * a disposable host workspace instead of copying host implementation into the
@@ -85,7 +87,8 @@ function run(command: string, args: readonly string[], cwd?: string): CommandRes
 function requireCommand(command: string, args: readonly string[], cwd: string, label: string): string {
   const result = run(command, args, cwd);
   if (result.exitCode !== 0) {
-    throw new Error(`${label} failed (exit code ${result.exitCode}): ${result.stderr.trim() || result.stdout.trim()}`);
+    const detail = redactSensitive(result.stderr.trim() || result.stdout.trim());
+    throw new Error(`${label} failed (exit code ${result.exitCode})${detail ? `: ${detail}` : ''}`);
   }
   return result.stdout.trim();
 }

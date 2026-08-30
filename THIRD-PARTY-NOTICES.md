@@ -1,9 +1,9 @@
 # Third-party notices
 
-## `@deepseek-ai/dsh-tools@0.1.1-rc.2`
+## `@deepseek-ai/dsh-tools@0.1.2-alpha.2`
 
 The workspace Agent uses the official DeepSeek Harness TypeScript SDK renderer
-from `@deepseek-ai/dsh-tools@0.1.1-rc.2` so Code Mode prompt sections retain the
+from `@deepseek-ai/dsh-tools@0.1.2-alpha.2` so Code Mode prompt sections retain the
 typed `ToolArgsMap`/`tools` contract. The package is distributed under the MIT
 License; its source and license are available from the
 [DeepSeek Harness repository](https://github.com/deepseek-ai/deepseek-harness).
