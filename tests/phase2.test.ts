@@ -159,6 +159,7 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
         runtimeDir: runtime,
         dshExecutable: dsh,
         jsExecutable: bun,
+        openWebBrowser: false,
         agentPreset: 'rpgmaker',
         sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'),
         dshRuntimePreparer: async (options) => {
@@ -232,6 +233,7 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
       expect(launch?.args.slice(0, 2)).toEqual(['--profile', 'web']);
       expect(launch?.args[2]).toBe('--patch');
       expect(launch?.args[3]).toBe(result.deployment.compositionPath);
+      expect(launch?.args[4]).toBe('--no-open');
       expect(launch?.args.join(' ')).not.toContain('--project');
       expect(launch?.env?.DSH_HOME).toBe(dshHome);
       expect(launch?.env?.DSH_RPGMAKER_MCPORTER_RUNTIME).toBe(result.deployment.mcporterRuntimeDir);

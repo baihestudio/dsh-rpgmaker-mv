@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { bootstrapRuntime, findDshExecutable, verifyRuntime } from '../src/bootstrap';
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION } from '../src/config';
 import { launchProject } from '../src/launcher';
+import { acquireHarnessLock } from '../src/lock';
 import { runCli } from '../src/cli';
 import { executeCommand, prepareProcessInvocation, ProcessTerminationError } from '../src/process';
 import { validateMvProject } from '../src/project';
@@ -158,7 +159,7 @@ describe('staged DSH runtime bootstrap', () => {
   });
 
 
-  test('requires the rc.8 lock entry and npm integrity', async () => {
+  test('requires the pinned DSH lock entry and npm integrity', async () => {
     const root = await disposableDirectory('runtime-integrity');
     try {
       const runtime = join(root, 'runtime');
@@ -397,6 +398,48 @@ describe('runtime access lock', () => {
       });
       expect(result.status).toBe('repaired');
       await expect(stat(sessionLeaseDir)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('serializes concurrent contenders while reclaiming one stale lock', async () => {
+    const root = await disposableDirectory('runtime-concurrent-stale-lock');
+    const lockPath = join(root, 'runtime.lock');
+    try {
+      await mkdir(lockPath);
+      await writeFile(join(lockPath, 'owner.json'), `${JSON.stringify({ pid: 999999, token: 'stale' })}\n`);
+      let activeOwners = 0;
+      let maximumOwners = 0;
+
+      await Promise.all(Array.from({ length: 8 }, async () => {
+        const lock = await acquireHarnessLock(lockPath, { timeoutMs: 2_000, retryMs: 1 });
+        activeOwners += 1;
+        maximumOwners = Math.max(maximumOwners, activeOwners);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        activeOwners -= 1;
+        await lock.release();
+      }));
+
+      expect(maximumOwners).toBe(1);
+      await expect(stat(lockPath)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('an interrupted stale-lock tombstone does not block a new owner', async () => {
+    const root = await disposableDirectory('runtime-interrupted-reclaim');
+    const lockPath = join(root, 'runtime.lock');
+    try {
+      const tombstonePath = `${lockPath}.stale-interrupted`;
+      await mkdir(tombstonePath);
+      await writeFile(join(tombstonePath, 'owner.json'), `${JSON.stringify({ pid: 999999, token: 'stale' })}\n`);
+
+      const lock = await acquireHarnessLock(lockPath, { timeoutMs: 500, retryMs: 1 });
+      expect(lock.path).toBe(lockPath);
+      await lock.release();
+      expect(await stat(tombstonePath)).toBeDefined();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

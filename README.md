@@ -39,7 +39,7 @@ all disposable state/processes.
 
 ### Install and repair
 
-`bootstrap.ps1` builds a fresh staging tree with the pinned `@deepseek-ai/dsh@0.1.1-rc.2` (npm integrity `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==`), runs `bun pm trust --all`, verifies the exact package/lock facts and `koffi`, then swaps it into place. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched; older DSH releases are not accepted. If process termination or rollback cannot be confirmed, the lock reports a degraded state and preserves recoverable staging/rollback paths for manual recovery. Re-running against a valid runtime is a no-op; bootstrap, doctor, and launch serialize short runtime operations through the operation lock. A live DSH child also holds a session lease that prevents bootstrap or a second launch from swapping the runtime, while doctor remains available.
+`bootstrap.ps1` builds a fresh staging tree with the pinned `@deepseek-ai/dsh@0.1.2-alpha.2` (npm integrity `sha512-4TvTC5kRKlgtSU2UTBv+cID9a2Z+6+m6mpvjXWJfVzuTkflCff6s4MsQpFJTCmwFh/k7zNWe7qFXcLYMV/5VvA==`), runs `bun pm trust --all`, verifies the exact package/lock facts and `koffi`, then swaps it into place. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched; older DSH releases are not accepted. If process termination or rollback cannot be confirmed, the lock reports a degraded state and preserves recoverable staging/rollback paths for manual recovery. Re-running against a valid runtime is a no-op; bootstrap, doctor, and launch serialize short runtime operations through the operation lock. A live DSH child also holds a session lease that prevents bootstrap or a second launch from swapping the runtime, while doctor remains available.
 
 On Windows, program-owned DSH/MCP/tool runtimes default under `%LOCALAPPDATA%\\Programs\\BaiheStudio\\DSH-RPGMaker-MV`; mutable DSH state defaults under `%LOCALAPPDATA%\\BaiheStudio\\DSH-RPGMaker-MV\\state`. Set `DSH_HOME`, `DSH_RPGMAKER_PROGRAM_ROOT`, `DSH_RPGMAKER_DATA_ROOT`, or `DSH_RPGMAKER_RUNTIME` for a test-owned or alternate location. The doctor checks the actual executable paths and versions visible to the launcher, rather than trusting package-manager metadata.
 
@@ -185,7 +185,7 @@ preset reports that boundary instead of launching an MV runtime.
 
 ## Phase 6: DSH runtime foundation
 
-All launcher, preset, Windows shell, MCP, and Playtest contracts are mounted and checked against the official `@deepseek-ai/dsh@0.1.1-rc.2` runtime. The staged runtime verifies Bun installation/trust, the exact top-level package version and npm integrity, the DSH executable, and `koffi` before an atomic swap. Post-swap verification restores the prior runtime on failure and preserves the unverified tree for inspection; no live runtime is mutated in place.
+All launcher, preset, Windows shell, MCP, and Playtest contracts are mounted and checked against the official `@deepseek-ai/dsh@0.1.2-alpha.2` runtime. The staged runtime verifies Bun installation/trust, the exact top-level package version and npm integrity, the DSH executable, and `koffi` before an atomic swap. Post-swap verification restores the prior runtime on failure and preserves the unverified tree for inspection; no live runtime is mutated in place.
 
 The MV and MZ MCP lock checks are deliberately limited to their stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata and unrelated Bun lock internals are not pinned. The production editing contract is the mounted RPG Maker skills plus stable `rpgmaker_*` tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, and schema rejection.
 
@@ -210,3 +210,21 @@ bun run phase2:real
 ```
 
 The foundation stops before automated gameplay/CDP supervision, which remains on its separate draft/hold marker.
+
+## Electrobun Windows desktop adapter
+
+The reusable Electrobun/Cottontail/WebView2 host lives in the separate
+`dsh-electronbun` repository. This product repository supplies only the thin
+RPG Maker sidecar adapter and a generated host manifest; it does not copy the
+host's supervisor, startup state machine, or runtime recovery logic. See
+[`docs/windows-electrobun.md`](docs/windows-electrobun.md) and stage a
+test-owned host workspace with:
+
+```sh
+bun run desktop:stage -- --host-root /path/to/dsh-electronbun --output-root /tmp/dsh-rpgmaker-electrobun
+```
+
+The adapter currently pins the verified Windows Bun `1.3.14`, dynamically
+loads the installed product launcher, and lets the native WebView2 host load
+the existing project-neutral DSH Web session on `127.0.0.1:3081`. It does not
+replace the existing installer or claim stable Windows packaging evidence.

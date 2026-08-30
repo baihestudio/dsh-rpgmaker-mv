@@ -1,6 +1,6 @@
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 export interface HarnessLockOptions {
   timeoutMs?: number;
@@ -45,13 +45,47 @@ export function processPidAlive(pid: number): boolean {
   }
 }
 
-async function ownerPid(lockPath: string): Promise<number | undefined> {
+interface LockOwner {
+  pid: number;
+  token: string;
+}
+
+async function lockOwner(lockPath: string): Promise<LockOwner | undefined> {
   try {
-    const owner = JSON.parse(await readFile(join(lockPath, 'owner.json'), 'utf8')) as { pid?: unknown };
-    return typeof owner.pid === 'number' ? owner.pid : undefined;
-  } catch {
+    const owner = JSON.parse(await readFile(join(lockPath, 'owner.json'), 'utf8')) as { pid?: unknown; token?: unknown };
+    return typeof owner.pid === 'number' && typeof owner.token === 'string'
+      ? { pid: owner.pid, token: owner.token }
+      : undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code && !['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code!)) {
+      throw error;
+    }
     return undefined;
   }
+}
+
+type StaleReclaimResult = 'contended' | 'held' | 'missing' | 'reclaimed';
+
+async function reclaimStaleHarnessLock(lockPath: string): Promise<StaleReclaimResult> {
+  try {
+    if (!(await stat(lockPath)).isDirectory()) return 'missing';
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'missing';
+    throw error;
+  }
+  const owner = await lockOwner(lockPath);
+  if (!owner || processPidAlive(owner.pid)) return 'held';
+  const ownerKey = createHash('sha256').update(`${owner.pid}\0${owner.token}`).digest('hex').slice(0, 16);
+  const tombstonePath = `${lockPath}.stale-${ownerKey}`;
+  try {
+    await rename(lockPath, tombstonePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
+    if (['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'contended';
+    throw error;
+  }
+  await rm(tombstonePath, { recursive: true, force: true });
+  return 'reclaimed';
 }
 
 /**
@@ -62,15 +96,8 @@ async function ownerPid(lockPath: string): Promise<number | undefined> {
  */
 export async function isHarnessLockHeld(lockPathInput: string): Promise<boolean> {
   const lockPath = resolve(lockPathInput);
-  try {
-    if (!(await stat(lockPath)).isDirectory()) return false;
-  } catch {
-    return false;
-  }
-  const pid = await ownerPid(lockPath);
-  if (pid === undefined || processPidAlive(pid)) return true;
-  await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
-  return false;
+  const result = await reclaimStaleHarnessLock(lockPath);
+  return result === 'contended' || result === 'held';
 }
 
 export async function waitForHarnessLockRelease(lockPathInput: string, options: HarnessLockOptions = {}): Promise<void> {
@@ -120,6 +147,7 @@ export async function acquireHarnessLock(lockPathInput: string, options: Harness
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if (!(await isHarnessLockHeld(lockPath))) continue;
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new HarnessLockTimeoutError(lockPath, timeoutMs);
       await delay(Math.min(retryMs, remaining));
