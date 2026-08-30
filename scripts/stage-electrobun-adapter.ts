@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
  * a disposable host workspace instead of copying host implementation into the
  * RPG Maker product repository.
  */
-export const ELECTROBUN_HOST_COMMIT = '002f19b18331cd0252efb1d78f85201a4e39f8a2';
+export const ELECTROBUN_HOST_COMMIT = '03543ce0deeaa8c322dfbe2b5e45c03fd7c1da33';
 export const ELECTROBUN_BUN_VERSION = '1.3.14';
 export const ELECTROBUN_SUPERVISOR = 'bin/dsh-sidecar-supervisor.exe';
 export const ELECTROBUN_SIDECAR = 'payload/sidecar/dsh-rpgmaker-sidecar.js';
