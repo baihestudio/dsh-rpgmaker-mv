@@ -197,10 +197,14 @@ In the first release, the agent is the sole writer while an RPG Maker MV or MZ w
 Build and inspect a real Release ZIP without overwriting an existing archive:
 
 ```powershell
-bun run release:zip -- C:\temp\DSH-RPGMaker-MV-Windows.zip
+bun run release:zip -- C:\temp\DSH-RPGMaker-MV-Windows.zip --desktop-host-root C:\temp\built-desktop-host
 ```
 
-The release gate uses test-owned fake user/install roots in automated tests. The complete foundation acceptance is:
+The public `release:zip` command requires the explicit prebuilt
+`--desktop-host-root` payload even when it runs from WSL or macOS, and strictly
+inspects that payload before reporting success. The release gate uses
+test-owned fake user/install roots in automated tests. The complete foundation
+acceptance is:
 
 ```powershell
 bun test
@@ -237,7 +241,8 @@ bun run release:zip -- /tmp/DSH-RPGMaker-MV-Windows.zip \
   --desktop-host-root /path/to/built-desktop-host
 ```
 
-The payload must contain `desktop-host.json` (or an accepted contract alias),
+The public command always requires and strictly inspects the explicit payload.
+It must contain `desktop-host.json` (or an accepted contract alias),
 the pinned host commit/Bun version, and its native `.exe` launch target. The
 release gate performs this verification; it never builds or downloads the host
 on a user's machine.

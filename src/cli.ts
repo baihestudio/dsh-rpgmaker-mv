@@ -229,7 +229,8 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
       const zipPath = requiredOption(parsed, 'zip');
       const sourceRoot = option(parsed.values, 'source-root') ?? process.cwd();
       const desktopHostRoot = option(parsed.values, 'desktop-host-root');
-      const requireDesktopHost = parsed.flags.has('require-desktop-host') ? true : undefined;
+      if (!desktopHostRoot) throw new Error('release-zip requires an explicit --desktop-host-root <payload-directory>.');
+      const requireDesktopHost = true;
       const archive = await buildReleaseZip({ sourceRoot, outputZip: zipPath, platform: dependencies.platform, env: dependencies.env, commandRunner: dependencies.commandRunner, desktopHostRoot, requireDesktopHost });
       const inspection = await inspectReleaseZip({ zipPath: archive, platform: dependencies.platform, env: dependencies.env, commandRunner: dependencies.commandRunner, requireDesktopHost });
       if (!inspection.valid) throw new Error(`Release ZIP is missing required entries: ${inspection.missing.join(', ')}`);

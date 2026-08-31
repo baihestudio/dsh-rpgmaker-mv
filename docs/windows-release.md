@@ -23,7 +23,8 @@ No Git clone, npm install, or manual package command is needed for this path. In
 For a routine update of the existing local Windows installation from a WSL checkout, first build a fresh ZIP, then invoke the development helper through the local direct PowerShell wrapper:
 
 ```bash
-bun run release:zip -- /mnt/c/Users/<windows-user>/AppData/Local/Temp/DSH-RPGMaker-MV-current.zip
+bun run release:zip -- /mnt/c/Users/<windows-user>/AppData/Local/Temp/DSH-RPGMaker-MV-current.zip \
+  --desktop-host-root /path/to/built-desktop-host
 nuc-powershell dev/update-local-windows.ps1 \
   -ReleaseZip /mnt/c/Users/<windows-user>/AppData/Local/Temp/DSH-RPGMaker-MV-current.zip \
   -Yes -StopRunningDsh
@@ -31,10 +32,11 @@ nuc-powershell dev/update-local-windows.ps1 \
 
 The helper is development-only. `-StopRunningDsh` explicitly stops DSH processes that hold the installed program tree before the atomic update; without it, the helper refuses to interrupt an active session. It extracts the ZIP into a unique local Windows Temp directory, invokes its normal `install.ps1`, and removes the extracted copy after a successful update. Pass `-KeepExtractedRelease` only when retaining diagnostics is useful.
 
-From this Mac checkout, the equivalent NUC workflow is:
+From this Mac checkout, the equivalent NUC workflow is (the variable is
+required so a Mac/WSL build cannot create a hostless Windows archive):
 
 ```bash
-just install-from-mac-to-nuc
+DSH_DESKTOP_HOST_ROOT=/path/to/built-desktop-host just install-from-mac-to-nuc
 ```
 
 It builds a fresh temporary Release ZIP, transfers it through `nuc-kep`, stops

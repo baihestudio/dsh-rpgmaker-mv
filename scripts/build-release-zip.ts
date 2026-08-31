@@ -9,9 +9,14 @@ const hostInline = args.find((value) => value.startsWith('--desktop-host-root=')
 const desktopHostRoot = hostInline
   ? hostInline.slice('--desktop-host-root='.length)
   : hostIndex >= 0 ? args[hostIndex + 1] : undefined;
-if ((hostIndex >= 0 || hostInline) && !desktopHostRoot) throw new Error('--desktop-host-root requires a payload directory.');
+if (!desktopHostRoot || desktopHostRoot.startsWith('--')) {
+  throw new Error('release:zip requires an explicit --desktop-host-root <payload-directory>.');
+}
 const outputArgument = args.find((value, index) => !value.startsWith('--') && !(hostIndex >= 0 && index === hostIndex + 1));
-const requireDesktopHost = args.includes('--require-desktop-host') ? true : undefined;
+// This is the public Windows Release command, so it remains strict even when
+// a maintainer runs it from WSL or macOS. Library callers retain their
+// platform-specific test seams through buildReleaseZip/inspectReleaseZip.
+const requireDesktopHost = true;
 const output = resolve(outputArgument ?? join(process.cwd(), 'dist', RELEASE_ARCHIVE_NAME));
 await mkdir(dirname(output), { recursive: true });
 const archive = await buildReleaseZip({ sourceRoot: process.cwd(), outputZip: output, desktopHostRoot, requireDesktopHost });

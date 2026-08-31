@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -24,6 +25,22 @@ import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRA
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
+}
+
+function runBunScript(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['run', ...args], {
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? '' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.once('error', reject);
+    child.once('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
+  });
 }
 
 async function makeHost(root: string, overrides: Record<string, unknown> = {}): Promise<string> {
@@ -156,6 +173,19 @@ describe('desktop host release payload', () => {
         outputZip: join(root, 'missing-host.zip'),
         platform: 'win32',
       })).rejects.toThrow(/required desktop-host payload/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('public release:zip refuses a hostless archive on Linux/WSL', async () => {
+    const root = await temp('phase14-public-release-host-required');
+    try {
+      const output = join(root, 'hostless.zip');
+      const result = await runBunScript(['scripts/build-release-zip.ts', output]);
+      expect(result.exitCode).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toMatch(/--desktop-host-root/);
+      expect(await Bun.file(output).exists()).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
