@@ -7,9 +7,7 @@ import {
   ELECTROBUN_BUN_VERSION as PINNED_ELECTROBUN_BUN_VERSION,
   ELECTROBUN_HOST_COMMIT as PINNED_ELECTROBUN_HOST_COMMIT,
   ELECTROBUN_PRODUCT_IDENTIFIER,
-  ELECTROBUN_PRODUCT_VERSION,
-  ELECTROBUN_SIDECAR_RELATIVE,
-  ELECTROBUN_SUPERVISOR_RELATIVE
+  ELECTROBUN_PRODUCT_VERSION
 } from '../src/desktop-host';
 
 /**
@@ -19,19 +17,12 @@ import {
  */
 export const ELECTROBUN_HOST_COMMIT = PINNED_ELECTROBUN_HOST_COMMIT;
 export const ELECTROBUN_BUN_VERSION = PINNED_ELECTROBUN_BUN_VERSION;
-export const ELECTROBUN_SUPERVISOR = ELECTROBUN_SUPERVISOR_RELATIVE;
-export const ELECTROBUN_SIDECAR = ELECTROBUN_SIDECAR_RELATIVE;
+export const ELECTROBUN_SUPERVISOR = 'bin/dsh-sidecar-supervisor.exe';
+export const ELECTROBUN_SIDECAR = 'payload/sidecar/dsh-rpgmaker-sidecar.js';
 export const ELECTROBUN_OUTPUT_MARKER = '.dsh-electronbun-adapter-output';
 const ELECTROBUN_OUTPUT_MARKER_CONTENT = 'dsh-electronbun-adapter-v1\n';
 
 export const ELECTROBUN_PRODUCT_MANIFEST = {
-  format: 1,
-  owner: 'dsh-rpgmaker-mv',
-  product: 'DSH-RPGMaker-MV',
-  hostCommit: ELECTROBUN_HOST_COMMIT,
-  // Electrobun's Windows runnable app is emitted as DSH.exe. The release
-  // payload descriptor may override this when a maintainer renames the app.
-  launchTarget: 'DSH.exe',
   app: {
     name: 'RPG Maker Agent',
     identifier: ELECTROBUN_PRODUCT_IDENTIFIER,

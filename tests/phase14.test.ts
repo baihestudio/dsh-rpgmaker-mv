@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import {
   DESKTOP_HOST_MANIFEST_NAME,
   DESKTOP_HOST_MANIFEST_RELATIVE,
+  DESKTOP_HOST_SIDECAR_RELATIVE,
+  DESKTOP_HOST_SUPERVISOR_RELATIVE,
   ELECTROBUN_BUN_VERSION,
   ELECTROBUN_HOST_COMMIT,
   ELECTROBUN_PRODUCT_IDENTIFIER,
@@ -48,11 +50,11 @@ async function makeHost(root: string, overrides: Record<string, unknown> = {}): 
   const payload = join(root, 'host-payload');
   const launchTarget = 'app/RPG Maker Agent.exe';
   await mkdir(join(payload, 'app'), { recursive: true });
-  await mkdir(join(payload, 'payload', 'sidecar'), { recursive: true });
-  await mkdir(join(payload, 'bin'), { recursive: true });
+  await mkdir(dirname(join(payload, DESKTOP_HOST_SIDECAR_RELATIVE)), { recursive: true });
+  await mkdir(dirname(join(payload, DESKTOP_HOST_SUPERVISOR_RELATIVE)), { recursive: true });
   await writeFile(join(payload, launchTarget), 'native host fixture');
-  await writeFile(join(payload, 'payload', 'sidecar', 'dsh-rpgmaker-sidecar.js'), 'sidecar fixture');
-  await writeFile(join(payload, 'bin', 'dsh-sidecar-supervisor.exe'), 'supervisor fixture');
+  await writeFile(join(payload, DESKTOP_HOST_SIDECAR_RELATIVE), 'sidecar fixture');
+  await writeFile(join(payload, DESKTOP_HOST_SUPERVISOR_RELATIVE), 'supervisor fixture');
   await writeFile(join(payload, DESKTOP_HOST_MANIFEST_NAME), JSON.stringify({
     format: 1,
     owner: PROGRAM_OWNER,
@@ -62,8 +64,8 @@ async function makeHost(root: string, overrides: Record<string, unknown> = {}): 
     productVersion: ELECTROBUN_PRODUCT_VERSION,
     app: { identifier: ELECTROBUN_PRODUCT_IDENTIFIER },
     launchTarget,
-    sidecarEntrypoint: 'payload/sidecar/dsh-rpgmaker-sidecar.js',
-    supervisorExecutable: 'bin/dsh-sidecar-supervisor.exe',
+    sidecarEntrypoint: DESKTOP_HOST_SIDECAR_RELATIVE,
+    supervisorExecutable: DESKTOP_HOST_SUPERVISOR_RELATIVE,
     ...overrides,
   }, null, 2));
   return payload;
@@ -144,8 +146,8 @@ describe('desktop host release payload', () => {
         bun: { version: ELECTROBUN_BUN_VERSION },
         hostCommit: ELECTROBUN_HOST_COMMIT,
         launchTarget: 'app/RPG Maker Agent.exe',
-        sidecarEntrypoint: 'payload/sidecar/dsh-rpgmaker-sidecar.js',
-        supervisorExecutable: 'bin/dsh-sidecar-supervisor.exe',
+        sidecarEntrypoint: DESKTOP_HOST_SIDECAR_RELATIVE,
+        supervisorExecutable: DESKTOP_HOST_SUPERVISOR_RELATIVE,
       };
       await writeFile(join(payload, DESKTOP_HOST_MANIFEST_NAME), JSON.stringify(genericManifest));
       expect((await verifyDesktopHostPayload(payload)).valid).toBe(true);

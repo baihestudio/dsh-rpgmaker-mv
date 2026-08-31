@@ -14,8 +14,8 @@ export const ELECTROBUN_PRODUCT_VERSION = '0.1.0';
 
 /** Relative directory used inside a Release ZIP and the installed program. */
 export const DESKTOP_HOST_PAYLOAD_RELATIVE = 'desktop-host';
-export const ELECTROBUN_SIDECAR_RELATIVE = 'payload/sidecar/dsh-rpgmaker-sidecar.js';
-export const ELECTROBUN_SUPERVISOR_RELATIVE = 'bin/dsh-sidecar-supervisor.exe';
+export const DESKTOP_HOST_SIDECAR_RELATIVE = 'Resources/app/payload/sidecar/dsh-rpgmaker-sidecar.js';
+export const DESKTOP_HOST_SUPERVISOR_RELATIVE = 'Resources/app/bin/dsh-sidecar-supervisor.exe';
 /** JSON sidecar describing the prebuilt host and its pinned contract. */
 export const DESKTOP_HOST_MANIFEST_NAME = 'desktop-host.json';
 export const DESKTOP_HOST_MANIFEST_RELATIVE = `${DESKTOP_HOST_PAYLOAD_RELATIVE}/${DESKTOP_HOST_MANIFEST_NAME}`;
@@ -230,16 +230,16 @@ export async function verifyDesktopHostPayload(
   if (launchPath && !(await regularFile(launchPath))) errors.push(`desktop host launchTarget is missing or not a regular file: ${launchPath}`);
 
   const sidecarTarget = relativePayloadPath(manifest?.sidecarEntrypoint, 'desktop host sidecarEntrypoint', errors);
-  if (sidecarTarget && sidecarTarget !== ELECTROBUN_SIDECAR_RELATIVE) {
-    errors.push(`desktop host sidecarEntrypoint is ${sidecarTarget}, expected ${ELECTROBUN_SIDECAR_RELATIVE}`);
+  if (sidecarTarget && sidecarTarget !== DESKTOP_HOST_SIDECAR_RELATIVE) {
+    errors.push(`desktop host sidecarEntrypoint is ${sidecarTarget}, expected ${DESKTOP_HOST_SIDECAR_RELATIVE}`);
   }
   const sidecarPath = sidecarTarget ? join(payloadRoot, sidecarTarget) : undefined;
   if (sidecarPath && (!(await pathInside(payloadRoot, sidecarPath)) || !(await regularFile(sidecarPath)))) {
     errors.push(`desktop host sidecarEntrypoint is missing or outside the payload: ${sidecarPath}`);
   }
   const supervisorTarget = relativePayloadPath(manifest?.supervisorExecutable, 'desktop host supervisorExecutable', errors);
-  if (supervisorTarget && supervisorTarget !== ELECTROBUN_SUPERVISOR_RELATIVE) {
-    errors.push(`desktop host supervisorExecutable is ${supervisorTarget}, expected ${ELECTROBUN_SUPERVISOR_RELATIVE}`);
+  if (supervisorTarget && supervisorTarget !== DESKTOP_HOST_SUPERVISOR_RELATIVE) {
+    errors.push(`desktop host supervisorExecutable is ${supervisorTarget}, expected ${DESKTOP_HOST_SUPERVISOR_RELATIVE}`);
   }
   const supervisorPath = supervisorTarget ? join(payloadRoot, supervisorTarget) : undefined;
   if (supervisorPath && (!(await pathInside(payloadRoot, supervisorPath)) || !(await regularFile(supervisorPath)))) {
