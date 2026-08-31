@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 
 import {
   DESKTOP_HOST_MANIFEST_NAME,
+  DESKTOP_HOST_MANIFEST_RELATIVE,
   ELECTROBUN_BUN_VERSION,
   ELECTROBUN_HOST_COMMIT,
   ELECTROBUN_PRODUCT_IDENTIFIER,
@@ -87,6 +88,46 @@ async function makeMinimalDshRuntime(runtime: string): Promise<void> {
 }
 
 describe('desktop host release payload', () => {
+  test('accepts only the canonical desktop-host.json descriptor name', async () => {
+    const root = await temp('phase14-host-manifest-name');
+    try {
+      const payload = await makeHost(root);
+      const manifestPath = join(payload, DESKTOP_HOST_MANIFEST_NAME);
+      const manifest = await readFile(manifestPath, 'utf8');
+      await rm(manifestPath);
+      await writeFile(join(payload, 'manifest.json'), manifest);
+
+      const verification = await verifyDesktopHostPayload(payload);
+      expect(verification.valid).toBe(false);
+      expect(verification.errors.join(' ')).toContain(`expected ${DESKTOP_HOST_MANIFEST_NAME}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('ZIP inspection requires the canonical desktop-host.json entry', async () => {
+    const root = await temp('phase14-host-zip-manifest-name');
+    try {
+      const archive = join(root, 'release.zip');
+      await writeFile(archive, 'fixture');
+      const inspection = await inspectReleaseZip({
+        zipPath: archive,
+        platform: 'linux',
+        unzipExecutable: 'fixture-unzip.exe',
+        requireDesktopHost: true,
+        commandRunner: async () => ({
+          exitCode: 0,
+          stdout: 'desktop-host/\ndesktop-host/manifest.json\ndesktop-host/app/RPG Maker Agent.exe\n',
+          stderr: '',
+        }),
+      });
+      expect(inspection.valid).toBe(false);
+      expect(inspection.missing).toContain(DESKTOP_HOST_MANIFEST_RELATIVE);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('verifies the pinned host contract and confines every executable path', async () => {
     const root = await temp('phase14-host-verify');
     try {
@@ -103,8 +144,8 @@ describe('desktop host release payload', () => {
         bun: { version: ELECTROBUN_BUN_VERSION },
         hostCommit: ELECTROBUN_HOST_COMMIT,
         launchTarget: 'app/RPG Maker Agent.exe',
-        sidecar: { entrypoint: 'payload/sidecar/dsh-rpgmaker-sidecar.js' },
-        supervisor: { executable: 'bin/dsh-sidecar-supervisor.exe' },
+        sidecarEntrypoint: 'payload/sidecar/dsh-rpgmaker-sidecar.js',
+        supervisorExecutable: 'bin/dsh-sidecar-supervisor.exe',
       };
       await writeFile(join(payload, DESKTOP_HOST_MANIFEST_NAME), JSON.stringify(genericManifest));
       expect((await verifyDesktopHostPayload(payload)).valid).toBe(true);
@@ -120,6 +161,30 @@ describe('desktop host release payload', () => {
       const rejected = await verifyDesktopHostPayload(payload);
       expect(rejected.valid).toBe(false);
       expect(rejected.errors.join(' ')).toMatch(/relative path|traversal/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects an otherwise-valid payload that omits sidecarEntrypoint', async () => {
+    const root = await temp('phase14-host-missing-sidecar');
+    try {
+      const payload = await makeHost(root, { sidecarEntrypoint: undefined });
+      const verification = await verifyDesktopHostPayload(payload);
+      expect(verification.valid).toBe(false);
+      expect(verification.errors.join(' ')).toMatch(/sidecarEntrypoint.*(required|non-empty relative path)/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects an otherwise-valid payload that omits supervisorExecutable', async () => {
+    const root = await temp('phase14-host-missing-supervisor');
+    try {
+      const payload = await makeHost(root, { supervisorExecutable: undefined });
+      const verification = await verifyDesktopHostPayload(payload);
+      expect(verification.valid).toBe(false);
+      expect(verification.errors.join(' ')).toMatch(/supervisorExecutable.*(required|non-empty relative path)/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

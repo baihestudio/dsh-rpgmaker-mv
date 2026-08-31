@@ -68,8 +68,9 @@ modify a user's running DSH session.
 
 To package a release, provide the already-built host output as a
 `--desktop-host-root` payload to the product release script. The product gate
-verifies the pinned host revision, Bun version, manifest, and native launch
-target before copying it under `desktop-host`; `Install.cmd` then targets that
-host from the Start Menu. The host build, clean-machine provisioning, signing,
-and update delivery remain outside this repository and are not performed by
-the installer.
+verifies the pinned host revision, Bun version, and canonical `desktop-host.json`
+descriptor before copying it under `desktop-host`. That descriptor must declare
+the exact `sidecarEntrypoint` and `supervisorExecutable` payload files as well
+as the native launch target. `Install.cmd` then targets that host from the
+Start Menu. The host build, clean-machine provisioning, signing, and update
+delivery remain outside this repository and are not performed by the installer.

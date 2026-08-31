@@ -14,7 +14,6 @@ import { prepareMcporterRuntime } from './mcport';
 import { DSH_BRAND_BUNDLE_RELATIVE, ensureManagedWebProfile } from './managed-web-profile';
 import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import {
-  DESKTOP_HOST_MANIFEST_ALIASES,
   DESKTOP_HOST_MANIFEST_RELATIVE,
   DESKTOP_HOST_PAYLOAD_RELATIVE,
   ELECTROBUN_PRODUCT_VERSION,
@@ -588,7 +587,7 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
   if (requireDesktopHost) {
     requiredEntries.push(DESKTOP_HOST_PAYLOAD_RELATIVE, DESKTOP_HOST_MANIFEST_RELATIVE);
     const hostEntries = entries.filter((entry) => entry === DESKTOP_HOST_PAYLOAD_RELATIVE || entry.startsWith(`${DESKTOP_HOST_PAYLOAD_RELATIVE}/`));
-    const hasDescriptor = DESKTOP_HOST_MANIFEST_ALIASES.some((name) => hostEntries.includes(`${DESKTOP_HOST_PAYLOAD_RELATIVE}/${name}`));
+    const hasDescriptor = hostEntries.includes(DESKTOP_HOST_MANIFEST_RELATIVE);
     const hasExecutable = hostEntries.some((entry) => entry.toLowerCase().endsWith('.exe'));
     if (hostEntries.length === 0) missing.push(DESKTOP_HOST_PAYLOAD_RELATIVE);
     if (!hasDescriptor) missing.push(DESKTOP_HOST_MANIFEST_RELATIVE);

@@ -242,7 +242,8 @@ bun run release:zip -- /tmp/DSH-RPGMaker-MV-Windows.zip \
 ```
 
 The public command always requires and strictly inspects the explicit payload.
-It must contain `desktop-host.json` (or an accepted contract alias),
-the pinned host commit/Bun version, and its native `.exe` launch target. The
-release gate performs this verification; it never builds or downloads the host
-on a user's machine.
+It must contain the canonical `desktop-host.json` descriptor, the pinned host
+commit/Bun version, its native `.exe` launch target, and required
+`sidecarEntrypoint`/`supervisorExecutable` fields pointing to the exact staged
+files. The release gate performs this verification; it never builds or
+downloads the host on a user's machine.

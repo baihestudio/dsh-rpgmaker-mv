@@ -19,14 +19,6 @@ export const ELECTROBUN_SUPERVISOR_RELATIVE = 'bin/dsh-sidecar-supervisor.exe';
 /** JSON sidecar describing the prebuilt host and its pinned contract. */
 export const DESKTOP_HOST_MANIFEST_NAME = 'desktop-host.json';
 export const DESKTOP_HOST_MANIFEST_RELATIVE = `${DESKTOP_HOST_PAYLOAD_RELATIVE}/${DESKTOP_HOST_MANIFEST_NAME}`;
-/** Common aliases accepted when a maintainer exports a host payload. */
-export const DESKTOP_HOST_MANIFEST_ALIASES = [
-  DESKTOP_HOST_MANIFEST_NAME,
-  'manifest.json',
-  'host-manifest.json',
-  'product.manifest.json',
-  'dsh-rpgmaker-desktop-host.json'
-] as const;
 
 export const DESKTOP_HOST_FORMAT = 1;
 
@@ -45,11 +37,10 @@ export interface DesktopHostManifest {
   };
   /** Relative path to the executable users should launch. */
   launchTarget?: string;
-  /** Relative paths retained for host-contract verification. */
-  sidecarEntrypoint?: string;
-  supervisorExecutable?: string;
-  sidecar?: { entrypoint?: string };
-  supervisor?: { executable?: string };
+  /** Required relative path to the staged sidecar entrypoint. */
+  sidecarEntrypoint: string;
+  /** Required relative path to the staged supervisor executable. */
+  supervisorExecutable: string;
   [key: string]: unknown;
 }
 
@@ -132,18 +123,15 @@ function relativePayloadPath(value: unknown, label: string, errors: string[]): s
 }
 
 async function findManifest(payloadRoot: string): Promise<{ path: string; value: DesktopHostManifest } | undefined> {
-  for (const name of DESKTOP_HOST_MANIFEST_ALIASES) {
-    const path = join(payloadRoot, name);
-    if (!(await regularFile(path))) continue;
-    try {
-      const value = object(JSON.parse(await readFile(path, 'utf8')));
-      if (value) return { path, value: value as DesktopHostManifest };
-    } catch {
-      // The caller receives a useful missing/invalid descriptor diagnostic.
-      return { path, value: {} };
-    }
+  const path = join(payloadRoot, DESKTOP_HOST_MANIFEST_NAME);
+  if (!(await regularFile(path))) return undefined;
+  try {
+    const value = object(JSON.parse(await readFile(path, 'utf8')));
+    if (value) return { path, value: value as DesktopHostManifest };
+  } catch {
+    // The caller receives a useful invalid descriptor diagnostic.
   }
-  return undefined;
+  return { path, value: {} as DesktopHostManifest };
 }
 
 async function findSymlink(root: string): Promise<string | undefined> {
@@ -183,14 +171,6 @@ function manifestBunVersion(manifest: DesktopHostManifest | undefined): unknown 
   return manifest?.bunVersion ?? bun?.version;
 }
 
-function manifestSidecar(manifest: DesktopHostManifest | undefined): unknown {
-  return manifest?.sidecarEntrypoint ?? manifest?.sidecar?.entrypoint;
-}
-
-function manifestSupervisor(manifest: DesktopHostManifest | undefined): unknown {
-  return manifest?.supervisorExecutable ?? manifest?.supervisor?.executable;
-}
-
 /**
  * Verify a prebuilt host payload without launching it.  This is intentionally
  * filesystem-only: native host build and smoke evidence remain outside this
@@ -219,7 +199,7 @@ export async function verifyDesktopHostPayload(
   const descriptor = await findManifest(payloadRoot);
   const manifest = descriptor?.value;
   if (!descriptor) {
-    errors.push(`desktop host payload descriptor is missing (expected ${DESKTOP_HOST_MANIFEST_ALIASES.join(', ')})`);
+    errors.push(`desktop host payload descriptor is missing (expected ${DESKTOP_HOST_MANIFEST_NAME})`);
   } else if (!manifest || Object.keys(manifest).length === 0) {
     errors.push(`desktop host payload descriptor is not valid JSON: ${descriptor.path}`);
   }
@@ -249,7 +229,7 @@ export async function verifyDesktopHostPayload(
   if (launchPath && !pathInside(payloadRoot, launchPath)) errors.push('desktop host launchTarget escapes the payload root');
   if (launchPath && !(await regularFile(launchPath))) errors.push(`desktop host launchTarget is missing or not a regular file: ${launchPath}`);
 
-  const sidecarTarget = relativePayloadPath(manifestSidecar(manifest), 'desktop host sidecarEntrypoint', errors);
+  const sidecarTarget = relativePayloadPath(manifest?.sidecarEntrypoint, 'desktop host sidecarEntrypoint', errors);
   if (sidecarTarget && sidecarTarget !== ELECTROBUN_SIDECAR_RELATIVE) {
     errors.push(`desktop host sidecarEntrypoint is ${sidecarTarget}, expected ${ELECTROBUN_SIDECAR_RELATIVE}`);
   }
@@ -257,7 +237,7 @@ export async function verifyDesktopHostPayload(
   if (sidecarPath && (!(await pathInside(payloadRoot, sidecarPath)) || !(await regularFile(sidecarPath)))) {
     errors.push(`desktop host sidecarEntrypoint is missing or outside the payload: ${sidecarPath}`);
   }
-  const supervisorTarget = relativePayloadPath(manifestSupervisor(manifest), 'desktop host supervisorExecutable', errors);
+  const supervisorTarget = relativePayloadPath(manifest?.supervisorExecutable, 'desktop host supervisorExecutable', errors);
   if (supervisorTarget && supervisorTarget !== ELECTROBUN_SUPERVISOR_RELATIVE) {
     errors.push(`desktop host supervisorExecutable is ${supervisorTarget}, expected ${ELECTROBUN_SUPERVISOR_RELATIVE}`);
   }
