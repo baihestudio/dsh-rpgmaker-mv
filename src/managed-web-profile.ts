@@ -2,7 +2,7 @@ import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } f
 import { basename, dirname, isAbsolute, join, resolve, sep, win32 } from 'node:path';
 
 import { findDshExecutable } from './bootstrap';
-import { resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { DSH_VERSION, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
 import { isRegularFile } from './files';
 import { withHarnessOperationLock } from './lock';
 import { commandFailure, redactSensitive, runCommand, type CommandRunner } from './process';
@@ -32,6 +32,8 @@ export const DSH_IMAGEGEN_VERSION = '0.2.2';
 export const DSH_BRAND_PACKAGE = '@baihestudio/dsh-rpgmaker-brand';
 export const DSH_BRAND_VERSION = '0.1.0';
 export const DSH_BRAND_BUNDLE_RELATIVE = join('bundle', 'dsh-rpgmaker-brand');
+const DSH_RUNTIME_MARKER = 'dshRpgMaker';
+const DSH_RUNTIME_MARKER_REVISION = 3;
 
 export interface ManagedWebProfileOptions extends PathOptions {
   dshExecutable?: string;
@@ -481,6 +483,10 @@ export async function verifyManagedWebProfile(options: ManagedWebProfileOptions 
   }
   const manifest = await readJson(join(profileDir, 'package.json'));
   if (!manifest) errors.push(`managed ${MANAGED_WEB_PROFILE} profile manifest is missing or invalid at ${join(profileDir, 'package.json')}`);
+  const runtimeMarker = asObject(manifest?.[DSH_RUNTIME_MARKER]);
+  if (runtimeMarker?.dshVersion !== DSH_VERSION || runtimeMarker?.revision !== DSH_RUNTIME_MARKER_REVISION) {
+    errors.push(`managed ${MANAGED_WEB_PROFILE} profile was not built for pinned DSH ${DSH_VERSION} and profile revision ${DSH_RUNTIME_MARKER_REVISION}`);
+  }
 
   const dependencies = profileDependencies(manifest);
   const bundles = profileBundles(manifest);
@@ -601,6 +607,7 @@ async function writeManagedBundleRegistrations(profileDir: string): Promise<void
   profile.bundles = [...MANAGED_WEB_PROFILE_BUNDLE_NAMES];
   dsh.profile = profile;
   manifest.dsh = dsh;
+  manifest[DSH_RUNTIME_MARKER] = { dshVersion: DSH_VERSION, revision: DSH_RUNTIME_MARKER_REVISION };
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }
 
