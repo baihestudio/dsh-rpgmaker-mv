@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { installPreset, launchRpgmakerProject, RpgMakerStartupError, resolveMcpRunner, verifyRpgMakerMcpRuntime, RPGMAKER_MV_MCP_PACKAGE, RPGMAKER_MV_MCP_VERSION, RPGMAKER_MV_MCP_INTEGRITY, RPGMAKER_MZ_MCP_PACKAGE, RPGMAKER_MZ_MCP_VERSION, RPGMAKER_MZ_MCP_INTEGRITY } from '../src/rpgmaker';
+import { findCodeComposition, installPreset, launchRpgmakerProject, RpgMakerStartupError, resolveMcpRunner, verifyRpgMakerMcpRuntime, RPGMAKER_MV_MCP_PACKAGE, RPGMAKER_MV_MCP_VERSION, RPGMAKER_MV_MCP_INTEGRITY, RPGMAKER_MZ_MCP_PACKAGE, RPGMAKER_MZ_MCP_VERSION, RPGMAKER_MZ_MCP_INTEGRITY } from '../src/rpgmaker';
 import { DSH_VERSION } from '../src/config';
 import { backupIgnoreGuidance } from '../src/project';
 
@@ -58,6 +58,19 @@ async function makeMcpRuntime(runtime: string): Promise<void> {
 }
 
 describe('RPG Maker MCP runtime, preset composition, and launch', () => {
+  test('uses the standard composition shipped by the current DSH preset package', async () => {
+    const root = await temp('phase2-standard-composition');
+    try {
+      const runtime = join(root, 'dsh-runtime');
+      const composition = join(runtime, 'node_modules', '@deepseek-ai', 'dsh-agent-presets', 'presets', 'standard', 'agent.cordis.yml');
+      await mkdir(dirname(composition), { recursive: true });
+      await writeFile(composition, "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n");
+      await expect(findCodeComposition(runtime)).resolves.toBe(composition);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('fails closed when the pinned Code composition has no persona seam', async () => {
     const root = await temp('phase2-persona-seam');
     try {

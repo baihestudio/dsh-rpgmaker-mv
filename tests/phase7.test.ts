@@ -199,6 +199,7 @@ async function writeProfilePlugin(
   profileConfig.bundles = [...new Set(bundles)];
   dsh.profile = profileConfig;
   manifest.dsh = dsh;
+  manifest.dshRpgMaker = { dshVersion: DSH_VERSION, revision: 3 };
   if (source) {
     await rm(installed, { recursive: true, force: true });
     await cp(source, installed, { recursive: true });
@@ -1877,6 +1878,15 @@ describe('Windows release gate foundations', () => {
       expect(firstPreparation.managedWebProfile.materialized).toBe(false);
       expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
       expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', '@anionex', 'dsh-vision-toolkit')).exists()).toBe(false);
+      const manifestPath = join(state, 'profiles', 'web', 'package.json');
+      const staleManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { dshRpgMaker?: { dshVersion?: string; revision?: number } };
+      staleManifest.dshRpgMaker = { dshVersion: DSH_VERSION, revision: 2 };
+      await writeFile(manifestPath, JSON.stringify(staleManifest));
+      const stale = await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') });
+      expect(stale.valid).toBe(false);
+      expect(stale.errors.join(' ')).toMatch(/not built for pinned DSH/i);
+      const repairedStalePreparation = await prepareRpgMakerLaunch(launchOptions);
+      expect(repairedStalePreparation.managedWebProfile.materialized).toBe(true);
       const profilePackage = join(state, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
       await rm(profilePackage, { recursive: true, force: true });
       const broken = await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') });

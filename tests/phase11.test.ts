@@ -170,6 +170,15 @@ function optionsFor(
 }
 
 describe('managed Web profile materialization', () => {
+  test('ships the workspace MCP with the exact host-owned DSH tools peer', async () => {
+    const manifest = JSON.parse(await readFile(join(REPOSITORY_ROOT, 'bundle', 'dsh-workspace-mcp', 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+    };
+    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-tools']).toBe('0.1.1-rc.2');
+    expect(manifest.dependencies?.['@deepseek-ai/dsh-tools']).toBeUndefined();
+  });
+
   test('converges to four direct packages and the exact six-layer bundle roster', async () => {
     const root = await temp('phase11-managed-profile-exact');
     try {

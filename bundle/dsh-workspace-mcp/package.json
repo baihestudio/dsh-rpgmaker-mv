@@ -24,7 +24,7 @@
   "engines": {
     "node": ">=18"
   },
-  "dependencies": {
-    "@deepseek-ai/dsh-tools": "0.1.2-alpha.2"
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2"
   }
 }

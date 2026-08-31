@@ -36,13 +36,17 @@ async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
 }
 
-async function writeEnginePackage(runtime: string, record: (typeof MCP_ENGINE_RECORDS)[keyof typeof MCP_ENGINE_RECORDS]): Promise<void> {
+async function writeEnginePackage(
+  runtime: string,
+  record: (typeof MCP_ENGINE_RECORDS)[keyof typeof MCP_ENGINE_RECORDS],
+  packageEntry: string = record.entry
+): Promise<void> {
   const packageDir = join(runtime, 'node_modules', ...record.package.split('/'));
   await mkdir(join(packageDir, 'dist'), { recursive: true });
   await writeFile(join(packageDir, 'package.json'), `${JSON.stringify({
     name: record.package,
     version: record.version,
-    bin: { [record.bin]: record.entry }
+    bin: { [record.bin]: packageEntry }
   })}\n`);
   await writeFile(join(packageDir, record.entry), 'export {};\n');
 }
@@ -241,6 +245,20 @@ describe('dual-engine RPG Maker seams', () => {
       expect(tampered.engines.mv.valid).toBe(true);
       expect(tampered.engines.mz.valid).toBe(false);
       expect(tampered.engines.mz.errors.join(' ')).toMatch(/MZ MCP bun\.lock/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('accepts the standard ./ prefix in installed MZ bin metadata', async () => {
+    const root = await temp('mz-bin-prefix');
+    try {
+      const runtime = await writeDualRuntime(root);
+      await writeEnginePackage(runtime, MCP_ENGINE_RECORDS.mz, './dist/index.js');
+      await expect(verifyRpgMakerMcpRuntime(runtime, 'linux')).resolves.toMatchObject({
+        valid: true,
+        engines: { mz: { valid: true } }
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

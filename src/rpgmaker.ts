@@ -264,7 +264,7 @@ export async function verifyEngineMcpRuntime(runtimeDirInput: string, engine: 'm
   const packageBin = typeof packageJson?.bin === 'string' ? packageJson.bin : packageBins?.[record.bin];
   if (packageName !== record.package) errors.push(`installed ${record.engine.toUpperCase()} MCP package identity is ${packageName ?? 'missing'}, expected ${record.package}`);
   if (packageVersion !== record.version) errors.push(`installed ${record.engine.toUpperCase()} MCP version is ${packageVersion ?? 'missing'}, expected ${record.version}`);
-  if (packageBin !== record.entry) errors.push(`installed ${record.engine.toUpperCase()} MCP bin metadata is ${String(packageBin ?? 'missing')}, expected ${record.entry}`);
+  if (packageBin !== record.entry && packageBin !== `./${record.entry}`) errors.push(`installed ${record.engine.toUpperCase()} MCP bin metadata is ${String(packageBin ?? 'missing')}, expected ${record.entry}`);
   const executable = await findMcpScript(runtimeDir, record.package, record.bin);
   if (!executable) errors.push(`installed RPG Maker ${record.engine.toUpperCase()} MCP JavaScript entry was not found inside the app-owned runtime`);
   return { ...record, valid: errors.length === 0, errors, packageVersion, executable };
@@ -395,7 +395,8 @@ export async function findCodeComposition(runtimeDir: string): Promise<string> {
   const candidates = [
     join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml'),
     join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'apps', 'cli', 'config', 'agent-presets', 'code', 'agent.cordis.yml'),
-    join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'config', 'agent-presets', 'code', 'agent.cordis.yml')
+    join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'config', 'agent-presets', 'code', 'agent.cordis.yml'),
+    join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-agent-presets', 'presets', 'standard', 'agent.cordis.yml')
   ];
   for (const candidate of candidates) if (await pathExists(candidate)) return candidate;
   throw new RpgMakerStartupError('Pinned DSH Code preset composition was not found; refusing to start a tool-less RPG Maker session.');
@@ -867,6 +868,8 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
       ...(options.dshArgs ?? []),
       '--patch',
       deployment.compositionPath,
+      // Desktop hosts own the WebView; explicitly suppress DSH's external
+      // browser opener when the sidecar requests the embedded-only path.
       ...(options.openWebBrowser === false ? ['--no-open'] : [])
     ]
   });

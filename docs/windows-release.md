@@ -12,18 +12,19 @@
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
    - ImageMagick 7 (`ImageMagick.ImageMagick`; installed system-wide and exposed as `magick` on Windows PATH)
-4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the source-pinned DSH runtime with Bun (package, version, and integrity are defined in [`src/config.ts`](../src/config.ts)), materializes one exact app-managed `web` profile with four direct managed dependencies (the external `@guionai/dsh-web` and `@lamplitisles/dsh-imagegen` packages at the exact versions defined in [`src/managed-web-profile.ts`](../src/managed-web-profile.ts), the release-owned `@baihestudio/dsh-rpgmaker-brand` bundle, and the app-owned `@baihestudio/dsh-workspace-mcp` bundle) plus the six ordered DSH bundle layers beginning with `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`, installs both source-pinned RPG Maker editing MCPs (declared in [`src/rpgmaker.ts`](../src/rpgmaker.ts)), then creates a per-user Start Menu shortcut named **RPG Maker Agent**. Normal launch additionally prepares the app-owned MCPorter runtime, the dual-engine RPG Maker runtime, default preset, and neutral composition as needed.
+4. The installer verifies the packaged, prebuilt desktop host (the pinned host revision and Bun `1.3.14` contract), executable paths, and prerequisite versions. It retains the verified WinGet Python as a general Agent utility, stages the source-pinned DSH runtime with Bun (package, version, and integrity are defined in [`src/config.ts`](../src/config.ts)), materializes one exact app-managed `web` profile with four direct managed dependencies (the external `@guionai/dsh-web` and `@lamplitisles/dsh-imagegen` packages at the exact versions defined in [`src/managed-web-profile.ts`](../src/managed-web-profile.ts), the release-owned `@baihestudio/dsh-rpgmaker-brand` bundle, and the app-owned `@baihestudio/dsh-workspace-mcp` bundle) plus the six ordered DSH bundle layers beginning with `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`, installs both source-pinned RPG Maker editing MCPs (declared in [`src/rpgmaker.ts`](../src/rpgmaker.ts)), then creates a per-user Start Menu shortcut named **RPG Maker Agent** targeting the staged native host executable. Normal launch additionally prepares the app-owned MCPorter runtime, the dual-engine RPG Maker runtime, default preset, and neutral composition as needed.
 
 The four direct package dependencies and six bundle layers belong to one DSH-managed profile state. DSH's `web` template layers (`@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`) remain in-box template bundles rather than profile dependencies. If a package command or final verification fails after initializing that state, the installer reports the materialization failure and restores the prior working profile (and its app-owned workspace bundle); rerun `Install.cmd` to complete the profile setup. Credentials, recent workspaces, presets, caches, logs, and other mutable state remain outside this rollback boundary.
 
-No Git clone, npm install, or manual package command is needed for this path. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported repair path; a previous runtime is retained by the staged runtime swap for recovery. If post-swap bootstrap, metadata, or shortcut creation fails, the prior program tree is restored and the failed new tree is retained as a named diagnostic/recovery directory.
+No Git clone, npm install, or manual package command is needed for this path. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported fresh-install, upgrade, and repair path; a previous runtime is retained by the staged runtime swap for recovery. If an owned Agent is running during an upgrade, the installer asks once whether to close it and stops only that owned process tree. Declining leaves the installed tree and mutable state untouched. If post-swap bootstrap, metadata, or shortcut creation fails, the prior program tree is restored and the failed new tree is retained as a named diagnostic/recovery directory.
 
 ## Local WSL update helper
 
 For a routine update of the existing local Windows installation from a WSL checkout, first build a fresh ZIP, then invoke the development helper through the local direct PowerShell wrapper:
 
 ```bash
-bun run release:zip -- /mnt/c/Users/<windows-user>/AppData/Local/Temp/DSH-RPGMaker-MV-current.zip
+bun run release:zip -- /mnt/c/Users/<windows-user>/AppData/Local/Temp/DSH-RPGMaker-MV-current.zip \
+  --desktop-host-root /path/to/built-desktop-host
 nuc-powershell dev/update-local-windows.ps1 \
   -ReleaseZip /mnt/c/Users/<windows-user>/AppData/Local/Temp/DSH-RPGMaker-MV-current.zip \
   -Yes -StopRunningDsh
@@ -31,10 +32,11 @@ nuc-powershell dev/update-local-windows.ps1 \
 
 The helper is development-only. `-StopRunningDsh` explicitly stops DSH processes that hold the installed program tree before the atomic update; without it, the helper refuses to interrupt an active session. It extracts the ZIP into a unique local Windows Temp directory, invokes its normal `install.ps1`, and removes the extracted copy after a successful update. Pass `-KeepExtractedRelease` only when retaining diagnostics is useful.
 
-From this Mac checkout, the equivalent NUC workflow is:
+From this Mac checkout, the equivalent NUC workflow is (the variable is
+required so a Mac/WSL build cannot create a hostless Windows archive):
 
 ```bash
-just install-from-mac-to-nuc
+DSH_DESKTOP_HOST_ROOT=/path/to/built-desktop-host just install-from-mac-to-nuc
 ```
 
 It builds a fresh temporary Release ZIP, transfers it through `nuc-kep`, stops
@@ -55,7 +57,11 @@ Generated settings contain paths and non-secret versions only. DeepSeek credenti
 
 ## First launch and workspace switching
 
-Use the Start Menu shortcut, or run `Launch.cmd` from the installed program root.
+Use the Start Menu shortcut to open the packaged native desktop host. The host
+waits for the local DSH readiness endpoint and loads the WebView itself; its
+sidecar starts the project-neutral DSH session with `--no-open`, so no external
+browser is launched. `Launch.cmd` remains a script-level diagnostic/fallback
+entrypoint for development trees, not the installed Start Menu target.
 The launcher is project-neutral: it opens no folder picker, reads no recent
 project list, writes no app-owned project-selection state, and rejects
 `launch --project`. The Release ZIP carries the prebuilt
@@ -129,7 +135,11 @@ only the product questions needed to record user feedback clearly before
 filing it. The native MCP client intentionally exposes the server's general
 API surface.
 
-The web session always binds to `http://127.0.0.1:3081`. If that port is occupied, the launcher offers to open the existing session or asks you to close it and retry. It never silently selects another port and never starts concurrent project sessions.
+The web session always binds to `http://127.0.0.1:3081`. A desktop-host
+launch leaves UI opening to the embedded WebView; if the fixed port is
+occupied, the sidecar reports the conflict and does not open another browser.
+The script launcher may still offer its existing-session path. No path silently
+selects another port or starts concurrent project sessions.
 
 ## Post-review acceptance sequence
 

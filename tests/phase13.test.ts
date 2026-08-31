@@ -66,6 +66,9 @@ describe('Electrobun RPG Maker adapter', () => {
       webHost: '127.0.0.1',
       webPort: 3081,
     });
+    // The product launcher turns this explicit sidecar setting into DSH's
+    // `--no-open` argument; the native WebView remains the sole UI opener.
+    expect(launchOptions?.openWebBrowser).toBe(false);
     expect(launchOptions).not.toHaveProperty('mutableRoot');
     expect(launchOptions).not.toHaveProperty('dshHome');
     expect(launchOptions).not.toHaveProperty('runtimeDir');

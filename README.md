@@ -6,7 +6,7 @@ The AI production agent for RPG Maker MV and MZ
 
 ## Windows Release ZIP (Phase 7)
 
-For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs Python 3.13 and ImageMagick 7 as Windows-wide Agent utilities, installs the pinned DSH plus both RPG Maker MV and MZ editing MCPs, and creates the per-user Start Menu shortcut **RPG Maker Agent**. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
+For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer verifies the bundled prebuilt desktop host from the pinned host/Bun contract, then obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs Python 3.13 and ImageMagick 7 as Windows-wide Agent utilities, installs the pinned DSH plus both RPG Maker MV and MZ editing MCPs, and creates the per-user Start Menu shortcut **RPG Maker Agent** targeting the native host. Re-running the same command upgrades an owned installation after one explicit running-Agent close confirmation. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
 
 The full first-run, repair, port-conflict, workspace-selection, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata and preserves rollback/recovery state, mutable state, credentials, logs, and projects; `uninstall.ps1 -Purge` is explicit.
 
@@ -197,10 +197,14 @@ In the first release, the agent is the sole writer while an RPG Maker MV or MZ w
 Build and inspect a real Release ZIP without overwriting an existing archive:
 
 ```powershell
-bun run release:zip -- C:\temp\DSH-RPGMaker-MV-Windows.zip
+bun run release:zip -- C:\temp\DSH-RPGMaker-MV-Windows.zip --desktop-host-root C:\temp\built-desktop-host
 ```
 
-The release gate uses test-owned fake user/install roots in automated tests. The complete foundation acceptance is:
+The public `release:zip` command requires the explicit prebuilt
+`--desktop-host-root` payload even when it runs from WSL or macOS, and strictly
+inspects that payload before reporting success. The release gate uses
+test-owned fake user/install roots in automated tests. The complete foundation
+acceptance is:
 
 ```powershell
 bun test
@@ -215,7 +219,9 @@ The foundation stops before automated gameplay/CDP supervision, which remains on
 The reusable Electrobun/Cottontail/WebView2 host lives in the separate
 `dsh-electronbun` repository. This product repository supplies only the thin
 RPG Maker sidecar adapter and a generated host manifest; it does not copy the
-host's supervisor, startup state machine, or runtime recovery logic. See
+host's supervisor, startup state machine, or runtime recovery logic. The release
+packager consumes the resulting prebuilt host payload, verifies its pinned
+contract, and installs it under `desktop-host` beside the product tree. See
 [`docs/windows-electrobun.md`](docs/windows-electrobun.md) and stage a
 test-owned host workspace with:
 
@@ -225,5 +231,19 @@ bun run desktop:stage -- --host-root /path/to/dsh-electronbun --output-root /tmp
 
 The adapter currently pins the verified Windows Bun `1.3.14`, dynamically
 loads the installed product launcher, and lets the native WebView2 host load
-the existing project-neutral DSH Web session on `127.0.0.1:3081`. It does not
-replace the existing installer or claim stable Windows packaging evidence.
+the existing project-neutral DSH Web session on `127.0.0.1:3081`. The product
+sidecar passes DSH's explicit `--no-open` flag; the embedded WebView is the only
+UI opener. A maintainer can provide an already-built payload explicitly when
+building a release:
+
+```sh
+bun run release:zip -- /tmp/DSH-RPGMaker-MV-Windows.zip \
+  --desktop-host-root /path/to/built-desktop-host
+```
+
+The public command always requires and strictly inspects the explicit payload.
+It must contain the canonical `desktop-host.json` descriptor, the pinned host
+commit/Bun version, its native `.exe` launch target, and required
+`sidecarEntrypoint`/`supervisorExecutable` fields pointing to the exact staged
+files. The release gate performs this verification; it never builds or
+downloads the host on a user's machine.

@@ -3,14 +3,20 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { redactSensitive } from '../src/process';
+import {
+  ELECTROBUN_BUN_VERSION as PINNED_ELECTROBUN_BUN_VERSION,
+  ELECTROBUN_HOST_COMMIT as PINNED_ELECTROBUN_HOST_COMMIT,
+  ELECTROBUN_PRODUCT_IDENTIFIER,
+  ELECTROBUN_PRODUCT_VERSION
+} from '../src/desktop-host';
 
 /**
  * The adapter consumes the reusable host as a pinned source tree. It generates
  * a disposable host workspace instead of copying host implementation into the
  * RPG Maker product repository.
  */
-export const ELECTROBUN_HOST_COMMIT = '03543ce0deeaa8c322dfbe2b5e45c03fd7c1da33';
-export const ELECTROBUN_BUN_VERSION = '1.3.14';
+export const ELECTROBUN_HOST_COMMIT = PINNED_ELECTROBUN_HOST_COMMIT;
+export const ELECTROBUN_BUN_VERSION = PINNED_ELECTROBUN_BUN_VERSION;
 export const ELECTROBUN_SUPERVISOR = 'bin/dsh-sidecar-supervisor.exe';
 export const ELECTROBUN_SIDECAR = 'payload/sidecar/dsh-rpgmaker-sidecar.js';
 export const ELECTROBUN_OUTPUT_MARKER = '.dsh-electronbun-adapter-output';
@@ -19,8 +25,8 @@ const ELECTROBUN_OUTPUT_MARKER_CONTENT = 'dsh-electronbun-adapter-v1\n';
 export const ELECTROBUN_PRODUCT_MANIFEST = {
   app: {
     name: 'RPG Maker Agent',
-    identifier: 'dev.baihestudio.dsh-rpgmaker-mv',
-    version: '0.1.0'
+    identifier: ELECTROBUN_PRODUCT_IDENTIFIER,
+    version: ELECTROBUN_PRODUCT_VERSION
   },
   bun: {
     version: ELECTROBUN_BUN_VERSION,

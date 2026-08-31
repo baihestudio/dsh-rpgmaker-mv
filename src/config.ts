@@ -2,8 +2,8 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 
 export const DSH_PACKAGE_NAME = '@deepseek-ai/dsh';
-export const DSH_VERSION = '0.1.2-alpha.2';
-export const DSH_NPM_INTEGRITY = 'sha512-4TvTC5kRKlgtSU2UTBv+cID9a2Z+6+m6mpvjXWJfVzuTkflCff6s4MsQpFJTCmwFh/k7zNWe7qFXcLYMV/5VvA==';
+export const DSH_VERSION = '0.1.1-rc.2';
+export const DSH_NPM_INTEGRITY = 'sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==';
 export const DSH_RUNTIME_NAME = 'dsh-rpgmaker-runtime';
 export const PRODUCT_VENDOR = 'BaiheStudio';
 export const PRODUCT_NAME = 'DSH-RPGMaker-MV';
