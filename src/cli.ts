@@ -89,6 +89,8 @@ function helpText(): string {
     '  --js-executable <path>    Use an explicit Bun or Node executable for MCP',
     '  --mcp-runtime-dir <path>  Use the app-owned RPG Maker MCP runtime',
     '  --source-root <path>      Preset source root override',
+    '  --desktop-host-root <path> Prebuilt desktop host payload to package/install',
+    '  --require-desktop-host    Require a verified native desktop host payload',
     '  --pwsh-executable <path>  Use an explicit PowerShell executable',
     '  --node-executable <path>  Use an explicit Node.js executable',
     '  --npm-executable <path>   Use an explicit npm executable',
@@ -196,6 +198,8 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         gitExecutable: option(parsed.values, 'git-executable'),
         coreutilsExecutable: option(parsed.values, 'coreutils-executable'),
         wingetExecutable: option(parsed.values, 'winget-executable'),
+        desktopHostRoot: option(parsed.values, 'desktop-host-root'),
+        requireDesktopHost: parsed.flags.has('require-desktop-host') ? true : undefined,
         consent: dependencies.prerequisiteConsent ?? parsed.flags.has('yes'),
         commandRunner: dependencies.commandRunner
       });
@@ -224,8 +228,10 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
     if (parsed.command === 'release-zip') {
       const zipPath = requiredOption(parsed, 'zip');
       const sourceRoot = option(parsed.values, 'source-root') ?? process.cwd();
-      const archive = await buildReleaseZip({ sourceRoot, outputZip: zipPath, platform: dependencies.platform, env: dependencies.env, commandRunner: dependencies.commandRunner });
-      const inspection = await inspectReleaseZip({ zipPath: archive, platform: dependencies.platform, env: dependencies.env, commandRunner: dependencies.commandRunner });
+      const desktopHostRoot = option(parsed.values, 'desktop-host-root');
+      const requireDesktopHost = parsed.flags.has('require-desktop-host') ? true : undefined;
+      const archive = await buildReleaseZip({ sourceRoot, outputZip: zipPath, platform: dependencies.platform, env: dependencies.env, commandRunner: dependencies.commandRunner, desktopHostRoot, requireDesktopHost });
+      const inspection = await inspectReleaseZip({ zipPath: archive, platform: dependencies.platform, env: dependencies.env, commandRunner: dependencies.commandRunner, requireDesktopHost });
       if (!inspection.valid) throw new Error(`Release ZIP is missing required entries: ${inspection.missing.join(', ')}`);
       io.stdout.write(`Release ZIP: ${archive}\n${inspection.entries.length} entries inspected.\n`);
       return 0;

@@ -13,6 +13,24 @@ import { deployRpgMakerPresets, prepareRpgMakerMcpRuntime } from './rpgmaker';
 import { prepareMcporterRuntime } from './mcport';
 import { DSH_BRAND_BUNDLE_RELATIVE, ensureManagedWebProfile } from './managed-web-profile';
 import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
+import {
+  DESKTOP_HOST_MANIFEST_ALIASES,
+  DESKTOP_HOST_MANIFEST_RELATIVE,
+  DESKTOP_HOST_PAYLOAD_RELATIVE,
+  ELECTROBUN_PRODUCT_VERSION,
+  copyDesktopHostPayload,
+  resolveDesktopHostPayload,
+  verifyDesktopHostPayload,
+  type DesktopHostCopyResult
+} from './desktop-host';
+import {
+  confirmAndStopOwnedAgent,
+  RunningAgentCloseDeclinedError,
+  type OwnedAgentConsent,
+  type OwnedProcessRecord,
+  type OwnedProcessTreeStopper,
+  type OwnedProcessLister
+} from './install-lifecycle';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
@@ -49,6 +67,15 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   createShortcut?: (options: ShortcutCreationOptions) => Promise<string>;
   writeInstallMetadata?: (path: string, content: string) => Promise<void>;
   prepareAgentDependencies?: (context: { paths: HarnessPaths; env: Record<string, string | undefined>; bunExecutable: string; npmExecutable?: string; commandRunner?: CommandRunner }) => Promise<void>;
+  /** Prebuilt host payload to merge into the Release tree. */
+  desktopHostRoot?: string;
+  /** Require a native host payload even when running a simulated test host. */
+  requireDesktopHost?: boolean;
+  /** Test seam for the owned upgrade process inventory/consent lifecycle. */
+  ownedAgentConsent?: OwnedAgentConsent;
+  ownedProcessRecords?: OwnedProcessRecord[];
+  listOwnedProcesses?: OwnedProcessLister;
+  stopOwnedProcessTree?: OwnedProcessTreeStopper;
   now?: () => Date;
 }
 
@@ -58,6 +85,8 @@ export interface InstallReleaseResult {
   prerequisites: WindowsPrerequisiteReport;
   bootstrap: BootstrapResult;
   shortcutPath: string;
+  desktopHost?: DesktopHostCopyResult;
+  launchTarget: string;
   rollbackRoot?: string;
 }
 
@@ -69,6 +98,8 @@ export interface ReleaseZipOptions {
   commandRunner?: CommandRunner;
   zipExecutable?: string;
   pwshExecutable?: string;
+  desktopHostRoot?: string;
+  requireDesktopHost?: boolean;
 }
 
 export interface ReleaseZipInspection {
@@ -146,7 +177,13 @@ function ownershipMarker(): string {
   return `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1 })}\n`;
 }
 
-function installMetadata(paths: HarnessPaths, prerequisites: WindowsPrerequisiteReport, now: () => Date): string {
+function installMetadata(
+  paths: HarnessPaths,
+  prerequisites: WindowsPrerequisiteReport,
+  now: () => Date,
+  launchTarget: string,
+  desktopHost: DesktopHostCopyResult | undefined
+): string {
   return `${JSON.stringify({
     owner: PROGRAM_OWNER,
     product: PRODUCT_NAME,
@@ -156,6 +193,18 @@ function installMetadata(paths: HarnessPaths, prerequisites: WindowsPrerequisite
     mutableRoot: paths.mutableRoot,
     dshHome: paths.dshHome,
     runtimeDir: paths.runtimeDir,
+    launchTarget,
+    ...(desktopHost ? {
+      desktopHost: {
+        payload: DESKTOP_HOST_PAYLOAD_RELATIVE,
+        manifest: desktopHost.manifestPath ? relative(desktopHost.payloadRoot, desktopHost.manifestPath).replaceAll('\\', '/') : undefined,
+        launchTarget: desktopHost.installedLaunchTarget ?? desktopHost.launchTarget,
+        payloadLaunchTarget: desktopHost.launchTarget,
+        hostCommit: desktopHost.hostCommit,
+        bunVersion: desktopHost.bunVersion,
+        productVersion: desktopHost.productVersion
+      }
+    } : {}),
     prerequisites: prerequisites.checks.map((check) => ({ id: check.id, label: check.label, version: check.version, versions: check.versions, executable: check.executable }))
   }, null, 2)}\n`;
 }
@@ -204,6 +253,48 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
   if (pathsNest(releaseRoot, paths.programRoot)) {
     throw new ReleaseGateError('The extracted Release ZIP must be separate from the installed program root.');
   }
+
+  const desktopHostSource = await resolveDesktopHostPayload(releaseRoot, { desktopHostRoot: options.desktopHostRoot });
+  const requireDesktopHost = options.requireDesktopHost ?? (platform === 'win32' && process.platform === 'win32');
+  let desktopHost: DesktopHostCopyResult | undefined;
+  if (desktopHostSource) {
+    if (pathsNest(desktopHostSource, paths.programRoot)) {
+      throw new ReleaseGateError('The desktop host payload must be separate from the installed program root.');
+    }
+    const verifiedHost = await verifyDesktopHostPayload(desktopHostSource, { productVersion: ELECTROBUN_PRODUCT_VERSION });
+    if (!verifiedHost.valid || !verifiedHost.launchTarget) {
+      throw new ReleaseGateError(`Desktop host payload is not usable: ${verifiedHost.errors.join('; ')}`);
+    }
+    desktopHost = {
+      ...verifiedHost,
+      installedLaunchTarget: `${DESKTOP_HOST_PAYLOAD_RELATIVE}/${verifiedHost.launchTarget}`.replaceAll('\\', '/')
+    };
+  } else if (requireDesktopHost) {
+    throw new ReleaseGateError(`Release is missing the required ${DESKTOP_HOST_PAYLOAD_RELATIVE} payload.`);
+  }
+
+  // This read-only lifecycle check is deliberately before prerequisite
+  // verification, mutable-layout creation, or the program-tree swap. A user
+  // who declines to close an active owned Agent therefore gets a true no-op.
+  try {
+    await confirmAndStopOwnedAgent({
+      platform,
+      env,
+      programRoot: paths.programRoot,
+      commandRunner: options.commandRunner,
+      pwshExecutable: options.pwshExecutable,
+      processRecords: options.ownedProcessRecords,
+      listProcesses: options.listOwnedProcesses,
+      stopProcessTree: options.stopOwnedProcessTree,
+      consent: options.ownedAgentConsent
+    });
+  } catch (error) {
+    if (error instanceof RunningAgentCloseDeclinedError) {
+      throw new ReleaseGateError(error.message);
+    }
+    throw new ReleaseGateError(`The installed RPG Maker Agent could not be safely closed before upgrade: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   const prerequisites = await installWindowsPrerequisites({
     ...options,
     platform,
@@ -230,6 +321,14 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
   let stagingActive = true;
   try {
     await copyReleaseTree(releaseRoot, staging);
+    if (desktopHostSource) {
+      const copiedHost = await copyDesktopHostPayload(releaseRoot, staging, {
+        desktopHostRoot: desktopHostSource,
+        productVersion: ELECTROBUN_PRODUCT_VERSION
+      });
+      if (!copiedHost) throw new ReleaseGateError(`Release is missing the required ${DESKTOP_HOST_PAYLOAD_RELATIVE} payload.`);
+      desktopHost = copiedHost;
+    }
     await writeFile(join(staging, PROGRAM_OWNERSHIP_FILE), ownershipMarker(), 'utf8');
     if (hadShortcut) await cp(paths.startMenuShortcutPath, shortcutBackup, { force: false, errorOnExist: true });
     if (await exists(paths.programRoot)) {
@@ -309,7 +408,8 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
       });
       const metadataPath = join(paths.programRoot, 'install.json');
       const metadataWriter = options.writeInstallMetadata ?? ((path: string, content: string) => writeFile(path, content, 'utf8'));
-      await metadataWriter(metadataPath, installMetadata(paths, prerequisites, options.now ?? (() => new Date())));
+      const launchTarget = desktopHost?.installedLaunchTarget ?? 'Launch.cmd';
+      await metadataWriter(metadataPath, installMetadata(paths, prerequisites, options.now ?? (() => new Date()), launchTarget, desktopHost));
       if (!(await exists(metadataPath))) throw new Error('Install metadata was not written.');
       const createShortcut = options.createShortcut ?? createStartMenuShortcut;
       shortcutPath = await createShortcut({
@@ -318,7 +418,7 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         programRoot: paths.programRoot,
         mutableRoot: paths.mutableRoot,
         dshHome: paths.dshHome,
-        targetPath: join(paths.programRoot, 'Launch.cmd'),
+        targetPath: join(paths.programRoot, ...launchTarget.replaceAll('\\', '/').split('/')),
         workingDirectory: paths.programRoot,
         helperScript: join(paths.programRoot, 'scripts', 'create-shortcut.ps1'),
         pwshExecutable: options.pwshExecutable ?? prerequisites.checks.find((check) => check.id === 'powershell')?.executable,
@@ -347,7 +447,8 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
       throw new ReleaseGateError(`Release install failed after the program swap; ${recovery}. Failed new tree preserved at ${failedRoot ?? 'none'} for diagnostic or explicit recovery: ${detail}`);
     }
     await rm(shortcutBackup, { force: true });
-    return { releaseRoot, paths, prerequisites, bootstrap, shortcutPath, ...(oldMoved ? { rollbackRoot } : {}) };
+    const launchTarget = desktopHost?.installedLaunchTarget ?? 'Launch.cmd';
+    return { releaseRoot, paths, prerequisites, bootstrap, shortcutPath, desktopHost, launchTarget, ...(oldMoved ? { rollbackRoot } : {}) };
   } catch (error) {
     if (stagingActive) await rm(staging, { recursive: true, force: true });
     if (error instanceof ReleaseGateError) throw error;
@@ -386,12 +487,36 @@ export async function buildReleaseZip(options: ReleaseZipOptions): Promise<strin
   const outputZip = resolve(options.outputZip);
   if (await exists(outputZip)) throw new ReleaseGateError(`Release ZIP already exists; refusing to overwrite ${outputZip}.`);
   if (pathsNest(sourceRoot, outputZip)) throw new ReleaseGateError('Release ZIP output must be outside the source tree.');
+  const desktopHostSource = await resolveDesktopHostPayload(sourceRoot, { desktopHostRoot: options.desktopHostRoot });
+  // A Windows-targeted archive is strict by default. Contributor builds for
+  // another platform may omit the native payload; a caller can still request
+  // the gate explicitly with requireDesktopHost.
+  const requireDesktopHost = options.requireDesktopHost ?? (platform === 'win32');
+  if (!desktopHostSource && requireDesktopHost) {
+    throw new ReleaseGateError(`Release is missing the required ${DESKTOP_HOST_PAYLOAD_RELATIVE} payload.`);
+  }
+  if (desktopHostSource) {
+    if (pathsNest(desktopHostSource, outputZip)) {
+      throw new ReleaseGateError('Release ZIP output must be outside the desktop host payload.');
+    }
+    if (pathsNest(desktopHostSource, sourceRoot) && resolve(desktopHostSource) !== resolve(join(sourceRoot, DESKTOP_HOST_PAYLOAD_RELATIVE))) {
+      throw new ReleaseGateError('The desktop host payload must not be nested in an unrelated source tree.');
+    }
+    const host = await verifyDesktopHostPayload(desktopHostSource, { productVersion: ELECTROBUN_PRODUCT_VERSION });
+    if (!host.valid || !host.launchTarget) throw new ReleaseGateError(`Desktop host payload is not usable: ${host.errors.join('; ')}`);
+  }
   const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env, programRoot: sourceRoot, probeVersion: false });
   if (!forgejoMcp.valid) throw new ReleaseGateError(`Release source Forgejo MCP is not usable: ${forgejoMcp.errors.join('; ')}`);
   await mkdir(dirname(outputZip), { recursive: true });
   const staging = await mkdtemp(join(dirname(outputZip), `.dsh-release-${randomUUID()}-`));
   try {
     await copyReleaseTree(sourceRoot, staging);
+    if (desktopHostSource) {
+      await copyDesktopHostPayload(sourceRoot, staging, {
+        desktopHostRoot: desktopHostSource,
+        productVersion: ELECTROBUN_PRODUCT_VERSION
+      });
+    }
     if (platform === 'win32') await archiveWithPowerShell(options, staging, outputZip);
     else await archiveWithZip(options, staging, outputZip);
     if (!(await exists(outputZip))) throw new ReleaseGateError(`ZIP creation completed without producing ${outputZip}.`);
@@ -401,7 +526,7 @@ export async function buildReleaseZip(options: ReleaseZipOptions): Promise<strin
   }
 }
 
-export async function inspectReleaseZip(options: { zipPath: string; platform?: string; env?: Record<string, string | undefined>; commandRunner?: CommandRunner; unzipExecutable?: string }): Promise<ReleaseZipInspection> {
+export async function inspectReleaseZip(options: { zipPath: string; platform?: string; env?: Record<string, string | undefined>; commandRunner?: CommandRunner; unzipExecutable?: string; requireDesktopHost?: boolean }): Promise<ReleaseZipInspection> {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const zipPath = resolve(options.zipPath);
@@ -459,6 +584,16 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'docs/research/rpgmaker-mz-enhancement-roadmap.md'
   ];
   const missing = requiredEntries.filter((entry) => !entries.includes(entry) && !entries.some((candidate) => candidate.startsWith(`${entry}/`)));
+  const requireDesktopHost = options.requireDesktopHost ?? (platform === 'win32' && process.platform === 'win32');
+  if (requireDesktopHost) {
+    requiredEntries.push(DESKTOP_HOST_PAYLOAD_RELATIVE, DESKTOP_HOST_MANIFEST_RELATIVE);
+    const hostEntries = entries.filter((entry) => entry === DESKTOP_HOST_PAYLOAD_RELATIVE || entry.startsWith(`${DESKTOP_HOST_PAYLOAD_RELATIVE}/`));
+    const hasDescriptor = DESKTOP_HOST_MANIFEST_ALIASES.some((name) => hostEntries.includes(`${DESKTOP_HOST_PAYLOAD_RELATIVE}/${name}`));
+    const hasExecutable = hostEntries.some((entry) => entry.toLowerCase().endsWith('.exe'));
+    if (hostEntries.length === 0) missing.push(DESKTOP_HOST_PAYLOAD_RELATIVE);
+    if (!hasDescriptor) missing.push(DESKTOP_HOST_MANIFEST_RELATIVE);
+    if (!hasExecutable) missing.push(`${DESKTOP_HOST_PAYLOAD_RELATIVE}/*.exe`);
+  }
   return { path: zipPath, entries, requiredEntries, valid: missing.length === 0, missing };
 }
 

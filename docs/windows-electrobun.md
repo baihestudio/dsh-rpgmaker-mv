@@ -50,8 +50,9 @@ sidecar defaults to the existing per-user product roots:
 It dynamically loads `src/rpgmaker.ts` from the installed program tree,
 reusing the existing DSH runtime bootstrap, MCP/profile preparation, session
 lease, fixed `127.0.0.1:3081` binding, launch log, and project-neutral
-workspace behavior. It never opens an external browser; the native WebView2
-host loads the loopback page after readiness.
+workspace behavior. The sidecar passes DSH's explicit `--no-open` flag and
+does not provide a browser opener; the native WebView2 host loads the loopback
+page after readiness.
 
 Staging does not deploy or repair that installed product tree. Native smoke
 tests must therefore use an installation produced from the same product
@@ -65,7 +66,10 @@ mutable DSH state in a test-owned Windows temporary directory, set
 smoke while another DSH session owns port 3081. The adapter does not stop or
 modify a user's running DSH session.
 
-The first integration slice does not replace `Install.cmd`, create a Start
-Menu shortcut, or claim stable Setup ZIP/clean-machine/signing/update proof.
-Those remain product release work after native WebView2 and Job-tree evidence
-is collected.
+To package a release, provide the already-built host output as a
+`--desktop-host-root` payload to the product release script. The product gate
+verifies the pinned host revision, Bun version, manifest, and native launch
+target before copying it under `desktop-host`; `Install.cmd` then targets that
+host from the Start Menu. The host build, clean-machine provisioning, signing,
+and update delivery remain outside this repository and are not performed by
+the installer.

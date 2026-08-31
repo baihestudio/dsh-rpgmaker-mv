@@ -868,6 +868,8 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
       ...(options.dshArgs ?? []),
       '--patch',
       deployment.compositionPath,
+      // Desktop hosts own the WebView; explicitly suppress DSH's external
+      // browser opener when the sidecar requests the embedded-only path.
       ...(options.openWebBrowser === false ? ['--no-open'] : [])
     ]
   });
