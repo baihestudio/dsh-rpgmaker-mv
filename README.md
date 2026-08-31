@@ -39,7 +39,7 @@ all disposable state/processes.
 
 ### Install and repair
 
-`bootstrap.ps1` builds a fresh staging tree with the pinned `@deepseek-ai/dsh@0.1.2-alpha.2` (npm integrity `sha512-4TvTC5kRKlgtSU2UTBv+cID9a2Z+6+m6mpvjXWJfVzuTkflCff6s4MsQpFJTCmwFh/k7zNWe7qFXcLYMV/5VvA==`), runs `bun pm trust --all`, verifies the exact package/lock facts and `koffi`, then swaps it into place. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched; older DSH releases are not accepted. If process termination or rollback cannot be confirmed, the lock reports a degraded state and preserves recoverable staging/rollback paths for manual recovery. Re-running against a valid runtime is a no-op; bootstrap, doctor, and launch serialize short runtime operations through the operation lock. A live DSH child also holds a session lease that prevents bootstrap or a second launch from swapping the runtime, while doctor remains available.
+`bootstrap.ps1` builds a fresh staging tree with the exact DSH package and npm integrity declared in [`src/config.ts`](src/config.ts), runs `bun pm trust --all`, verifies the exact package/lock facts and `koffi`, then swaps it into place. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched; older DSH releases are not accepted. If process termination or rollback cannot be confirmed, the lock reports a degraded state and preserves recoverable staging/rollback paths for manual recovery. Re-running against a valid runtime is a no-op; bootstrap, doctor, and launch serialize short runtime operations through the operation lock. A live DSH child also holds a session lease that prevents bootstrap or a second launch from swapping the runtime, while doctor remains available.
 
 On Windows, program-owned DSH/MCP/tool runtimes default under `%LOCALAPPDATA%\\Programs\\BaiheStudio\\DSH-RPGMaker-MV`; mutable DSH state defaults under `%LOCALAPPDATA%\\BaiheStudio\\DSH-RPGMaker-MV\\state`. Set `DSH_HOME`, `DSH_RPGMAKER_PROGRAM_ROOT`, `DSH_RPGMAKER_DATA_ROOT`, or `DSH_RPGMAKER_RUNTIME` for a test-owned or alternate location. The doctor checks the actual executable paths and versions visible to the launcher, rather than trusting package-manager metadata.
 
@@ -53,8 +53,7 @@ The Windows launcher is project-neutral: it never opens a folder picker, reads
 recent projects, writes app-owned project-selection state, or accepts
 `launch --project`. The Release ZIP carries the prebuilt
 `bundle/dsh-workspace-mcp` package and generated MV/MZ manifests. Launch
-prepares and verifies the pinned DSH, pnpm 10.15.1, MCPorter 0.12.3, Xerolo
-0.1.0 and Redseb MZ MCP 1.3.0, the exact app-managed `web` profile (four direct packages and six
+prepares and verifies the source-pinned DSH, pnpm, MCPorter, and Xerolo MV/Redseb MZ MCP runtimes (declared in [`src/config.ts`](src/config.ts), [`src/profile.ts`](src/profile.ts), [`src/mcport.ts`](src/mcport.ts), and [`src/rpgmaker.ts`](src/rpgmaker.ts)), the exact app-managed `web` profile (four direct packages and six
 ordered bundle layers: the DSH base/web-app template followed by Web, image
 generation, brand, and workspace MCP), the default preset, and the effective composition before
 starting official DSH. DSH starts in
@@ -185,7 +184,7 @@ preset reports that boundary instead of launching an MV runtime.
 
 ## Phase 6: DSH runtime foundation
 
-All launcher, preset, Windows shell, MCP, and Playtest contracts are mounted and checked against the official `@deepseek-ai/dsh@0.1.2-alpha.2` runtime. The staged runtime verifies Bun installation/trust, the exact top-level package version and npm integrity, the DSH executable, and `koffi` before an atomic swap. Post-swap verification restores the prior runtime on failure and preserves the unverified tree for inspection; no live runtime is mutated in place.
+All launcher, preset, Windows shell, MCP, and Playtest contracts are mounted and checked against the official DSH runtime declared in [`src/config.ts`](src/config.ts). The staged runtime verifies Bun installation/trust, the exact top-level package version and npm integrity, the DSH executable, and `koffi` before an atomic swap. Post-swap verification restores the prior runtime on failure and preserves the unverified tree for inspection; no live runtime is mutated in place.
 
 The MV and MZ MCP lock checks are deliberately limited to their stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata and unrelated Bun lock internals are not pinned. The production editing contract is the mounted RPG Maker skills plus stable `rpgmaker_*` tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, and schema rejection.
 

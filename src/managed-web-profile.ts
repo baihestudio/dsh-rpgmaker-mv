@@ -26,9 +26,9 @@ import {
 export const MANAGED_WEB_PROFILE = 'web';
 
 export const DSH_WEB_PACKAGE = '@guionai/dsh-web';
-export const DSH_WEB_VERSION = '0.3.1';
+export const DSH_WEB_VERSION = '0.3.2';
 export const DSH_IMAGEGEN_PACKAGE = '@lamplitisles/dsh-imagegen';
-export const DSH_IMAGEGEN_VERSION = '0.2.1';
+export const DSH_IMAGEGEN_VERSION = '0.2.2';
 export const DSH_BRAND_PACKAGE = '@baihestudio/dsh-rpgmaker-brand';
 export const DSH_BRAND_VERSION = '0.1.0';
 export const DSH_BRAND_BUNDLE_RELATIVE = join('bundle', 'dsh-rpgmaker-brand');
