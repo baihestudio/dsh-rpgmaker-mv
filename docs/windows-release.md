@@ -12,7 +12,7 @@
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
    - ImageMagick 7 (`ImageMagick.ImageMagick`; installed system-wide and exposed as `magick` on Windows PATH)
-4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the pinned DSH `0.1.2-alpha.2` runtime with Bun (npm integrity `sha512-4TvTC5kRKlgtSU2UTBv+cID9a2Z+6+m6mpvjXWJfVzuTkflCff6s4MsQpFJTCmwFh/k7zNWe7qFXcLYMV/5VvA==`), materializes one exact app-managed `web` profile with four direct managed dependencies (`@guionai/dsh-web@0.3.1`, `@lamplitisles/dsh-imagegen@0.2.1`, the release-owned `@baihestudio/dsh-rpgmaker-brand` bundle, and the app-owned `@baihestudio/dsh-workspace-mcp` bundle) plus the six ordered DSH bundle layers beginning with `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`, installs both exact RPG Maker editing MCPs (`@xerolo44/rpgmaker-mv-mcp@0.1.0` and `rpgmaker-mz-mcp@1.3.0`), then creates a per-user Start Menu shortcut named **RPG Maker Agent**. Normal launch additionally prepares the app-owned MCPorter runtime, the dual-engine RPG Maker runtime, default preset, and neutral composition as needed.
+4. The installer verifies executable paths and versions, retains the verified WinGet Python as a general Agent utility, stages the source-pinned DSH runtime with Bun (package, version, and integrity are defined in [`src/config.ts`](../src/config.ts)), materializes one exact app-managed `web` profile with four direct managed dependencies (the external `@guionai/dsh-web` and `@lamplitisles/dsh-imagegen` packages at the exact versions defined in [`src/managed-web-profile.ts`](../src/managed-web-profile.ts), the release-owned `@baihestudio/dsh-rpgmaker-brand` bundle, and the app-owned `@baihestudio/dsh-workspace-mcp` bundle) plus the six ordered DSH bundle layers beginning with `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`, installs both source-pinned RPG Maker editing MCPs (declared in [`src/rpgmaker.ts`](../src/rpgmaker.ts)), then creates a per-user Start Menu shortcut named **RPG Maker Agent**. Normal launch additionally prepares the app-owned MCPorter runtime, the dual-engine RPG Maker runtime, default preset, and neutral composition as needed.
 
 The four direct package dependencies and six bundle layers belong to one DSH-managed profile state. DSH's `web` template layers (`@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`) remain in-box template bundles rather than profile dependencies. If a package command or final verification fails after initializing that state, the installer reports the materialization failure and restores the prior working profile (and its app-owned workspace bundle); rerun `Install.cmd` to complete the profile setup. Credentials, recent workspaces, presets, caches, logs, and other mutable state remain outside this rollback boundary.
 
@@ -62,13 +62,13 @@ project list, writes no app-owned project-selection state, and rejects
 `bundle/dsh-workspace-mcp` package, including its generated MV and MZ manifests;
 launch copies it to the stable app-owned data directory before materializing
 the managed profile. Before spawning DSH, launch verifies or repairs the
-exact-pinned app-owned pnpm 10.15.1, MCPorter 0.12.3, Xerolo MV MCP 0.1.0, Redseb MZ MCP 1.3.0,
+source-pinned app-owned pnpm, MCPorter, Xerolo MV MCP, and Redseb MZ MCP runtimes (declared in [`src/profile.ts`](../src/profile.ts), [`src/mcport.ts`](../src/mcport.ts), and [`src/rpgmaker.ts`](../src/rpgmaker.ts)),
 and the complete `web` profile with four direct packages and six ordered bundle layers, installs the default preset, and verifies
 the effective composition from the neutral landing directory. The bundle's
 profile patch inserts only the Host service entry point; each shipped preset
 composition mounts the `/agent` entry point in Agent scope. The generated
 RPG Maker Host patch selects the Agent preset but does not insert a timeout
-policy: pinned DSH rc.2's `web` profile owns the official Host row
+policy: the source-pinned DSH `web` profile owns the official Host row
 `id: timeout-policy` / `@deepseek-ai/dsh-tool-call-timeout-policy`. Launch
 preparation and Doctor validate the effective `web --dump-config` composition
 and require exactly one official row in the custom preset; the

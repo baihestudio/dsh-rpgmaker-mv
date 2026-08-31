@@ -49,9 +49,9 @@ has been selected, immediately before the input bar. It does not render before
 a Workspace has created or selected a Session, which is appropriate because
 the recommended Skills need a project context.
 
-The currently shipped `@guionai/dsh-web@0.3.1` and
-`@lamplitisles/dsh-imagegen@0.2.1` each declare the normal DSH bundle/client
-mechanism and depend on the official slot runtime; their published metadata
+The release-selected `@guionai/dsh-web` and `@lamplitisles/dsh-imagegen`
+versions are defined in [`src/managed-web-profile.ts`](../../src/managed-web-profile.ts).
+Both declare the normal DSH bundle/client mechanism and depend on the official slot runtime; their published metadata
 does not advertise a sidebar, welcome-prompt, or product-branding feature.
 [Guion package metadata](https://www.npmjs.com/package/@guionai/dsh-web),
 [Kepos imagegen package metadata](https://www.npmjs.com/package/@lamplitisles/dsh-imagegen)
