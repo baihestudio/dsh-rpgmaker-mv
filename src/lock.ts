@@ -127,6 +127,16 @@ export async function acquireHarnessLock(lockPathInput: string, options: Harness
       try {
         await writeFile(ownerPath, `${JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() })}\n`);
       } catch (error) {
+        // A stale-lock reclaimer can win the narrow window between mkdir and
+        // owner.json creation. In that case the directory is gone and this
+        // contender must retry instead of surfacing an ordinary race as a
+        // failed acquisition (or removing a replacement owner).
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) throw new HarnessLockTimeoutError(lockPath, timeoutMs);
+          await delay(Math.min(retryMs, remaining));
+          continue;
+        }
         await rm(lockPath, { recursive: true, force: true });
         throw error;
       }
