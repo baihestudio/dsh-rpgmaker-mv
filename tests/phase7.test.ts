@@ -1752,6 +1752,13 @@ describe('Windows release gate foundations', () => {
       await mkdir(resolve(shortcut, '..'), { recursive: true });
       await writeFile(shortcut, 'shortcut');
       const options = { platform: 'win32', installationRoot, mutableRoot: mutable, dshHome: state, runtimeDir: join(program, 'runtime', 'dsh'), startMenuShortcutPath: shortcut };
+      await commitInstallationReceipt({
+        product: PRODUCT_NAME,
+        owner: PROGRAM_OWNER,
+        installationRoot,
+        programRoot: program,
+        localStateRoot: mutable
+      });
       await writeFile(join(program, PROGRAM_OWNERSHIP_FILE), `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1 })}\n`);
       await writeFile(join(program, 'install.json'), `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1, installationRoot, localStateRoot: mutable, installationCacheDir: cache, programRoot: program, mutableRoot: mutable, dshHome: state, runtimeDir: join(program, 'runtime', 'dsh') })}\n`);
       const outerRollback = `${program}.rollback-old`;
@@ -1764,6 +1771,7 @@ describe('Windows release gate foundations', () => {
       expect(first.purged).toBe(false);
       expect(await Bun.file(program).exists()).toBe(false);
       expect(await Bun.file(cache).exists()).toBe(false);
+      expect(await readInstallationReceipt(mutable)).toBeUndefined();
       expect(await Bun.file(join(state, '.credentials.yaml')).exists()).toBe(true);
       expect(await Bun.file(join(outerRollback, 'old-runtime.txt')).exists()).toBe(true);
       expect(first.preserved).toContain(outerRollback);

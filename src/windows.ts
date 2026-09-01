@@ -334,6 +334,8 @@ export async function uninstallHarness(options: UninstallOptions = {}): Promise<
     removed.push(paths.mutableRoot);
     return { programRoot: paths.programRoot, mutableRoot: paths.mutableRoot, shortcutPath: paths.startMenuShortcutPath, removed, preserved, purged: true };
   }
+  await rm(paths.installationReceiptPath, { force: true });
+  removed.push(paths.installationReceiptPath);
   return {
     programRoot: paths.programRoot,
     mutableRoot: paths.mutableRoot,
