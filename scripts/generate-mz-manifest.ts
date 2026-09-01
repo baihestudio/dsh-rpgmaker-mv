@@ -5,20 +5,23 @@
  * startup never installs packages or fetches a manifest.
  */
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { redactSensitive, withoutCredentials } from '../src/process';
+import { redactSensitive, runCommand, withoutCredentials } from '../src/process';
 import { RPGMAKER_MZ_MCP_INTEGRITY, RPGMAKER_MZ_MCP_PACKAGE, RPGMAKER_MZ_MCP_VERSION } from '../src/rpgmaker';
 
 const repo = join(import.meta.dir, '..');
 const lib = join(repo, 'bundle', 'dsh-workspace-mcp', 'lib');
 const manifestPath = join(lib, 'mz-manifest.js');
 const contractPath = join(lib, 'contract.js');
+const runtimeManifestRoot = join(repo, 'runtime-manifests', 'rpgmaker-mcp');
 const expectedToolCount = 119;
+const nodeExecutable = process.env.NODE_EXECUTABLE ?? 'node';
+const npmExecutable = process.env.NPM_EXECUTABLE ?? (process.platform === 'win32' ? 'npm.cmd' : 'npm');
 
 interface Tool { name: string; description?: string; inputSchema?: unknown; }
 
@@ -26,23 +29,15 @@ function env(): Record<string, string> {
   return Object.fromEntries(Object.entries(withoutCredentials(process.env)).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }
 
-function run(args: string[], cwd: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, { cwd, env: env(), stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.once('error', reject);
-    child.once('close', (code, signal) => {
-      if (code === 0) resolve();
-      else reject(new Error(redactSensitive(`bun ${args.join(' ')} exited with ${signal ? `signal ${signal}` : `code ${code}`}: ${stderr || stdout}`)));
-    });
-  });
+async function run(command: string, args: string[], cwd: string): Promise<void> {
+  const result = await runCommand(command, args, { cwd, env: env(), platform: process.platform, timeoutMs: 120_000 });
+  if (result.exitCode !== 0) {
+    throw new Error(redactSensitive(`${command} ${args.join(' ')} exited with code ${result.exitCode}: ${result.stderr || result.stdout}`));
+  }
 }
 
 async function discover(entry: string, project: string): Promise<Tool[]> {
-  const child = spawn(process.execPath, [entry], {
+  const child = spawn(nodeExecutable, [entry], {
     cwd: project,
     env: { ...env(), RPGMAKER_PROJECT_PATH: project },
     stdio: ['pipe', 'pipe', 'pipe']
@@ -123,9 +118,10 @@ async function main(): Promise<void> {
     await mkdir(join(project, 'js'), { recursive: true });
     await writeFile(join(project, 'game.rmmzproject'), '{}\n');
     await writeFile(join(project, 'data', 'System.json'), '{"gameTitle":"manifest fixture"}\n');
-    await writeFile(join(root, 'package.json'), `${JSON.stringify({ name: 'rpgmaker-mz-manifest-generator', private: true, dependencies: { [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION } }, null, 2)}\n`);
-    console.log(`generate-mz-manifest: installing ${RPGMAKER_MZ_MCP_PACKAGE}@${RPGMAKER_MZ_MCP_VERSION}`);
-    await run(['add', '--exact', '--ignore-scripts', `${RPGMAKER_MZ_MCP_PACKAGE}@${RPGMAKER_MZ_MCP_VERSION}`], root);
+    await cp(join(runtimeManifestRoot, 'package.json'), join(root, 'package.json'));
+    await cp(join(runtimeManifestRoot, 'package-lock.json'), join(root, 'package-lock.json'));
+    console.log(`generate-mz-manifest: installing the release-owned ${RPGMAKER_MZ_MCP_PACKAGE}@${RPGMAKER_MZ_MCP_VERSION} lock`);
+    await run(npmExecutable, ['ci', '--ignore-scripts'], root);
     const entry = join(root, 'node_modules', RPGMAKER_MZ_MCP_PACKAGE, 'dist', 'index.js');
     const tools = await discover(entry, project);
     if (tools.length !== expectedToolCount) throw new Error(`pinned MZ package advertises ${tools.length} tools, expected ${expectedToolCount}`);
