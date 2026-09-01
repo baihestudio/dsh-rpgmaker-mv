@@ -1,6 +1,6 @@
 {
   "name": "@baihestudio/dsh-workspace-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "App-owned Host service and Agent access plugins for warm workspace-selected RPG Maker MV/MZ stdio servers and stable rpgmaker_* tools.",
   "license": "MIT",
   "private": true,

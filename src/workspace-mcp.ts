@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { HarnessPaths } from './config';
 
 export const WORKSPACE_MCP_PACKAGE = '@baihestudio/dsh-workspace-mcp';
-export const WORKSPACE_MCP_VERSION = '0.1.0';
+export const WORKSPACE_MCP_VERSION = '0.1.1';
 export const WORKSPACE_MCP_LICENSE = 'MIT';
 export const WORKSPACE_MCP_AGENT_ENTRYPOINT = 'lib/agent.js';
 export const WORKSPACE_MCP_BUNDLE_PATCH = './cordis.patch.yml';

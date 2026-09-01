@@ -17,7 +17,7 @@ import { pathToFileURL } from 'node:url'
 import { MCPORTER_CALL_TIMEOUT_MS } from './workspace.js'
 
 const RUNTIME_MODULE = join('node_modules', 'mcporter', 'dist', 'index.js')
-const CLIENT_INFO = { name: 'dsh-workspace-mcp', version: '0.1.0' }
+const CLIENT_INFO = { name: 'dsh-workspace-mcp', version: '0.1.1' }
 /** A cancellation may wait only this long for MCPorter to confirm quiescence. */
 export const MCPORTER_CANCELLATION_CLEANUP_GRACE_MS = 1_000
 const QUIET_LOGGER = {
