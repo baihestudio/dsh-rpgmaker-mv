@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PRODUCT_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
 import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgejo-mcp';
-import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, RELEASE_ENTRIES, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
+import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, RELEASE_ENTRIES, INSTALLER_EXECUTABLE_NAME, INSTALLER_BUILD_EVIDENCE_NAME, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { PNPM_VERSION } from '../src/profile';
 import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, DSH_WEB_PACKAGE, DSH_WEB_VERSION, MANAGED_WEB_PROFILE_BUNDLE_NAMES, verifyManagedWebProfile } from '../src/managed-web-profile';
@@ -40,6 +40,17 @@ const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const RELEASE_BUILD_TEST_TIMEOUT_MS = 180_000;
 
 const prepareAgentDependencies = async (): Promise<void> => undefined;
+
+async function releaseFixture(root: string): Promise<string> {
+  const releaseRoot = join(root, 'release fixture');
+  await mkdir(releaseRoot, { recursive: true });
+  for (const entry of RELEASE_ENTRIES) {
+    await cp(join(REPOSITORY_ROOT, entry), join(releaseRoot, entry), { recursive: true });
+  }
+  await writeFile(join(releaseRoot, INSTALLER_EXECUTABLE_NAME), 'synthetic installer executable\n');
+  await writeFile(join(releaseRoot, INSTALLER_BUILD_EVIDENCE_NAME), '{"fixture":true}\n');
+  return releaseRoot;
+}
 
 async function project(root: string): Promise<string> {
   const path = join(root, '选择 project with spaces');
@@ -1262,6 +1273,7 @@ describe('Windows release gate foundations', () => {
   test('installs from release source into program files, creates mutable state and shortcut, and keeps credentials out of metadata', async () => {
     const root = await temp('phase7-install');
     try {
+      const releaseRoot = await releaseFixture(root);
       const { env } = await prerequisiteBin(root);
       const mutable = join(root, 'mutable');
       const installationRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
@@ -1289,7 +1301,7 @@ describe('Windows release gate foundations', () => {
       const result = await installWindowsRelease({
         platform: 'win32',
         env: { ...env, APPDATA: appData, DEEPSEEK_API_KEY: 'must-not-be-written', NPM_TOKEN: npmSecret, 'npm_config_//registry.npmjs.org/:_authToken': npmSecret },
-        releaseRoot: REPOSITORY_ROOT,
+        releaseRoot,
         installationRoot,
         mutableRoot: mutable,
         dshHome: state,
@@ -1340,6 +1352,38 @@ describe('Windows release gate foundations', () => {
     }
   });
 
+  test('rejects missing or empty generated maintenance before committing a receipt', async () => {
+    for (const scenario of ['missing-installer', 'empty-evidence'] as const) {
+      const root = await temp(`phase7-maintenance-${scenario}`);
+      try {
+        const releaseRoot = await releaseFixture(root);
+        const generatedPath = scenario === 'missing-installer'
+          ? join(releaseRoot, INSTALLER_EXECUTABLE_NAME)
+          : join(releaseRoot, INSTALLER_BUILD_EVIDENCE_NAME);
+        if (scenario === 'missing-installer') await rm(generatedPath, { force: true });
+        else await writeFile(generatedPath, '');
+        const { env } = await prerequisiteBin(root);
+        const mutable = join(root, 'mutable');
+        const installationRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+        await expect(installWindowsRelease({
+          platform: 'win32',
+          env,
+          releaseRoot,
+          installationRoot,
+          mutableRoot: mutable,
+          dshHome: join(mutable, 'state'),
+          commandRunner: prerequisiteRunner(),
+          consent: true,
+          prepareAgentDependencies
+        })).rejects.toThrow(/required maintenance artifact/i);
+        expect(await readInstallationReceipt(mutable)).toBeUndefined();
+        expect(await Bun.file(join(installationRoot, 'program')).exists()).toBe(false);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   test('rejects a modified bundled Forgejo MCP before it can be installed', async () => {
     const root = await temp('phase7-forgejo-integrity');
     try {
@@ -1358,6 +1402,7 @@ describe('Windows release gate foundations', () => {
   test('fresh and repeated install prepare owned local dependencies without Vision Toolkit', async () => {
     const root = await temp('phase7-default-dependencies');
     try {
+      const releaseRoot = await releaseFixture(root);
       const { bin, env: prerequisiteEnv } = await prerequisiteBin(root);
       const mutable = join(root, 'mutable');
       const installationRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
@@ -1384,7 +1429,7 @@ describe('Windows release gate foundations', () => {
       const install = () => installWindowsRelease({
         platform: 'win32',
         env,
-        releaseRoot: REPOSITORY_ROOT,
+        releaseRoot,
         installationRoot,
         mutableRoot: mutable,
         dshHome: state,
@@ -1597,11 +1642,7 @@ describe('Windows release gate foundations', () => {
   test('restores the old tree when a copied Forgejo MCP fails post-swap verification', async () => {
     const root = await temp('phase7-forgejo-post-swap');
     try {
-      const releaseRoot = join(root, 'release');
-      await mkdir(releaseRoot, { recursive: true });
-      for (const entry of RELEASE_ENTRIES) {
-        await cp(join(REPOSITORY_ROOT, entry), join(releaseRoot, entry), { recursive: true });
-      }
+      const releaseRoot = await releaseFixture(root);
       await writeFile(join(releaseRoot, 'tools', 'forgejo-mcp', 'forgejo-mcp.exe'), 'tampered release artifact');
       const { env } = await prerequisiteBin(root);
       const installationRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
@@ -1634,6 +1675,7 @@ describe('Windows release gate foundations', () => {
     for (const failure of ['bootstrap', 'metadata', 'shortcut'] as const) {
       const root = await temp(`phase7-transaction-${failure}`);
       try {
+        const releaseRoot = await releaseFixture(root);
         const { env } = await prerequisiteBin(root);
         const installationRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
         const program = join(installationRoot, 'program');
@@ -1650,7 +1692,7 @@ describe('Windows release gate foundations', () => {
         const installOptions = {
           platform: 'win32',
           env,
-          releaseRoot: REPOSITORY_ROOT,
+          releaseRoot,
           installationRoot,
           mutableRoot: mutable,
           dshHome: state,
@@ -1676,6 +1718,7 @@ describe('Windows release gate foundations', () => {
   test('first-install post-swap failure reports no prior tree and preserves diagnostics', async () => {
     const root = await temp('phase7-first-install-failure');
     try {
+      const releaseRoot = await releaseFixture(root);
       const { env } = await prerequisiteBin(root);
       const installationRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
       const program = join(installationRoot, 'program');
@@ -1683,7 +1726,7 @@ describe('Windows release gate foundations', () => {
       await expect(installWindowsRelease({
         platform: 'win32',
         env,
-        releaseRoot: REPOSITORY_ROOT,
+        releaseRoot,
         installationRoot,
         mutableRoot: mutable,
         dshHome: join(mutable, 'state'),
@@ -1772,6 +1815,7 @@ describe('Windows release gate foundations', () => {
   test('fails closed when an existing installation receipt is malformed and records failed evidence', async () => {
     const root = await temp('phase7-invalid-receipt');
     try {
+      const releaseRoot = await releaseFixture(root);
       const localStateRoot = join(root, 'local-state');
       const installationRoot = join(root, 'installation');
       const events: Array<{ kind: string; status: string; error?: { message?: string } }> = [];
@@ -1780,7 +1824,7 @@ describe('Windows release gate foundations', () => {
       await expect(installWindowsRelease({
         platform: 'win32',
         env: {},
-        releaseRoot: REPOSITORY_ROOT,
+        releaseRoot,
         installationRoot,
         localStateRoot,
         commandRunner: prerequisiteRunner(),

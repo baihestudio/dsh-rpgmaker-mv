@@ -24,8 +24,6 @@ export const DESKTOP_HOST_MANIFEST_RELATIVE = `${DESKTOP_HOST_PAYLOAD_RELATIVE}/
 export const DESKTOP_HOST_FORMAT = 1;
 /** Schema for the product adapter/source pairing recorded by native builds. */
 export const DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION = 1;
-/** Alias naming the provenance specifically associated with the sidecar. */
-export const DESKTOP_HOST_SIDECAR_PROVENANCE_SCHEMA_VERSION = DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION;
 
 export interface DesktopHostSidecarProvenance {
   schemaVersion: number;
@@ -33,9 +31,6 @@ export interface DesktopHostSidecarProvenance {
   adapterSourceSha256: string;
   /** SHA-256 of the bundled sidecar entrypoint in the native payload. */
   sidecarSha256: string;
-  /** Alternate spelling accepted when supplied by a native packaging tool. */
-  bundledSidecarSha256?: string;
-  [key: string]: unknown;
 }
 
 export interface DesktopHostManifest {
@@ -59,10 +54,11 @@ export interface DesktopHostManifest {
   supervisorExecutable: string;
   /** Exact product adapter/source pairing supplied by the native build. */
   sidecarProvenance?: DesktopHostSidecarProvenance;
-  /** Accepted only as an alternate spelling for the same required object. */
-  provenance?: DesktopHostSidecarProvenance;
-  adapterProvenance?: DesktopHostSidecarProvenance;
-  [key: string]: unknown;
+  executable?: string;
+  entrypoint?: string;
+  bun?: { version?: string };
+  build?: { hostCommit?: string };
+  adapter?: { hostCommit?: string };
 }
 
 export interface DesktopHostVerification {
@@ -133,25 +129,7 @@ async function sha256File(path: string): Promise<string | undefined> {
   }
 }
 
-function sidecarProvenance(manifest: DesktopHostManifest | undefined): DesktopHostSidecarProvenance | undefined {
-  const build = object(manifest?.build);
-  const adapter = object(manifest?.adapter);
-  const candidates = [
-    manifest?.sidecarProvenance,
-    manifest?.provenance,
-    manifest?.adapterProvenance,
-    build?.sidecarProvenance,
-    build?.provenance,
-    adapter?.sidecarProvenance,
-    adapter?.provenance
-  ];
-  for (const value of candidates) {
-    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      return value as DesktopHostSidecarProvenance;
-    }
-  }
-  return undefined;
-}
+const DESKTOP_HOST_PROVENANCE_FIELDS = new Set(['schemaVersion', 'adapterSourceSha256', 'sidecarSha256']);
 
 function pathInside(parent: string, child: string): boolean {
   const parentKey = normalizePath(resolve(parent)).replace(/\/$/, '').toLowerCase();
@@ -181,7 +159,7 @@ async function findManifest(payloadRoot: string): Promise<{ path: string; value:
   if (!(await regularFile(path))) return undefined;
   try {
     const value = object(JSON.parse(await readFile(path, 'utf8')));
-    if (value) return { path, value: value as DesktopHostManifest };
+    if (value) return { path, value: value as unknown as DesktopHostManifest };
   } catch {
     // The caller receives a useful invalid descriptor diagnostic.
   }
@@ -292,31 +270,37 @@ export async function verifyDesktopHostPayload(
     errors.push(`desktop host sidecarEntrypoint is missing or outside the payload: ${sidecarPath}`);
   }
 
-  const provenance = sidecarProvenance(manifest);
-  const provenanceRequired = true;
+  const provenanceValue = manifest?.sidecarProvenance;
+  const provenanceObject = object(provenanceValue);
+  let provenance: DesktopHostSidecarProvenance | undefined;
   let adapterSourceSha256: string | undefined;
   let sidecarSha256: string | undefined;
-  if (provenanceRequired || provenance) {
-    if (!provenance) {
-      errors.push('desktop host sidecar provenance is missing');
-    } else {
-      if (provenance.schemaVersion !== DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION) {
-        errors.push(`desktop host sidecar provenance schemaVersion is ${String(provenance.schemaVersion ?? 'missing')}, expected ${DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION}`);
-      }
-      const declaredSource = provenance.adapterSourceSha256;
-      const declaredSidecar = provenance.sidecarSha256
-        ?? (typeof provenance.bundledSidecarSha256 === 'string' ? provenance.bundledSidecarSha256 : undefined);
-      if (typeof declaredSource !== 'string' || !/^[a-f0-9]{64}$/.test(declaredSource)) {
-        errors.push('desktop host sidecar provenance adapterSourceSha256 must be a lowercase SHA-256 digest');
-      } else {
-        adapterSourceSha256 = declaredSource;
-      }
-      if (typeof declaredSidecar !== 'string' || !/^[a-f0-9]{64}$/.test(declaredSidecar)) {
-        errors.push('desktop host sidecar provenance sidecarSha256 must be a lowercase SHA-256 digest');
-      } else {
-        sidecarSha256 = declaredSidecar;
-      }
+  if (provenanceValue === undefined) {
+    errors.push('desktop host sidecar provenance is missing');
+  } else if (!provenanceObject) {
+    errors.push('desktop host sidecar provenance must be an object');
+  } else {
+    const unsupportedFields = Object.keys(provenanceObject).filter((field) => !DESKTOP_HOST_PROVENANCE_FIELDS.has(field));
+    if (unsupportedFields.length > 0) {
+      errors.push(`desktop host sidecar provenance contains unsupported fields: ${unsupportedFields.join(', ')}`);
     }
+    const declaredSchemaVersion = provenanceObject.schemaVersion;
+    if (declaredSchemaVersion !== DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION) {
+      errors.push(`desktop host sidecar provenance schemaVersion is ${String(declaredSchemaVersion ?? 'missing')}, expected ${DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION}`);
+    }
+    const declaredSource = provenanceObject.adapterSourceSha256;
+    if (typeof declaredSource !== 'string' || !/^[a-f0-9]{64}$/.test(declaredSource)) {
+      errors.push('desktop host sidecar provenance adapterSourceSha256 must be a lowercase SHA-256 digest');
+    } else {
+      adapterSourceSha256 = declaredSource;
+    }
+    const declaredSidecar = provenanceObject.sidecarSha256;
+    if (typeof declaredSidecar !== 'string' || !/^[a-f0-9]{64}$/.test(declaredSidecar)) {
+      errors.push('desktop host sidecar provenance sidecarSha256 must be a lowercase SHA-256 digest');
+    } else {
+      sidecarSha256 = declaredSidecar;
+    }
+    provenance = provenanceObject as unknown as DesktopHostSidecarProvenance;
   }
   if (sidecarPath && await regularFile(sidecarPath)) {
     const actualSidecarSha256 = await sha256File(sidecarPath);

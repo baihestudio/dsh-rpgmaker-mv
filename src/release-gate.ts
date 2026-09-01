@@ -200,17 +200,13 @@ async function copyReleaseTree(
   sourceRootInput: string,
   destination: string,
   entries: readonly string[] = RELEASE_ENTRIES,
-  allowMissingGenerated = false,
 ): Promise<void> {
   const sourceRoot = resolve(sourceRootInput);
   await mkdir(destination, { recursive: true });
   for (const entry of entries) {
     const source = join(sourceRoot, entry);
     if (GENERATED_RELEASE_ENTRIES.includes(entry as typeof GENERATED_RELEASE_ENTRIES[number])) {
-      if (!(await regularFile(source))) {
-        if (allowMissingGenerated && !(await exists(source))) continue;
-        throw new ReleaseGateError(`Release source is incomplete: required maintenance artifact ${entry} is missing or not a regular file.`);
-      }
+      if (!(await nonEmptyRegularFile(source))) throw new ReleaseGateError(`Release source is incomplete: required maintenance artifact ${entry} is missing or not a non-empty regular file.`);
     } else if (!(await exists(source))) {
       throw new ReleaseGateError(`Release source is incomplete: missing ${entry}.`);
     }
@@ -218,33 +214,20 @@ async function copyReleaseTree(
   }
 }
 
-async function regularFile(path: string): Promise<boolean> {
+async function nonEmptyRegularFile(path: string): Promise<boolean> {
   try {
     const metadata = await lstat(path);
-    return metadata.isFile() && !metadata.isSymbolicLink();
+    return metadata.isFile() && !metadata.isSymbolicLink() && metadata.size > 0;
   } catch {
     return false;
   }
 }
 
-async function releaseHasGeneratedMaintenance(sourceRoot: string): Promise<boolean> {
-  return (await exists(join(sourceRoot, INSTALLER_EXECUTABLE_NAME)))
-    || (await exists(join(sourceRoot, INSTALLER_BUILD_EVIDENCE_NAME)));
-}
-
-async function sourceCheckoutWithoutGeneratedMaintenance(sourceRoot: string): Promise<boolean> {
-  // Direct source-checkout installs are retained as a disposable development
-  // seam. A packaged/extracted Release never carries .git and therefore must
-  // satisfy the generated maintenance contract below.
-  return (await exists(join(sourceRoot, '.git')))
-    && !(await releaseHasGeneratedMaintenance(sourceRoot));
-}
-
 async function verifyInstalledMaintenanceContract(programRoot: string): Promise<void> {
   for (const entry of GENERATED_RELEASE_ENTRIES) {
     const path = join(programRoot, entry);
-    if (!(await regularFile(path))) {
-      throw new ReleaseGateError(`Installed program is incomplete: required maintenance artifact ${entry} is missing or not a regular file.`);
+    if (!(await nonEmptyRegularFile(path))) {
+      throw new ReleaseGateError(`Installed program is incomplete: required maintenance artifact ${entry} is missing or not a non-empty regular file.`);
     }
   }
 }
@@ -413,8 +396,6 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
   }
 
   const sourceAdapterPath = join(releaseRoot, 'src', 'electrobun-sidecar.ts');
-  const sourceCheckoutWithoutGenerated = await sourceCheckoutWithoutGeneratedMaintenance(releaseRoot);
-  const sourceCheckoutCompat = sourceCheckoutWithoutGenerated;
   const desktopHostSource = await resolveDesktopHostPayload(releaseRoot, { desktopHostRoot: options.desktopHostRoot });
   const requireDesktopHost = options.requireDesktopHost ?? (platform === 'win32' && process.platform === 'win32');
   let desktopHost: DesktopHostCopyResult | undefined;
@@ -527,12 +508,7 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
   let oldMoved = false;
   let stagingActive = true;
   try {
-    const installEntries = sourceCheckoutCompat ? RELEASE_ENTRIES : INSTALLED_PROGRAM_ENTRIES;
-    // Missing generated maintenance is reported by the final installed-tree
-    // check below. Deferring only an absent generated file lets an upgrade
-    // transaction reach its normal rollback boundary while still guaranteeing
-    // that no receipt is committed for an incomplete program.
-    await copyReleaseTree(releaseRoot, staging, installEntries, !sourceCheckoutCompat);
+    await copyReleaseTree(releaseRoot, staging, INSTALLED_PROGRAM_ENTRIES);
     if (desktopHostSource) {
       const copiedHost = await copyDesktopHostPayload(releaseRoot, staging, {
         desktopHostRoot: desktopHostSource,
@@ -656,7 +632,7 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
       // The receipt is the source of truth for maintenance.  Commit it only
       // after the new program tree, runtime/profile verification, metadata,
       // and shortcut work have all completed successfully.
-      if (!sourceCheckoutCompat) await verifyInstalledMaintenanceContract(paths.programRoot);
+      await verifyInstalledMaintenanceContract(paths.programRoot);
       await commitInstallationReceipt({
         product: PRODUCT_NAME,
         owner: PROGRAM_OWNER,
@@ -793,8 +769,7 @@ async function buildInstallerExecutable(options: ReleaseZipOptions, sourceRoot: 
     const detail = boundedDiagnostic(`${result.stderr}\n${result.stdout}`, env);
     throw new ReleaseGateError(`installer.exe compilation failed${detail ? `: ${detail}` : ''}`);
   }
-  const installerStat = await stat(output).catch(() => undefined);
-  if (!(await regularFile(output)) || !installerStat || installerStat.size === 0) {
+  if (!(await nonEmptyRegularFile(output))) {
     throw new ReleaseGateError('installer.exe compilation completed without producing a fresh executable.');
   }
   let version = 'unknown';

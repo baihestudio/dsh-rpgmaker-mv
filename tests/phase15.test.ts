@@ -20,6 +20,7 @@ import {
   INSTALL_RUN_STARTED_EVENT,
   createInstallRunEvidence,
 } from '../src/install-evidence';
+import { computeSidecarProvenance } from '../scripts/stage-electrobun-adapter';
 import { runRpgMakerSidecar, SIDECAR_STARTUP_FAILURE_EVENT } from '../src/electrobun-sidecar';
 import { PRODUCT_NAME, PROGRAM_OWNER } from '../src/config';
 
@@ -114,7 +115,9 @@ describe('windows install recovery contracts', () => {
       const entrypoint = join(root, 'program', 'desktop-host', 'Resources', 'app', 'payload', 'sidecar', 'dsh-rpgmaker-sidecar.js');
       const localStateRoot = join(root, 'local-state');
       const secret = 'phase15-sidecar-secret';
-      const original = new Error(`startup failed DEEPSEEK_API_KEY=${secret}; token=${secret}; ${'x'.repeat(3000)}`);
+      const bearer = 'phase15-bearer-secret';
+      const basic = 'phase15-basic-secret';
+      const original = new Error(`startup failed DEEPSEEK_API_KEY=${secret}; token=${secret}; Authorization: Bearer ${bearer}; authorization: Basic ${basic}; ${'x'.repeat(3000)}`);
       await expect(runRpgMakerSidecar({}, {
         platform: 'win32',
         entrypointPath: entrypoint,
@@ -128,6 +131,10 @@ describe('windows install recovery contracts', () => {
       expect(diagnostic).toMatchObject({ at: '2026-09-01T00:00:00.000Z', event: SIDECAR_STARTUP_FAILURE_EVENT });
       expect(diagnostic.error).toContain('startup failed');
       expect(diagnostic.error).not.toContain(secret);
+      expect(diagnostic.error).not.toContain(bearer);
+      expect(diagnostic.error).not.toContain(basic);
+      expect(diagnostic.error).toContain('Authorization: Bearer [redacted]');
+      expect(diagnostic.error).toContain('authorization: Basic [redacted]');
       expect(diagnostic.error.length).toBeLessThanOrEqual(2_000);
 
       const writeFailure = new Error('the original startup failure');
@@ -149,6 +156,29 @@ describe('windows install recovery contracts', () => {
         }),
       })).resolves.toBe(9);
       expect(await readFile(join(childFailureState, 'logs', 'launcher.log'), 'utf8')).toMatch(/child exited with code 9/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('staging computes canonical source and bundled-sidecar digests from disposable files', async () => {
+    const root = await temporary('phase15-staging-provenance');
+    try {
+      const source = join(root, 'src', 'electrobun-sidecar.ts');
+      const sidecar = join(root, 'payload', 'dsh-rpgmaker-sidecar.js');
+      await mkdir(dirname(source), { recursive: true });
+      await mkdir(dirname(sidecar), { recursive: true });
+      const sourceText = 'export const adapter = true;\n';
+      const sidecarText = 'console.log("sidecar");\n';
+      await writeFile(source, sourceText);
+      await writeFile(sidecar, sidecarText);
+
+      const provenance = await computeSidecarProvenance(source, sidecar);
+      expect(provenance).toEqual({
+        schemaVersion: DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION,
+        adapterSourceSha256: sha256(sourceText),
+        sidecarSha256: sha256(sidecarText),
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -196,6 +226,26 @@ describe('windows install recovery contracts', () => {
       expect(coherent.adapterSourceSha256).toBe(provenance.adapterSourceSha256);
       expect(coherent.sidecarSha256).toBe(provenance.sidecarSha256);
 
+      const manifestPath = join(payload, DESKTOP_HOST_MANIFEST_NAME);
+      const baselineManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+      const malformedCases: Array<[string, unknown, RegExp]> = [
+        ['extra field', { ...provenance, extra: true }, /unsupported fields/i],
+        ['wrong schema', { ...provenance, schemaVersion: 2 }, /schemaVersion/i],
+        ['missing digest', { ...provenance, sidecarSha256: undefined }, /sidecarSha256/i],
+        ['primitive', 'not-an-object', /must be an object/i],
+      ];
+      for (const [, value, pattern] of malformedCases) {
+        await writeFile(manifestPath, JSON.stringify({ ...baselineManifest, sidecarProvenance: value }));
+        const malformed = await verifyDesktopHostPayload(payload, { adapterSourcePath: source });
+        expect(malformed.valid).toBe(false);
+        expect(malformed.errors.join(' ')).toMatch(pattern);
+      }
+      await writeFile(manifestPath, JSON.stringify({ ...baselineManifest, sidecarProvenance: undefined, provenance }));
+      const aliased = await verifyDesktopHostPayload(payload, { adapterSourcePath: source });
+      expect(aliased.valid).toBe(false);
+      expect(aliased.errors.join(' ')).toMatch(/provenance is missing/i);
+      await writeFile(manifestPath, JSON.stringify(baselineManifest));
+
       await writeFile(source, 'export const sidecar = false;\n');
       const staleSource = await verifyDesktopHostPayload(payload, { adapterSourcePath: source });
       expect(staleSource.valid).toBe(false);
@@ -207,9 +257,9 @@ describe('windows install recovery contracts', () => {
       expect(tamperedSidecar.valid).toBe(false);
       expect(tamperedSidecar.errors.join(' ')).toMatch(/sidecarSha256.*packaged sidecar/i);
 
-      const missing = JSON.parse(await readFile(join(payload, DESKTOP_HOST_MANIFEST_NAME), 'utf8')) as Record<string, unknown>;
+      const missing = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
       delete missing.sidecarProvenance;
-      await writeFile(join(payload, DESKTOP_HOST_MANIFEST_NAME), JSON.stringify(missing));
+      await writeFile(manifestPath, JSON.stringify(missing));
       const preProvenance = await verifyDesktopHostPayload(payload, { adapterSourcePath: source });
       expect(preProvenance.valid).toBe(false);
       expect(preProvenance.errors.join(' ')).toMatch(/provenance is missing/i);

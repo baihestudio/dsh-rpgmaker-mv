@@ -248,7 +248,9 @@ export function redactSensitive(text: string, env: Record<string, string | undef
     if (sensitiveEnvironmentKey(key) && value) secrets.push(value);
   }
   for (const secret of new Set(secrets)) redacted = redacted.split(secret).join('[redacted]');
-  return redacted.replace(/((?:DEEPSEEK_API_KEY|DSH_API_KEY|DSH_FORGEJO_ACCESS_TOKEN|FORGEJO_ACCESS_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|GITHUB_TOKEN|GITLAB_TOKEN|NPM_CONFIG__AUTH|NPM_CONFIG_[^\s=]*:_AUTH(?:_?TOKEN)?)\s*[:=]\s*)[^\s,;}]+/gi, '$1[redacted]');
+  return redacted
+    .replace(/((?:DEEPSEEK_API_KEY|DSH_API_KEY|DSH_FORGEJO_ACCESS_TOKEN|FORGEJO_ACCESS_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|GITHUB_TOKEN|GITLAB_TOKEN|NPM_CONFIG__AUTH|NPM_CONFIG_[^\s=]*:_AUTH(?:_?TOKEN)?)\s*[:=]\s*)[^\s,;}]+/gi, '$1[redacted]')
+    .replace(/(\bAuthorization\s*:\s*(?:Bearer|Basic)\s+)[^\s,;}\r\n]+/gi, '$1[redacted]');
 }
 
 export function commandFailure(command: string, args: string[], result: CommandResult, env?: Record<string, string | undefined>): Error {

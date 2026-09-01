@@ -7,12 +7,14 @@ Fixed point: `f5f5861` (`main`)
 
 ## Outcome
 
-The complete Windows install recovery spec and tickets 01–04 are implemented.
-The installed program tree is self-describing, the packaged sidecar locates its
-program root from its own entrypoint, startup failures are bounded and
-redacted, Release packaging enforces fresh maintenance artifacts and coherent
-sidecar provenance, and interrupted runs leave useful evidence. Code review,
-deployment, and the live clean-machine gate were not run, as requested.
+The complete Windows install recovery spec and tickets 01–04 are implemented,
+including the deterministic review-fix batch. The installed program tree is
+self-describing, the packaged sidecar locates its program root from its own
+entrypoint, startup failures are bounded and redacted (including standard
+Authorization Bearer and Basic values), Release packaging enforces fresh
+maintenance artifacts and coherent canonical sidecar provenance, and
+interrupted runs leave useful evidence. Code review, deployment, and the live
+clean-machine gate were not run, as requested.
 
 ## Ticket coverage
 
@@ -51,20 +53,23 @@ deployment, and the live clean-machine gate were not run, as requested.
 ### 04 — Reject stale desktop-host product payloads
 
 - Adapter staging computes SHA-256 digests for `src/electrobun-sidecar.ts` and
-  the bundled sidecar, exposes them in the stage result, and writes
-  `adapter-provenance.json` plus a generated `sidecarProvenance` export.
-- The canonical `desktop-host.json` contract now requires schema-versioned
-  sidecar provenance with both digests.
+  the bundled sidecar, exposes them in the stage result, and writes one
+  machine-readable `adapter-provenance.json` handoff. The generated generic
+  `product.manifest.ts` does not duplicate that handoff.
+- The canonical `desktop-host.json` contract now accepts only
+  `manifest.sidecarProvenance` with exactly `schemaVersion`,
+  `adapterSourceSha256`, and `sidecarSha256`; aliases, extra fields, and
+  malformed values are rejected.
 - Release verification independently hashes the current source and packaged
   sidecar and rejects missing, malformed, stale-source, tampered-sidecar, and
   pre-provenance payloads before copy or archive.
 
 ## Verification evidence
 
-- `bun test` — **151 pass, 0 fail**, 1,085 `expect()` calls across 9 files.
-- Focused recovery/host suite (`tests/phase13.test.ts`,
-  `tests/phase14.test.ts`, `tests/phase15.test.ts`, and `tests/phase7.test.ts`)
-  — **74 pass, 0 fail**, 470 `expect()` calls.
+- Focused recovery/host suite (`tests/phase7.test.ts`,
+  `tests/phase13.test.ts`, `tests/phase14.test.ts`, and
+  `tests/phase15.test.ts`) — **76 pass, 0 fail**, 491 `expect()` calls.
+- `bun test` — **153 pass, 0 fail**, 1,110 `expect()` calls across 9 files.
 - `bun run check` — passed (`tsc --noEmit`).
 - `git diff --check` — passed.
 
@@ -81,14 +86,14 @@ included):
 
 | Category | Changed LOC |
 | --- | ---: |
-| Product code and scripts | 444 |
-| Tests | 249 |
-| Documentation and machine-readable contract updates | 62 |
-| **Total** | **755** (680 additions + 75 deletions) |
+| Product code and scripts | 406 |
+| Tests | 396 |
+| Documentation and machine-readable contract updates | 57 |
+| **Total** | **859** (769 additions + 90 deletions) |
 
-The total is 75 lines above the 395–680 estimate. The variance is concentrated
-in product code: strict provenance parsing/hash checks, sidecar diagnostic
-redaction/write-failure handling, and transaction-boundary maintenance checks
-needed explicit failure paths rather than a compatibility shim. Test changes
-remain within the estimated 220–360 range; documentation is only two lines
-above its estimate.
+The total is 179 lines above the 395–680 estimate. The review batch added
+explicit Bearer/Basic redaction coverage, malformed and staging-provenance
+boundary cases, and disposable Release-fixture migrations for every direct
+install test while removing the source-checkout bypass and compatibility
+aliases. Counts are additions plus deletions against `f5f5861`, excluding this
+report, ignored ticket metadata, generated files, and lockfiles.

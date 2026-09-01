@@ -29,15 +29,19 @@ describe('credential environment scrubbing', () => {
       SAFE_VALUE: 'safe'
     };
     expect(withoutCredentials(env)).toEqual({ SAFE_VALUE: 'safe' });
-    const redacted = redactSensitive('forgejo_access_token=synthetic-forgejo-secret DSH_API_KEY: synthetic-dsh-secret NPM_TOKEN=synthetic-npm-secret npm_config_//registry.npmjs.org/:_authToken=synthetic-registry-secret', env);
+    const redacted = redactSensitive('forgejo_access_token=synthetic-forgejo-secret DSH_API_KEY: synthetic-dsh-secret NPM_TOKEN=synthetic-npm-secret npm_config_//registry.npmjs.org/:_authToken=synthetic-registry-secret Authorization: Bearer bearer-secret Authorization: Basic basic-secret', env);
     expect(redacted).not.toContain('synthetic-forgejo-secret');
     expect(redacted).not.toContain('synthetic-dsh-secret');
     expect(redacted).not.toContain('synthetic-npm-secret');
     expect(redacted).not.toContain('synthetic-registry-secret');
+    expect(redacted).not.toContain('bearer-secret');
+    expect(redacted).not.toContain('basic-secret');
     expect(redacted).toContain('forgejo_access_token=[redacted]');
     expect(redacted).toContain('DSH_API_KEY: [redacted]');
     expect(redacted).toContain('NPM_TOKEN=[redacted]');
     expect(redacted).toContain('npm_config_//registry.npmjs.org/:_authToken=[redacted]');
+    expect(redacted).toContain('Authorization: Bearer [redacted]');
+    expect(redacted).toContain('Authorization: Basic [redacted]');
   });
 });
 

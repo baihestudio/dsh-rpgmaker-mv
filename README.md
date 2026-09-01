@@ -245,8 +245,8 @@ The public command always requires and strictly inspects the explicit payload.
 It must contain the canonical `desktop-host.json` descriptor, the pinned host
 commit/Bun version, its native `.exe` launch target, and required
 `sidecarEntrypoint`/`supervisorExecutable` fields pointing to the exact staged
-files. The descriptor must also carry the schema-versioned sidecar provenance
-object produced by `desktop:stage`, containing the current adapter-source and
-bundled-sidecar SHA-256 digests. The release gate recomputes both values before
-accepting the payload; it never builds or downloads the host on a user's
-machine.
+files. The descriptor must also carry the canonical `sidecarProvenance` object
+produced from the single `desktop:stage` handoff, with exactly the
+schema-versioned current adapter-source and bundled-sidecar SHA-256 digests.
+The release gate recomputes both values before accepting the payload; it never
+builds or downloads the host on a user's machine.

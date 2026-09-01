@@ -33,10 +33,7 @@ function productionSidecarEntrypoint(): string {
 function sidecarProgramRoot(
   dependencies: SidecarDependencies,
 ): string {
-  const injectedEntrypoint = dependencies.entrypointPath
-    ?? dependencies.packagedEntrypoint
-    ?? dependencies.sidecarEntrypoint;
-  if (injectedEntrypoint) return resolveProgramRootFromSidecarEntrypoint(injectedEntrypoint);
+  if (dependencies.entrypointPath) return resolveProgramRootFromSidecarEntrypoint(dependencies.entrypointPath);
   return resolveProgramRootFromSidecarEntrypoint(productionSidecarEntrypoint());
 }
 
@@ -90,7 +87,9 @@ async function appendSidecarStartupDiagnostic(
       event: SIDECAR_STARTUP_FAILURE_EVENT,
       error: boundedDiagnostic(error, env)
     };
-    const content = `${redactDiagnosticCredentials(redactSensitive(JSON.stringify(diagnostic), env))}\n`;
+    // Redact the error before serialization so credential replacement cannot
+    // consume JSON delimiters and leave an invalid diagnostic record.
+    const content = `${JSON.stringify(diagnostic)}\n`;
     if (dependencies.writeStartupDiagnostic) await dependencies.writeStartupDiagnostic(path, content);
     else {
       await mkdir(dirname(path), { recursive: true });
@@ -116,10 +115,6 @@ export interface SidecarDependencies {
   platform?: string;
   /** Inject the packaged sidecar entrypoint for a disposable test. */
   entrypointPath?: string;
-  /** Alias used by host-facing tests for the injected packaged location. */
-  packagedEntrypoint?: string;
-  /** Alias matching the desktop-host manifest field. */
-  sidecarEntrypoint?: string;
   /** Test-owned local state root for startup diagnostics. */
   localStateRoot?: string;
   now?: () => Date;

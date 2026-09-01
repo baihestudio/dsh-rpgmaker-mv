@@ -199,11 +199,9 @@ async function sha256File(path: string): Promise<string> {
   return createHash('sha256').update(await readFile(path)).digest('hex');
 }
 
-function productManifestText(provenance: DesktopHostSidecarProvenance): string {
+function productManifestText(): string {
   return [
     'import type { ProductManifest } from "./src/host/manifest";',
-    '',
-    `export const sidecarProvenance = ${JSON.stringify(provenance, null, 2)} as const;`,
     '',
     `export const referenceManifest = ${JSON.stringify(ELECTROBUN_PRODUCT_MANIFEST, null, 2)} satisfies ProductManifest;`,
     '',
@@ -212,9 +210,20 @@ function productManifestText(provenance: DesktopHostSidecarProvenance): string {
   ].join('\n');
 }
 
-async function writeProductConfiguration(outputRoot: string, provenance: DesktopHostSidecarProvenance): Promise<void> {
-  await writeFileCompat(join(outputRoot, 'product.manifest.ts'), productManifestText(provenance));
-  await writeFileCompat(join(outputRoot, ELECTROBUN_PROVENANCE_FILE), `${JSON.stringify(provenance, null, 2)}\n`);
+async function writeProductConfiguration(outputRoot: string): Promise<void> {
+  await writeFileCompat(join(outputRoot, 'product.manifest.ts'), productManifestText());
+}
+
+/** Compute the exact source/sidecar pairing passed to the native build. */
+export async function computeSidecarProvenance(
+  adapterSourcePath: string,
+  sidecarPath: string,
+): Promise<DesktopHostSidecarProvenance> {
+  return {
+    schemaVersion: DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION,
+    adapterSourceSha256: await sha256File(adapterSourcePath),
+    sidecarSha256: await sha256File(sidecarPath)
+  };
 }
 
 async function writeFileCompat(path: string, content: string): Promise<void> {
@@ -249,12 +258,9 @@ export async function stageElectrobunAdapter(
 
   await copyTrackedHost(hostRoot, outputRoot);
   const sidecar = await buildSidecar(productRootPath, outputRoot);
-  const sidecarProvenance: DesktopHostSidecarProvenance = {
-    schemaVersion: DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION,
-    adapterSourceSha256: await sha256File(join(productRootPath, 'src', 'electrobun-sidecar.ts')),
-    sidecarSha256: await sha256File(sidecar)
-  };
-  await writeProductConfiguration(outputRoot, sidecarProvenance);
+  const sidecarProvenance = await computeSidecarProvenance(join(productRootPath, 'src', 'electrobun-sidecar.ts'), sidecar);
+  await writeProductConfiguration(outputRoot);
+  await writeFileCompat(join(outputRoot, ELECTROBUN_PROVENANCE_FILE), `${JSON.stringify(sidecarProvenance, null, 2)}\n`);
   const supervisor = await copySupervisor(hostRoot, outputRoot);
   return {
     hostRoot,

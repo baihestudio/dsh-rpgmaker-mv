@@ -33,14 +33,15 @@ bun run desktop:stage -- \
 The output directory must be separate from both source repositories. It
 contains the generic host source at the pinned revision, a generated
 `product.manifest.ts`, the bundled product sidecar, the prebuilt Windows
-supervisor, and `adapter-provenance.json`. The provenance file and the
-`sidecarProvenance` export record the SHA-256 of the adapter source entrypoint
-and the bundled sidecar; pass those values through to the native build's
-canonical `desktop-host.json` descriptor. The generic host's checked-in
-`electrobun.config.ts` remains unchanged. The command refuses a different host
-revision or one with tracked changes, and refuses a non-empty output directory
-unless it carries the adapter's generated-output marker and `--force` is
-explicit.
+supervisor, and `adapter-provenance.json`. That single machine-readable
+handoff records the SHA-256 of the adapter source entrypoint and the bundled
+sidecar; pass its exact object through to the native build's canonical
+`desktop-host.json` descriptor as `sidecarProvenance`. The generated
+`product.manifest.ts` remains the generic host manifest and does not duplicate
+this handoff. The generic host's checked-in `electrobun.config.ts` remains
+unchanged. The command refuses a different host revision or one with tracked
+changes, and refuses a non-empty output directory unless it carries the
+adapter's generated-output marker and `--force` is explicit.
 
 Build and run the generated host with the native Windows Bun executable. Do
 not use the WSL Linux Bun to launch a Windows Electrobun application. The

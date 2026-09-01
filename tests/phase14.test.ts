@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -18,7 +18,7 @@ import {
   copyDesktopHostPayload,
   verifyDesktopHostPayload,
 } from '../src/desktop-host';
-import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, ReleaseGateError } from '../src/release-gate';
+import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, INSTALLER_BUILD_EVIDENCE_NAME, INSTALLER_EXECUTABLE_NAME, RELEASE_ENTRIES, ReleaseGateError } from '../src/release-gate';
 import {
   RunningAgentCloseDeclinedError,
   confirmAndStopOwnedAgent,
@@ -31,6 +31,17 @@ import { DSH_RUNTIME_PEER_DEPENDENCIES } from '../src/bootstrap';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
+}
+
+async function releaseFixture(root: string): Promise<string> {
+  const releaseRoot = join(root, 'release fixture');
+  await mkdir(releaseRoot, { recursive: true });
+  for (const entry of RELEASE_ENTRIES) {
+    await cp(join(process.cwd(), entry), join(releaseRoot, entry), { recursive: true });
+  }
+  await writeFile(join(releaseRoot, INSTALLER_EXECUTABLE_NAME), 'synthetic installer executable\n');
+  await writeFile(join(releaseRoot, INSTALLER_BUILD_EVIDENCE_NAME), '{"fixture":true}\n');
+  return releaseRoot;
 }
 
 function runBunScript(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
@@ -276,6 +287,7 @@ describe('desktop host release payload', () => {
   test('installs a fresh payload with the native executable as the Start Menu target', async () => {
     const root = await temp('phase14-host-install');
     try {
+      const releaseRoot = await releaseFixture(root);
       const payload = await makeHost(root);
       const bin = join(root, 'bin');
       await mkdir(bin, { recursive: true });
@@ -308,7 +320,7 @@ describe('desktop host release payload', () => {
       const result = await installWindowsRelease({
         platform: 'win32',
         env,
-        releaseRoot: process.cwd(),
+        releaseRoot,
         desktopHostRoot: payload,
         requireDesktopHost: true,
         installationRoot,
@@ -350,7 +362,7 @@ describe('desktop host release payload', () => {
       const upgraded = await installWindowsRelease({
         platform: 'win32',
         env,
-        releaseRoot: process.cwd(),
+        releaseRoot,
         desktopHostRoot: payload,
         requireDesktopHost: true,
         installationRoot,
@@ -386,7 +398,7 @@ describe('desktop host release payload', () => {
       await expect(installWindowsRelease({
         platform: 'win32',
         env,
-        releaseRoot: process.cwd(),
+        releaseRoot,
         desktopHostRoot: payload,
         requireDesktopHost: true,
         installationRoot,
@@ -489,6 +501,7 @@ describe('owned upgrade lifecycle', () => {
   test('declining an active owned upgrade happens before prerequisite or tree mutation', async () => {
     const root = await temp('phase14-owned-upgrade-noop');
     try {
+      const releaseRoot = await releaseFixture(root);
       const installationRoot = join(root, 'installation');
       const program = join(installationRoot, 'program');
       const mutable = join(root, 'mutable');
@@ -501,7 +514,7 @@ describe('owned upgrade lifecycle', () => {
 
       await expect(installWindowsRelease({
         platform: 'win32',
-        releaseRoot: join(process.cwd()),
+        releaseRoot,
         installationRoot,
         mutableRoot: mutable,
         dshHome: state,
