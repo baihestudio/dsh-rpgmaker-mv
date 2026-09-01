@@ -1777,7 +1777,10 @@ describe('Windows release gate foundations', () => {
       expect(first.preserved).toContain(outerRollback);
       expect(first.preserved.some((entry) => entry.includes('.recovery-'))).toBe(true);
       expect((await stat(projectPath)).isDirectory()).toBe(true);
+      await mkdir(program, { recursive: true });
       await mkdir(cache, { recursive: true });
+      await writeFile(join(program, PROGRAM_OWNERSHIP_FILE), `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1 })}\n`);
+      await writeFile(join(program, 'install.json'), `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1, installationRoot, localStateRoot: mutable, installationCacheDir: cache, programRoot: program, mutableRoot: mutable, dshHome: state, runtimeDir: join(program, 'runtime', 'dsh') })}\n`);
       const purged = await uninstallHarness({ ...options, purge: true });
       expect(purged.purged).toBe(true);
       expect(await Bun.file(mutable).exists()).toBe(false);
@@ -1805,6 +1808,31 @@ describe('Windows release gate foundations', () => {
       expect(await Bun.file(join(program, 'user-file.txt')).exists()).toBe(true);
       expect(await Bun.file(join(cache, 'cache.txt')).exists()).toBe(true);
       expect(await Bun.file(shortcut).exists()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('uninstall preserves cache and receipt when the owned program tree is missing', async () => {
+    const root = await temp('phase7-uninstall-missing-program');
+    try {
+      const installationRoot = join(root, 'installation');
+      const programRoot = join(installationRoot, 'program');
+      const mutableRoot = join(root, 'mutable');
+      const cacheRoot = join(installationRoot, 'cache');
+      await mkdir(cacheRoot, { recursive: true });
+      await writeFile(join(cacheRoot, 'keep.txt'), 'ownership cannot be proven');
+      await commitInstallationReceipt({
+        product: PRODUCT_NAME,
+        owner: PROGRAM_OWNER,
+        installationRoot,
+        programRoot,
+        localStateRoot: mutableRoot
+      });
+
+      await expect(uninstallHarness({ platform: 'win32', installationRoot, mutableRoot })).rejects.toBeInstanceOf(UninstallSafetyError);
+      expect(await Bun.file(join(cacheRoot, 'keep.txt')).exists()).toBe(true);
+      expect(await readInstallationReceipt(mutableRoot)).toBeDefined();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

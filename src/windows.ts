@@ -311,18 +311,15 @@ export async function uninstallHarness(options: UninstallOptions = {}): Promise<
   if (programStat?.isSymbolicLink()) throw new UninstallSafetyError(`Refusing to remove ${paths.programRoot}: the harness program root is a symbolic link.`);
   if (programStat && !programStat.isDirectory()) throw new UninstallSafetyError(`Refusing to remove ${paths.programRoot}: the harness program root is not a directory.`);
   const programExists = programStat?.isDirectory() ?? false;
-  if (programExists) await validateHarnessOwnership({ ...options, installationRoot: paths.installationRoot, mutableRoot: paths.mutableRoot, localStateRoot: paths.localStateRoot, dshHome: paths.dshHome, runtimeDir: paths.runtimeDir });
+  if (!programExists) throw new UninstallSafetyError(`Refusing to remove cache or forget the installation location: the owned program root is missing at ${paths.programRoot}.`);
+  await validateHarnessOwnership({ ...options, installationRoot: paths.installationRoot, mutableRoot: paths.mutableRoot, localStateRoot: paths.localStateRoot, dshHome: paths.dshHome, runtimeDir: paths.runtimeDir });
 
-  // A missing active tree is already uninstalled. Never remove a shortcut or
-  // recovery tree in that case: neither can be proven to be ours here.
-  if (programExists) {
-    preserved.push(...await preserveNestedRecovery(paths.programRoot));
-    const removeShortcut = options.removeShortcut ?? (async (path: string) => { await rm(path, { force: true }); });
-    await removeShortcut(paths.startMenuShortcutPath);
-    removed.push(paths.startMenuShortcutPath);
-    await rm(paths.programRoot, { recursive: true, force: true });
-    removed.push(paths.programRoot);
-  }
+  preserved.push(...await preserveNestedRecovery(paths.programRoot));
+  const removeShortcut = options.removeShortcut ?? (async (path: string) => { await rm(path, { force: true }); });
+  await removeShortcut(paths.startMenuShortcutPath);
+  removed.push(paths.startMenuShortcutPath);
+  await rm(paths.programRoot, { recursive: true, force: true });
+  removed.push(paths.programRoot);
   await rm(paths.cacheDir, { recursive: true, force: true });
   removed.push(paths.cacheDir);
   if (paths.installationCacheDir !== paths.cacheDir) {
