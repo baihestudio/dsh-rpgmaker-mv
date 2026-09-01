@@ -230,7 +230,9 @@ The probe creates a uniquely named, self-cleaning directory under that workspace
 
 ## Uninstall
 
-Double-click `Uninstall.cmd` in the installed program root. Default uninstall validates the harness ownership marker and install metadata before removing program files, app-owned runtimes, cache, and the BaiheStudio Start Menu shortcut. It preserves rollback/recovery trees, DSH state, credentials, logs, and all projects (projects are never discovered or deleted by the uninstaller). Unowned or malformed program trees are refused.
+Double-click `Uninstall.cmd` in the installed program root. Default uninstall validates the harness ownership marker and install metadata before removing program files, app-owned runtimes, cache, the BaiheStudio Start Menu shortcut, and the installation-location receipt. It preserves rollback/recovery trees, DSH state, credentials, logs, and all projects (projects are never discovered or deleted by the uninstaller). With the receipt removed, the next `Install.cmd` run is a first installation and opens the folder picker again. Unowned or malformed program trees are refused.
+
+If an incomplete older installation reports that its installed `installer.exe` is missing, extract a current Release ZIP and run that Release's `Uninstall.cmd`. Its maintenance executable follows the owned installation-location receipt to the old program tree, applies the same ownership checks, and preserves the same local state.
 
 To explicitly delete local DSH state and credential metadata as well:
 

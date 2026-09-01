@@ -8,7 +8,7 @@ The AI production agent for RPG Maker MV and MZ
 
 For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The standalone compiled installer opens a folder picker before downloading, verifies the bundled desktop host, then obtains one explicit consent before any WinGet install or repair. It requires Node.js LTS 22+ with npm, installs the pinned DSH and RPG Maker MCPs, and creates the per-user Start Menu shortcut **RPG Maker Agent** targeting the native host. Re-running the same command upgrades an owned installation after one explicit running-Agent close confirmation. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
 
-The full first-run, repair, port-conflict, workspace-selection, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata and preserves rollback/recovery state, mutable state, credentials, logs, and projects; `uninstall.ps1 -Purge` is explicit.
+The full first-run, repair, port-conflict, workspace-selection, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata, removes the installation-location receipt so a reinstall can choose a different root, and preserves rollback/recovery state, mutable state, credentials, logs, and projects; `uninstall.ps1 -Purge` is explicit.
 
 Contributors can still run the underlying bootstrap and doctor scripts from PowerShell:
 
