@@ -4,7 +4,7 @@ import { stat } from 'node:fs/promises';
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { verifyForgejoMcpRuntime } from './forgejo-mcp';
 import { verifyWindowsPrerequisites } from './prerequisites';
-import { findDshExecutable, findDshJavaScriptEntrypoint, verifyRuntime, type RuntimeVerification } from './bootstrap';
+import { resolveDshEntrypoint, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
@@ -17,7 +17,7 @@ import {
 } from './rpgmaker';
 import { verifyManagedWebProfile, type ManagedWebProfileOptions, type ManagedWebProfileVerification } from './managed-web-profile';
 import { inspectWorkspaceSandbox } from './workspace-sandbox';
-import { readInstallationReceipt } from './installation-root';
+import { resolveReceiptBackedHarnessPaths, type ReceiptBackedHarnessPaths } from './installation-root';
 import { verifyPnpmRuntimeForDoctor } from './profile';
 
 export interface DoctorDependencyVerificationContext {
@@ -80,18 +80,14 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   const platform = options.platform ?? process.platform;
   if (platform !== 'win32') throw new Error('Doctor is supported on Windows only.');
   const env = options.env ?? process.env;
-  const initialPaths = resolveHarnessPaths({ ...options, platform, env });
-  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
-  const paths = receipt
-    ? resolveHarnessPaths({ ...options, platform, env, installationRoot: receipt.installationRoot, programRoot: receipt.programRoot, mutableRoot: receipt.localStateRoot, localStateRoot: receipt.localStateRoot })
-    : initialPaths;
+  const { paths, receipt } = await resolveReceiptBackedHarnessPaths({ ...options, platform, env });
   return withHarnessLock(paths.lockDir, () => runDoctorUnlocked(options, platform, env, paths, receipt), {
     timeoutMs: options.lockTimeoutMs,
     retryMs: options.lockRetryMs
   });
 }
 
-async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: Record<string, string | undefined>, paths: ReturnType<typeof resolveHarnessPaths>, receipt: Awaited<ReturnType<typeof readInstallationReceipt>>): Promise<DoctorReport> {
+async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: Record<string, string | undefined>, paths: ReturnType<typeof resolveHarnessPaths>, receipt: ReceiptBackedHarnessPaths['receipt']): Promise<DoctorReport> {
   const runner = options.commandRunner ?? runCommand;
   const commandEnv = withoutCredentials(env);
   const checks: DoctorCheck[] = [];
@@ -127,7 +123,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     runtime.valid ? `Pinned DSH ${runtime.dshPackageVersion} and koffi are verified` : runtime.errors.join('; ')
   ));
 
-  const dshExecutable = runtime.dshExecutable ?? await findDshJavaScriptEntrypoint(paths.runtimeDir) ?? await findDshExecutable(paths.runtimeDir, platform);
+  const dshExecutable = runtime.dshExecutable ?? await resolveDshEntrypoint(paths.runtimeDir, platform);
   executablePaths.dsh = dshExecutable;
   checks.push(check(
     'dsh-executable',
@@ -169,7 +165,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     platform,
     env: commandEnv,
     dshHome: paths.dshHome,
-    programRoot: paths.programRoot,
+    installationRoot: paths.installationRoot,
     mutableRoot: paths.mutableRoot,
     runtimeDir: paths.runtimeDir,
     dshExecutable,
@@ -189,10 +185,6 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
 
   const pnpm = await verifyPnpmRuntimeForDoctor(paths.programRoot, platform);
   checks.push(check('app-owned-pnpm', 'App-owned pnpm', pnpm.valid, pnpm.valid ? `Exact pnpm ${pnpm.version} is installed under the selected root` : pnpm.error ?? 'App-owned pnpm is missing or invalid', pnpm.executable));
-
-  const staleBun = await stat(join(paths.programRoot, 'runtime', 'bun')).then(() => true).catch(() => false)
-    || await stat(join(paths.runtimeDir, 'bun.lock')).then(() => true).catch(() => false);
-  checks.push(check('no-stale-bun-runtime', 'No stale Bun runtime state', !staleBun, staleBun ? 'A stale Bun-shaped managed runtime was found; rerun Install.cmd to replace it.' : 'No stale Bun runtime or Bun lock was found.', paths.installationRoot));
 
   const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env: commandEnv, programRoot: paths.programRoot, commandRunner: runner });
   executablePaths.forgejoMcp = forgejoMcp.executablePath;

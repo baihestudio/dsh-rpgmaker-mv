@@ -5,11 +5,13 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { bootstrapRuntime, DSH_RUNTIME_MANIFEST_RELATIVE, DSH_RUNTIME_PEER_DEPENDENCIES, findDshExecutable, verifyRuntime } from '../src/bootstrap';
-import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION } from '../src/config';
+import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PRODUCT_VERSION } from '../src/config';
 import { launchProject } from '../src/launcher';
 import { acquireHarnessLock } from '../src/lock';
 import { runCli } from '../src/cli';
-import { executeCommand, prepareProcessInvocation, ProcessTerminationError } from '../src/process';
+import { installerArguments } from '../src/installer';
+import { rendererMode } from '../src/install-events';
+import { childExitCode, executeCommand, prepareProcessInvocation, ProcessTerminationError } from '../src/process';
 import { validateMvProject } from '../src/project';
 
 async function disposableDirectory(prefix: string): Promise<string> {
@@ -91,6 +93,11 @@ function makeTrackedChild(pid = 1234): EventEmitter & { pid: number; exitCode: n
     expect(resolved).toBe(false);
     releaseTermination?.();
     await expect(command).resolves.toMatchObject({ exitCode: 124 });
+  });
+  test('child exit code observes an already-exited process-like child', async () => {
+    const child = makeTrackedChild();
+    child.exitCode = 23;
+    await expect(childExitCode(child)).resolves.toBe(23);
   });
   test('bootstrap preserves staging when installer process-tree termination is unconfirmed', async () => {
     const root = await disposableDirectory('runtime-timeout-preserve');
@@ -697,6 +704,60 @@ describe('doctor and launcher seams', () => {
     expect(code).toBe(1);
     expect(stdout).toBe('');
     expect(stderr).toContain('supported on Windows only');
+  });
+
+  test('redirected stdout automatically selects plain installation events and reports capacity', async () => {
+    const root = await disposableDirectory('cli-redirected-install');
+    try {
+      const release = join(root, 'release');
+      const installation = join(root, 'installation');
+      const localState = join(root, 'local-state');
+      await mkdir(release, { recursive: true });
+      let stdout = '';
+      let stderr = '';
+      const code = await runCli([
+        'install',
+        '--release-root', release,
+        '--installation-root', installation,
+        '--local-state-root', localState
+      ], {
+        platform: 'win32',
+        env: { LOCALAPPDATA: join(root, 'LocalAppData'), TEMP: root, TMP: root },
+        io: {
+          stdout: { isTTY: false, write: (text) => { stdout += text; } },
+          stderr: { isTTY: false, write: (text) => { stderr += text; } }
+        },
+        commandRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' })
+      });
+      expect(code).toBe(1);
+      expect(stdout).toMatch(/PHASE 1\/8 destination started/);
+      expect(stdout).toMatch(/estimated capacity: .* bytes required/);
+      expect(stdout).not.toContain('\u001b');
+      expect(stderr).toMatch(/prerequisite|consent|Node/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('compiled installer defaults its release root beside the executable', () => {
+    const executable = join('/tmp', 'release build', 'installer.exe');
+    expect(installerArguments([], executable)).toEqual(['install', '--release-root', join('/tmp', 'release build')]);
+    expect(installerArguments(['doctor'], executable)).toEqual(['doctor']);
+  });
+
+  test('rejects the removed direct program-root CLI seam', async () => {
+    let stderr = '';
+    const code = await runCli(['install', '--program-root', '/tmp/legacy-program-root'], {
+      platform: 'win32',
+      io: { stdout: { write: () => undefined }, stderr: { write: (text) => { stderr += text; } } }
+    });
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/program-root was removed/i);
+  });
+
+  test('timing records keep product and runtime versions distinct', async () => {
+    expect(PRODUCT_VERSION).not.toBe(DSH_VERSION);
+    expect(rendererMode({ stdoutIsTTY: false })).toBe('plain');
   });
 
   test('Windows .cmd DSH shims are invoked through cmd.exe without using the project path as command text', () => {

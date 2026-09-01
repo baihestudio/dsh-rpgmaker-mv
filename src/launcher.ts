@@ -3,14 +3,14 @@ import { extname } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stdin as processStdin, stdout as processStdout } from 'node:process';
 
-import { findDshExecutable, findDshJavaScriptEntrypoint } from './bootstrap';
-import { resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
+import { resolveDshEntrypoint } from './bootstrap';
+import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type HarnessPaths, type PathOptions } from './config';
 import { forgejoMcpExecutablePath } from './forgejo-mcp';
 import { resolveExecutable } from './executable';
 import { inspectCredentialMetadata } from './credentials';
 import { childExitCode, runCommand, spawnInteractive, type CommandRunner, type InteractiveSpawner } from './process';
 import { pathExists } from './project';
-import { readInstallationReceipt } from './installation-root';
+import { resolveReceiptBackedHarnessPaths } from './installation-root';
 import { acquireHarnessSessionLeases } from './lock';
 import {
   ensureFixedPortAvailable,
@@ -125,11 +125,7 @@ export async function launchProject(options: LaunchOptions = {}): Promise<Launch
   validateRequestedBinding(options);
   if (options.bindWeb) addFixedWebBinding(options.dshArgs ?? []);
   else rejectCallerBinding(options.dshArgs ?? []);
-  const initialPaths = resolveHarnessPaths({ ...options, platform, env });
-  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
-  const paths = receipt && !options.programRoot && !options.installationRoot
-    ? resolveHarnessPaths({ ...options, platform, env, installationRoot: receipt.installationRoot, programRoot: receipt.programRoot, mutableRoot: receipt.localStateRoot, localStateRoot: receipt.localStateRoot })
-    : initialPaths;
+  const { paths } = await resolveReceiptBackedHarnessPaths({ ...options, platform, env });
   await ensureLaunchPort(options);
   const leases = await acquireHarnessSessionLeases(paths.lockDir, paths.sessionLeaseDir, {
     timeoutMs: options.lockTimeoutMs,
@@ -252,9 +248,9 @@ async function launchProjectUnlocked(
   options: LaunchOptions,
   platform: string,
   env: Record<string, string | undefined>,
-  paths: ReturnType<typeof resolveHarnessPaths>
+  paths: HarnessPaths
 ): Promise<Omit<LaunchResult, 'releaseSession'>> {
-  const executable = options.dshExecutable ?? await findDshJavaScriptEntrypoint(paths.runtimeDir) ?? await findDshExecutable(paths.runtimeDir, platform);
+  const executable = options.dshExecutable ?? await resolveDshEntrypoint(paths.runtimeDir, platform);
   if (!executable) {
     throw new LauncherError(`Official DSH was not found in ${paths.runtimeDir}. Run bootstrap, then doctor, before launching.`);
   }
@@ -269,7 +265,6 @@ async function launchProjectUnlocked(
     dshHome: paths.dshHome,
     mutableRoot: paths.mutableRoot,
     installationRoot: paths.installationRoot,
-    programRoot: paths.programRoot,
   });
   await mkdir(paths.neutralLandingDir, { recursive: true });
 
@@ -290,7 +285,7 @@ async function launchProjectUnlocked(
   };
   const rawArgs = [...(options.dshArgs ?? [])];
   const args = options.bindWeb ? addFixedWebBinding(rawArgs) : rawArgs;
-  await writeLaunchLog({ ...options, dshHome: paths.dshHome, mutableRoot: paths.mutableRoot, programRoot: paths.programRoot, event: 'launch', host: options.bindWeb ? options.webHost ?? WINDOWS_DSH_HOST : undefined, port: options.bindWeb ? options.webPort ?? WINDOWS_DSH_PORT : undefined });
+  await writeLaunchLog({ ...options, dshHome: paths.dshHome, mutableRoot: paths.mutableRoot, installationRoot: paths.installationRoot, event: 'launch', host: options.bindWeb ? options.webHost ?? WINDOWS_DSH_HOST : undefined, port: options.bindWeb ? options.webPort ?? WINDOWS_DSH_PORT : undefined });
   const javascriptEntry = /\.(?:c?m?js)$/i.test(extname(executable));
   const node = javascriptEntry
     ? options.nodeExecutable ?? env.NODE_EXECUTABLE ?? await resolveExecutable('node', { platform, env })

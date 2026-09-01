@@ -339,14 +339,8 @@ async function refreshWindowsEnvironment(runner: CommandRunner, env: Record<stri
       // Verification still uses the original environment if registry refresh is unavailable.
     }
   }
-  const refreshedPath = [...new Set(paths.filter(Boolean)
-    .flatMap((value) => value.split(';'))
-    .filter((entry) => entry && !/(?:^|[\\/])bun(?:[\\/]|$)/i.test(entry)))].join(';');
-  const refreshed = withEnvironmentPath(env, refreshedPath, 'win32');
-  for (const key of Object.keys(refreshed)) {
-    if (/^bun(?:_|$)/i.test(key)) delete refreshed[key];
-  }
-  return refreshed;
+  const refreshedPath = [...new Set(paths.filter(Boolean).flatMap((value) => value.split(';')).filter(Boolean))].join(';');
+  return withEnvironmentPath(env, refreshedPath, 'win32');
 }
 
 /**

@@ -3,6 +3,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 
 export const DSH_PACKAGE_NAME = '@deepseek-ai/dsh';
 export const DSH_VERSION = '0.1.1-rc.2';
+export const PRODUCT_VERSION = '0.1.0';
 export const DSH_NPM_INTEGRITY = 'sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==';
 export const DSH_RUNTIME_NAME = 'dsh-rpgmaker-runtime';
 export const PRODUCT_VENDOR = 'BaiheStudio';
@@ -39,7 +40,6 @@ export interface PathOptions {
   localStateRoot?: string;
   dshHome?: string;
   runtimeDir?: string;
-  programRoot?: string;
   mutableRoot?: string;
   startMenuShortcutPath?: string;
   platform?: string;
@@ -76,14 +76,12 @@ export function resolveHarnessPaths(options: PathOptions = {}): HarnessPaths {
   // credentials or settings into an ambient DSH_HOME.
   const dshHome = resolve(options.dshHome ?? (explicitMutableRoot ? join(mutableRoot, 'state') : explicitDshHome ?? defaultDshHome(platform, env)));
   const explicitInstallationRoot = options.installationRoot ?? env.DSH_RPGMAKER_INSTALLATION_ROOT;
-  const explicitProgramRoot = options.programRoot ?? env.DSH_RPGMAKER_PROGRAM_ROOT;
-  const installationRoot = resolve(explicitInstallationRoot ?? explicitProgramRoot ?? (platform === 'win32'
-    ? (explicitDshHome ? join(dirname(dshHome), 'program') : defaultWindowsProgramRoot(env))
-    : join(dirname(dshHome), 'program')));
-  // Keep the explicit --program-root seam stable for existing maintenance and
-  // test callers.  New first-install callers pass --installation-root and get
-  // a distinct replaceable `program` subtree.
-  const programRoot = resolve(explicitProgramRoot ?? (explicitInstallationRoot ? join(installationRoot, 'program') : installationRoot));
+  const installationRoot = resolve(explicitInstallationRoot ?? (platform === 'win32'
+    ? (explicitDshHome ? dirname(dshHome) : defaultWindowsProgramRoot(env))
+    : dirname(dshHome)));
+  // The replaceable program tree is always a distinct child of the selected
+  // installation root.  There is no direct program-root compatibility path.
+  const programRoot = resolve(join(installationRoot, 'program'));
   const logsDir = join(mutableRoot, 'logs');
   const installationCacheDir = join(installationRoot, 'cache');
   // Cache is disposable and therefore belongs to the selected installation

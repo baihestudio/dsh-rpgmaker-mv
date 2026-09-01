@@ -145,7 +145,8 @@ function directoryLinkType(): 'dir' | 'junction' {
 }
 
 async function appRoots(root: string) {
-  const programRoot = join(root, 'program');
+  const installationRoot = join(root, 'installation');
+  const programRoot = join(installationRoot, 'program');
   const mutableRoot = join(root, 'mutable');
   const dshHome = join(mutableRoot, 'state');
   await cp(join(REPOSITORY_ROOT, 'bundle'), join(programRoot, 'bundle'), { recursive: true });
@@ -153,6 +154,7 @@ async function appRoots(root: string) {
   await mkdir(join(programRoot, 'runtime', 'dsh'), { recursive: true });
   await writeFile(join(programRoot, 'runtime', 'dsh', 'dsh.exe'), 'fixture dsh');
   return {
+    installationRoot,
     programRoot,
     mutableRoot,
     dshHome,
@@ -168,7 +170,11 @@ function optionsFor(
   return {
     platform: 'win32',
     env: {},
-    ...roots,
+    installationRoot: roots.installationRoot,
+    dshHome: roots.dshHome,
+    mutableRoot: roots.mutableRoot,
+    runtimeDir: join(roots.programRoot, 'runtime', 'dsh'),
+    dshExecutable: roots.dshExecutable,
     npmExecutable: join(roots.programRoot, 'npm.cmd'),
     commandRunner
   } as const;

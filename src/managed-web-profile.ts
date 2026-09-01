@@ -1,9 +1,9 @@
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, sep, win32 } from 'node:path';
 
-import { findDshJavaScriptEntrypoint } from './bootstrap';
-import { readInstallationReceipt } from './installation-root';
-import { DSH_VERSION, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { resolveDshEntrypoint } from './bootstrap';
+import { resolveReceiptBackedHarnessPaths } from './installation-root';
+import { DSH_VERSION, type HarnessPaths, type PathOptions } from './config';
 import { isRegularFile } from './files';
 import { withHarnessOperationLock } from './lock';
 import { commandFailure, redactSensitive, runCommand, type CommandRunner } from './process';
@@ -471,11 +471,7 @@ async function requireManagedWebSources(paths: HarnessPaths, platform: string): 
  * it is shared by installation, startup, and Doctor.
  */
 export async function verifyManagedWebProfile(options: ManagedWebProfileOptions = {}): Promise<ManagedWebProfileVerification> {
-  const initialPaths = resolveHarnessPaths(options);
-  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
-  const paths = receipt && !options.programRoot && !options.installationRoot
-    ? resolveHarnessPaths({ ...options, installationRoot: receipt.installationRoot, programRoot: receipt.programRoot, mutableRoot: receipt.localStateRoot, localStateRoot: receipt.localStateRoot })
-    : initialPaths;
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   const platform = options.platform ?? process.platform;
   const structure = await inspectManagedWebProfileStructure(paths, platform);
   const { profileDir, workspaceBundleDir } = structure;
@@ -618,11 +614,7 @@ async function writeManagedBundleRegistrations(profileDir: string): Promise<void
 
 /** Materialize the complete exact Web profile, preserving the prior profile on failure. */
 export async function ensureManagedWebProfile(options: ManagedWebProfileOptions = {}): Promise<ManagedWebProfileResult> {
-  const initialPaths = resolveHarnessPaths(options);
-  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
-  const paths = receipt && !options.programRoot && !options.installationRoot
-    ? resolveHarnessPaths({ ...options, installationRoot: receipt.installationRoot, programRoot: receipt.programRoot, mutableRoot: receipt.localStateRoot, localStateRoot: receipt.localStateRoot })
-    : initialPaths;
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   return withHarnessOperationLock(paths.lockDir, paths.sessionLeaseDir, () => ensureManagedWebProfileUnlocked(options, paths), {
     timeoutMs: options.lockTimeoutMs ?? 15 * 60_000,
     retryMs: options.lockRetryMs
@@ -653,7 +645,7 @@ async function ensureManagedWebProfileUnlocked(options: ManagedWebProfileOptions
   // The app-owned pnpm runtime is resolved exactly once for this attempt and
   // its environment is reused for all four DSH plugin additions.
   const pnpm = await preparePnpmRuntime({ ...options, env, useAppOwnedPnpm: true }, paths);
-  const dsh = options.dshExecutable ?? env.DSH_EXECUTABLE ?? await findDshJavaScriptEntrypoint(paths.runtimeDir);
+  const dsh = options.dshExecutable ?? env.DSH_EXECUTABLE ?? await resolveDshEntrypoint(paths.runtimeDir, platform);
   if (!dsh) throw new Error('Pinned DSH executable was not found; cannot materialize the managed Web profile.');
   const invocation = await resolveDshInvocation(dsh, options, env);
   const profileDir = profileDirFor(paths, MANAGED_WEB_PROFILE);

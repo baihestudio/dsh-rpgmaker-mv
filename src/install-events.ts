@@ -7,6 +7,8 @@
  * and interactive runs observe the same phase order.
  */
 
+import type { InstallationCapacity } from './installation-root';
+
 export const INSTALL_PHASES = [
   'destination',
   'prerequisites',
@@ -39,6 +41,7 @@ export interface SessionEvent {
   totalPhases?: number;
   operationLabel?: string;
   progress?: InstallProgress;
+  capacity?: InstallationCapacity;
   error?: { message: string; exitCode?: number; retries?: number };
 }
 
@@ -51,6 +54,11 @@ export interface InstallationSessionOptions {
   now?: () => Date;
   phases?: readonly InstallPhaseName[];
   onEvent?: InstallationEventListener;
+}
+
+export interface InstallationRendererModeOptions {
+  mode?: InstallationRendererMode;
+  stdoutIsTTY?: boolean;
 }
 
 /** A single-use state machine that guarantees one terminal session event. */
@@ -138,6 +146,22 @@ export class InstallationSession {
     });
   }
 
+  reportCapacity(capacity: InstallationCapacity): SessionEvent {
+    if (!this.sessionStarted) throw new Error('Cannot report capacity before the session starts.');
+    if (!this.current) throw new Error('Cannot report capacity before a phase starts.');
+    const available = capacity.availableBytes === undefined ? 'unknown' : `${capacity.availableBytes} bytes available`;
+    const operationLabel = `estimated capacity: ${capacity.requiredBytes} bytes required, ${available}`;
+    return this.emit({
+      kind: 'phase',
+      phase: this.current.phase,
+      ordinal: this.phases.indexOf(this.current.phase) + 1,
+      totalPhases: this.phases.length,
+      operationLabel,
+      status: 'started',
+      capacity
+    });
+  }
+
   finishPhase(status: Exclude<InstallStatus, 'started'>, error?: SessionEvent['error']): SessionEvent {
     if (!this.current) throw new Error('Cannot finish an installation phase before it starts.');
     const current = this.current;
@@ -171,7 +195,7 @@ export function createInstallationSession(options: InstallationSessionOptions = 
 
 export type InstallationRendererMode = 'interactive' | 'plain' | 'ndjson';
 
-export function rendererMode(options: { mode?: InstallationRendererMode; stdoutIsTTY?: boolean } = {}): InstallationRendererMode {
+export function rendererMode(options: InstallationRendererModeOptions = {}): InstallationRendererMode {
   if (options.mode) return options.mode;
   return options.stdoutIsTTY ?? process.stdout.isTTY ? 'interactive' : 'plain';
 }
@@ -183,8 +207,9 @@ export function renderPlainEvent(event: SessionEvent): string {
   const operation = event.operationLabel ? ` — ${event.operationLabel}` : '';
   const elapsed = event.elapsedMs === undefined ? '' : ` (${event.elapsedMs}ms)`;
   const progress = event.progress ? ` ${event.progress.completed}/${event.progress.total}${event.progress.unit ? ` ${event.progress.unit}` : ''}` : '';
+  const capacity = event.capacity ? ` [${event.capacity.requiredBytes} bytes required; ${event.capacity.availableBytes === undefined ? 'available space unknown' : `${event.capacity.availableBytes} bytes available`}]` : '';
   const detail = event.error?.message ? `: ${event.error.message}` : '';
-  return `${prefix}${name} ${event.status}${operation}${progress}${elapsed}${detail}`;
+  return `${prefix}${name} ${event.status}${operation}${capacity}${progress}${elapsed}${detail}`;
 }
 
 /** NDJSON keeps the exact event stream available to automation callers. */

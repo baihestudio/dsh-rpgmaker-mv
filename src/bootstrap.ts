@@ -1,11 +1,11 @@
 import { cp, mkdir, readFile, rename as fsRename, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 
-import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, type HarnessPaths, type PathOptions } from './config';
 import { commandFailure, ProcessTerminationError, redactSensitive, runCommand, withoutCredentials, type CommandResult, type CommandRunner } from './process';
 import { pathExists } from './project';
 import { withHarnessOperationLock } from './lock';
-import { readInstallationReceipt } from './installation-root';
+import { resolveReceiptBackedHarnessPaths } from './installation-root';
 
 const KOFFI_LOAD_EXPRESSION = "import('koffi').then(() => process.exit(0)).catch(() => process.exit(1))";
 const PACKAGE_SPEC = `${DSH_PACKAGE_NAME}@${DSH_VERSION}`;
@@ -157,6 +157,11 @@ export async function findDshJavaScriptEntrypoint(runtimeDir: string): Promise<s
   return (await pathExists(candidate)) ? candidate : undefined;
 }
 
+/** Resolve the packaged DSH entrypoint, preferring a direct binary over a Node-loaded JavaScript bin. */
+export async function resolveDshEntrypoint(runtimeDir: string, platform: string = process.platform): Promise<string | undefined> {
+  return await findDshJavaScriptEntrypoint(runtimeDir) ?? await findDshExecutable(runtimeDir, platform);
+}
+
 function versionFromPackage(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
@@ -207,7 +212,7 @@ export async function verifyRuntime(runtimeDirInput: string, options: Pick<Boots
   dshPackageVersion = versionFromPackage(dshPackage?.version);
   if (dshPackageVersion !== DSH_VERSION) errors.push(`installed DSH version is ${dshPackageVersion ?? 'missing'}, expected ${DSH_VERSION}`);
 
-  dshExecutable = await findDshJavaScriptEntrypoint(runtimeDir) ?? await findDshExecutable(runtimeDir, options.platform ?? process.platform);
+  dshExecutable = await resolveDshEntrypoint(runtimeDir, options.platform ?? process.platform);
   if (!dshExecutable) errors.push('installed DSH executable was not found');
 
   const koffiPackage = await findExistingPath([
@@ -332,11 +337,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const platform = options.platform ?? process.platform;
   if (platform !== 'win32') throw new BootstrapError('DSH runtime bootstrap is supported on Windows only.');
   const windowsOptions = { ...options, platform };
-  const initialPaths: HarnessPaths = resolveHarnessPaths(windowsOptions);
-  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
-  const paths: HarnessPaths = receipt && !options.programRoot && !options.installationRoot
-    ? resolveHarnessPaths({ ...windowsOptions, installationRoot: receipt.installationRoot, programRoot: receipt.programRoot, mutableRoot: receipt.localStateRoot, localStateRoot: receipt.localStateRoot })
-    : initialPaths;
+  const { paths } = await resolveReceiptBackedHarnessPaths(windowsOptions);
   return withHarnessOperationLock(paths.lockDir, paths.sessionLeaseDir, () => bootstrapRuntimeUnlocked(windowsOptions, paths), {
     timeoutMs: options.lockTimeoutMs ?? 15 * 60_000,
     retryMs: options.lockRetryMs

@@ -1,7 +1,7 @@
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 
-import { environmentPath, pathDelimiter, resolveHarnessPaths, withEnvironmentPath, type HarnessPaths, type PathOptions } from './config';
+import { environmentPath, pathDelimiter, withEnvironmentPath, type HarnessPaths, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
 import { commandFailure, runCommand, withoutCredentials, type CommandRunner } from './process';
 
@@ -26,6 +26,13 @@ export interface ProfilePackageOptions extends PathOptions {
 export interface PnpmRuntime {
   executable: string;
   env: Record<string, string | undefined>;
+}
+
+export interface PnpmRuntimeDoctorVerification {
+  valid: boolean;
+  version?: string;
+  executable?: string;
+  error?: string;
 }
 
 interface JsonObject {
@@ -107,7 +114,7 @@ async function verifyPnpmRuntime(runtimeDir: string, platform: string): Promise<
   return executable;
 }
 
-export async function verifyPnpmRuntimeForDoctor(programRoot: string, platform: string = process.platform): Promise<{ valid: boolean; version?: string; executable?: string; error?: string }> {
+export async function verifyPnpmRuntimeForDoctor(programRoot: string, platform: string = process.platform): Promise<PnpmRuntimeDoctorVerification> {
   const runtimeDir = resolve(programRoot, PNPM_RUNTIME_RELATIVE);
   const executable = await verifyPnpmRuntime(runtimeDir, platform);
   if (!executable) return { valid: false, error: `App-owned pnpm ${PNPM_VERSION} is missing, has an invalid npm lock, or is outside the selected installation root.` };

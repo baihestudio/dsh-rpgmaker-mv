@@ -1,10 +1,11 @@
 import { cp, mkdir, readFile, realpath, rename as fsRename, rm } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
-import { resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { type HarnessPaths, type PathOptions } from './config';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 import { pathExists } from './project';
 import { withHarnessOperationLock } from './lock';
+import { resolveReceiptBackedHarnessPaths } from './installation-root';
 
 /** Exact-pinned app-owned MCPorter runtime (Host MCP client pool). */
 export const MCPORTER_PACKAGE = 'mcporter';
@@ -141,7 +142,7 @@ export async function prepareMcporterRuntime(
   runtimeDirInput: string
 ): Promise<McporterRuntimeVerification> {
   const runtimeDir = resolve(runtimeDirInput);
-  const paths = resolveHarnessPaths(options);
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   return withHarnessOperationLock(paths.lockDir, paths.sessionLeaseDir, () => prepareMcporterRuntimeUnlocked(options, runtimeDir), {
     timeoutMs: options.lockTimeoutMs,
     retryMs: options.lockRetryMs

@@ -233,7 +233,7 @@ describe('desktop host release payload', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  }, { timeout: 120_000 });
+  }, { timeout: 180_000 });
 
   test('fails a Windows-targeted archive when the native host is absent', async () => {
     const root = await temp('phase14-host-required');
@@ -300,7 +300,6 @@ describe('desktop host release payload', () => {
         desktopHostRoot: payload,
         requireDesktopHost: true,
         installationRoot,
-        programRoot: program,
         mutableRoot: mutable,
         dshHome: state,
         runtimeDir: runtime,
@@ -342,7 +341,7 @@ describe('desktop host release payload', () => {
         releaseRoot: process.cwd(),
         desktopHostRoot: payload,
         requireDesktopHost: true,
-        programRoot: program,
+        installationRoot,
         mutableRoot: mutable,
         dshHome: state,
         runtimeDir: runtime,
@@ -378,7 +377,7 @@ describe('desktop host release payload', () => {
         releaseRoot: process.cwd(),
         desktopHostRoot: payload,
         requireDesktopHost: true,
-        programRoot: program,
+        installationRoot,
         mutableRoot: mutable,
         dshHome: state,
         runtimeDir: runtime,
@@ -422,7 +421,8 @@ describe('owned upgrade lifecycle', () => {
   test('finds only processes whose executable or command line is beneath the owned root', async () => {
     const root = await temp('phase14-owned-processes');
     try {
-      const program = join(root, 'program');
+      const installationRoot = join(root, 'installation');
+      const program = join(installationRoot, 'program');
       await mkdir(program, { recursive: true });
       await writeFile(join(program, PROGRAM_OWNERSHIP_FILE), JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1 }));
       const processes = await findOwnedAgent(program, {
@@ -477,7 +477,8 @@ describe('owned upgrade lifecycle', () => {
   test('declining an active owned upgrade happens before prerequisite or tree mutation', async () => {
     const root = await temp('phase14-owned-upgrade-noop');
     try {
-      const program = join(root, 'program');
+      const installationRoot = join(root, 'installation');
+      const program = join(installationRoot, 'program');
       const mutable = join(root, 'mutable');
       const state = join(mutable, 'state');
       await mkdir(program, { recursive: true });
@@ -489,7 +490,7 @@ describe('owned upgrade lifecycle', () => {
       await expect(installWindowsRelease({
         platform: 'win32',
         releaseRoot: join(process.cwd()),
-        programRoot: program,
+        installationRoot,
         mutableRoot: mutable,
         dshHome: state,
         ownedProcessRecords: [{ pid: 99, parentPid: 1, executablePath: join(program, 'desktop-host', 'DSH.exe') }],

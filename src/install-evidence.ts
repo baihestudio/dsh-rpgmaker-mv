@@ -4,6 +4,7 @@ import { basename, join } from 'node:path';
 
 import { redactSensitive, type CommandResult } from './process';
 import type { InstallationOperation, InstallationRendererMode, InstallPhaseName, SessionEvent } from './install-events';
+import type { InstallationCapacity } from './installation-root';
 
 export const INSTALL_TIMING_SCHEMA_VERSION = 1;
 
@@ -35,6 +36,7 @@ export interface InstallTimingRecord {
   exitCode?: number;
   retries?: number;
   error?: string;
+  capacity?: InstallationCapacity;
 }
 
 export interface InstallRunEvidenceOptions {
@@ -70,6 +72,7 @@ export class InstallRunEvidence {
   private logQueue: Promise<void> = Promise.resolve();
   private failedPhase?: InstallPhaseName;
   private failedExitCode?: number;
+  private capacity?: InstallationCapacity;
 
   constructor(options: InstallRunEvidenceOptions) {
     this.options = options;
@@ -114,7 +117,7 @@ export class InstallRunEvidence {
     this.prerequisites[id] = status;
   }
 
-  command(label: string, command: string, result: CommandResult, args?: string[]): void {
+  command(label: string, command: string, result: CommandResult): void {
     // The log is intentionally descriptive but never records a raw command
     // line.  Even an argument that looks harmless can contain a token.
     const detail = redactSensitive(`${label} (${basename(command)}) exited ${result.exitCode}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}\n`, this.env);
@@ -123,7 +126,10 @@ export class InstallRunEvidence {
       this.failedExitCode = result.exitCode;
       if (this.activePhase) this.failedPhase = this.activePhase.phase;
     }
-    void args;
+  }
+
+  setCapacity(capacity: InstallationCapacity): void {
+    this.capacity = { ...capacity };
   }
 
   appendLog(text: string): void {
@@ -157,7 +163,8 @@ export class InstallRunEvidence {
       ...((details.failedPhase ?? this.failedPhase) ? { failedPhase: details.failedPhase ?? this.failedPhase } : {}),
       ...((details.exitCode ?? this.failedExitCode) === undefined ? {} : { exitCode: details.exitCode ?? this.failedExitCode }),
       ...((details.retries ?? this.retries) > 0 ? { retries: details.retries ?? this.retries } : {}),
-      ...(details.error ? { error: redactSensitive(details.error, this.env) } : {})
+      ...(details.error ? { error: redactSensitive(details.error, this.env) } : {}),
+      ...(this.capacity ? { capacity: this.capacity } : {})
     };
     const temporary = `${this.timingPath}.tmp-${randomUUID()}`;
     await mkdir(join(this.options.localStateRoot, 'logs', 'install-runs'), { recursive: true });
@@ -174,9 +181,6 @@ export class InstallRunEvidence {
     (this.options as InstallRunEvidenceOptions).installationRoot = root;
   }
 
-  setRuntimeVersion(version: string): void {
-    (this.options as InstallRunEvidenceOptions).runtimeVersion = version;
-  }
 }
 
 export function createInstallRunEvidence(options: InstallRunEvidenceOptions): InstallRunEvidence {

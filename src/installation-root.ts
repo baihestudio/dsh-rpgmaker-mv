@@ -3,12 +3,14 @@ import { lstat, mkdir, readFile, rename, stat, statfs, writeFile } from 'node:fs
 import { dirname, isAbsolute, join, resolve, win32 } from 'node:path';
 
 import { redactSensitive } from './process';
-import { PRODUCT_NAME, PROGRAM_OWNER } from './config';
+import { PRODUCT_NAME, PROGRAM_OWNER, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
 
 export const INSTALLATION_RECEIPT_SCHEMA_VERSION = 1;
 export const INSTALLATION_RECEIPT_NAME = 'installation-location.json';
 /** Fixed product-owned reserve for staging and rollback copies. */
 export const INSTALLATION_STAGING_HEADROOM_BYTES = 512 * 1024 * 1024;
+export const INSTALLATION_CAPACITY_FORMULA = 'requiredBytes = measuredReleasePayloadBytes + headroomBytes';
+export const INSTALLATION_CAPACITY_BASIS = 'Measured extracted Release payload plus the product-owned 512 MiB staging/rollback reserve.';
 
 export interface InstallationReceipt {
   schemaVersion: number;
@@ -23,10 +25,23 @@ export interface InstallationReceipt {
 export interface InstallationRootValidation {
   valid: boolean;
   root: string;
+  payloadBytes: number;
+  headroomBytes: number;
   requiredBytes: number;
   availableBytes?: number;
+  capacityFormula: string;
+  capacityBasis: string;
   errors: string[];
   probePath?: string;
+}
+
+export interface InstallationCapacity {
+  payloadBytes: number;
+  headroomBytes: number;
+  requiredBytes: number;
+  availableBytes?: number;
+  formula: string;
+  basis: string;
 }
 
 export interface InstallationRootValidationOptions {
@@ -40,25 +55,14 @@ export interface InstallationRootValidationOptions {
   writableProbe?: (root: string) => Promise<void>;
 }
 
-export interface ResolveInstallationRootOptions {
-  platform?: string;
-  env?: Record<string, string | undefined>;
-  installationRoot?: string;
-  localStateRoot: string;
-  releaseRoot?: string;
-  nonInteractive?: boolean;
-  picker?: (defaultPath: string) => Promise<string | undefined>;
-  prompt?: (defaultPath: string) => Promise<string | undefined>;
-}
-
-function normal(value: string, platform: string): string {
+function normalizeInstallationPath(value: string, platform: string): string {
   const slash = value.replaceAll('\\', '/').replace(/\/+$/, '');
   return platform === 'win32' ? slash.toLowerCase() : resolve(slash);
 }
 
 function pathWithin(parent: string, child: string, platform: string): boolean {
-  const p = normal(parent, platform);
-  const c = normal(child, platform);
+  const p = normalizeInstallationPath(parent, platform);
+  const c = normalizeInstallationPath(child, platform);
   return c === p || c.startsWith(`${p}/`);
 }
 
@@ -72,7 +76,7 @@ function absoluteSupported(root: string, platform: string): boolean {
   return isAbsolute(root);
 }
 
-async function releaseBytes(root: string): Promise<number> {
+export async function measureReleasePayloadBytes(root: string): Promise<number> {
   let total = 0;
   async function walk(path: string): Promise<void> {
     const entries = await import('node:fs/promises').then(({ readdir }) => readdir(path, { withFileTypes: true })).catch(() => [] as import('node:fs').Dirent[]);
@@ -88,7 +92,7 @@ async function releaseBytes(root: string): Promise<number> {
 
 /** Calculate Release payload plus the fixed staging/rollback reserve. */
 export async function estimateInstallationBytes(releaseRoot?: string, headroomBytes = INSTALLATION_STAGING_HEADROOM_BYTES): Promise<number> {
-  const payload = releaseRoot ? await releaseBytes(resolve(releaseRoot)) : 0;
+  const payload = releaseRoot ? await measureReleasePayloadBytes(resolve(releaseRoot)) : 0;
   return payload + headroomBytes;
 }
 
@@ -105,7 +109,9 @@ export async function validateInstallationRoot(rootInput: string, options: Insta
   const platform = options.platform ?? process.platform;
   const root = rootInput.trim();
   const errors: string[] = [];
-  const requiredBytes = options.requiredBytes ?? await estimateInstallationBytes(options.releaseRoot, options.headroomBytes);
+  const headroomBytes = options.headroomBytes ?? INSTALLATION_STAGING_HEADROOM_BYTES;
+  const payloadBytes = options.releaseRoot ? await measureReleasePayloadBytes(resolve(options.releaseRoot)) : 0;
+  const requiredBytes = options.requiredBytes ?? payloadBytes + headroomBytes;
   if (!root) errors.push('An installation root is required.');
   else if (!absoluteSupported(root, platform)) errors.push('The installation root must be an absolute Windows filesystem path.');
   const localState = resolve(options.localStateRoot);
@@ -140,7 +146,18 @@ export async function validateInstallationRoot(rootInput: string, options: Insta
       errors.push(`The installation root does not have enough free space: ${requiredBytes} bytes required, ${availableBytes} bytes available.`);
     }
   }
-  return { valid: errors.length === 0, root, requiredBytes, ...(availableBytes === undefined ? {} : { availableBytes }), errors, ...(probePath ? { probePath } : {}) };
+  return {
+    valid: errors.length === 0,
+    root,
+    payloadBytes,
+    headroomBytes,
+    requiredBytes,
+    ...(availableBytes === undefined ? {} : { availableBytes }),
+    capacityFormula: INSTALLATION_CAPACITY_FORMULA,
+    capacityBasis: INSTALLATION_CAPACITY_BASIS,
+    errors,
+    ...(probePath ? { probePath } : {})
+  };
 }
 
 export function installationReceiptPath(localStateRoot: string): string {
@@ -148,32 +165,50 @@ export function installationReceiptPath(localStateRoot: string): string {
 }
 
 export async function readInstallationReceipt(localStateRoot: string): Promise<InstallationReceipt | undefined> {
+  const path = installationReceiptPath(localStateRoot);
+  let content: string;
   try {
-    const parsed = JSON.parse(await readFile(installationReceiptPath(localStateRoot), 'utf8')) as Partial<InstallationReceipt>;
+    content = await readFile(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return undefined;
+    throw new Error(`Could not read the installation location receipt at ${path}: ${redactSensitive(error instanceof Error ? error.message : String(error))}`, { cause: error });
+  }
+  try {
+    const parsed = JSON.parse(content) as Partial<InstallationReceipt>;
     if (parsed.schemaVersion !== INSTALLATION_RECEIPT_SCHEMA_VERSION
       || parsed.product !== PRODUCT_NAME
       || parsed.owner !== PROGRAM_OWNER
       || typeof parsed.installationRoot !== 'string'
       || typeof parsed.programRoot !== 'string'
       || typeof parsed.localStateRoot !== 'string'
-      || normal(parsed.localStateRoot, process.platform) !== normal(resolve(localStateRoot), process.platform)) return undefined;
+      || typeof parsed.committedAt !== 'string'
+      || normalizeInstallationPath(parsed.localStateRoot, process.platform) !== normalizeInstallationPath(resolve(localStateRoot), process.platform)) {
+      throw new Error('schema or ownership fields are invalid');
+    }
     const platform = process.platform;
-    if (!absoluteSupported(parsed.installationRoot, platform) || !absoluteSupported(parsed.programRoot, platform)) return undefined;
-    // A receipt may only point at a replaceable program tree owned by the
-    // selected installation root.  Keep the direct program-root seam valid
-    // for explicit maintenance callers while rejecting arbitrary escapes.
-    if (!pathWithin(parsed.installationRoot, parsed.programRoot, platform)
-      || pathWithin(parsed.installationRoot, parsed.localStateRoot, platform)
-      || pathWithin(parsed.localStateRoot, parsed.installationRoot, platform)) return undefined;
+    if (!absoluteSupported(parsed.installationRoot, platform) || !absoluteSupported(parsed.programRoot, platform)) {
+      throw new Error('installation and program roots must be absolute supported filesystem paths');
+    }
+    const expectedProgramRoot = join(resolve(parsed.installationRoot), 'program');
+    if (normalizeInstallationPath(parsed.programRoot, platform) !== normalizeInstallationPath(expectedProgramRoot, platform)) {
+      throw new Error('programRoot must be the distinct program child of installationRoot');
+    }
+    if (pathWithin(parsed.installationRoot, parsed.localStateRoot, platform)
+      || pathWithin(parsed.localStateRoot, parsed.installationRoot, platform)) {
+      throw new Error('installationRoot and localStateRoot must be separate');
+    }
     return parsed as InstallationReceipt;
-  } catch {
-    return undefined;
+  } catch (error) {
+    throw new Error(`Installation location receipt at ${path} is invalid; refusing to start another installation: ${redactSensitive(error instanceof Error ? error.message : String(error))}`, { cause: error });
   }
 }
 
 /** Atomically commit the selected root only after final verification. */
 export async function commitInstallationReceipt(receipt: Omit<InstallationReceipt, 'schemaVersion' | 'committedAt'> & Partial<Pick<InstallationReceipt, 'committedAt'>>): Promise<InstallationReceipt> {
   const { product, owner, installationRoot, programRoot, localStateRoot } = receipt;
+  if (normalizeInstallationPath(programRoot, process.platform) !== normalizeInstallationPath(join(resolve(installationRoot), 'program'), process.platform)) {
+    throw new Error('Cannot commit an installation receipt whose programRoot is not the distinct program child of installationRoot.');
+  }
   const value: InstallationReceipt = {
     schemaVersion: INSTALLATION_RECEIPT_SCHEMA_VERSION,
     product,
@@ -191,10 +226,15 @@ export async function commitInstallationReceipt(receipt: Omit<InstallationReceip
   return value;
 }
 
-export async function resolveRecordedInstallationRoot(localStateRoot: string, explicitRoot?: string, platform = process.platform): Promise<{ installationRoot: string; receipt?: InstallationReceipt }> {
+export interface RecordedInstallationRootResolution {
+  installationRoot: string;
+  receipt?: InstallationReceipt;
+}
+
+export async function resolveRecordedInstallationRoot(localStateRoot: string, explicitRoot?: string, platform = process.platform): Promise<RecordedInstallationRootResolution> {
   const receipt = await readInstallationReceipt(localStateRoot);
   if (receipt) {
-    if (explicitRoot && normal(explicitRoot, platform) !== normal(receipt.installationRoot, platform)) {
+    if (explicitRoot && normalizeInstallationPath(explicitRoot, platform) !== normalizeInstallationPath(receipt.installationRoot, platform)) {
       throw new Error(`The recorded installation root is ${receipt.installationRoot}; refusing to relocate it to ${explicitRoot}.`);
     }
     return { installationRoot: receipt.installationRoot, receipt };
@@ -203,16 +243,27 @@ export async function resolveRecordedInstallationRoot(localStateRoot: string, ex
   return { installationRoot: explicitRoot };
 }
 
-/**
- * Resolve the first-install destination.  The native picker is injected by
- * the Windows adapter; this function remains deterministic and testable.
- */
-export async function chooseInstallationRoot(options: ResolveInstallationRootOptions): Promise<{ installationRoot?: string; cancelled: boolean; defaultPath: string }> {
-  const defaultPath = options.installationRoot ?? defaultInstallationRoot(options.env ?? process.env);
-  if (options.installationRoot || options.nonInteractive) return { installationRoot: options.installationRoot ?? defaultPath, cancelled: false, defaultPath };
-  const selected = options.picker ? await options.picker(defaultPath) : options.prompt ? await options.prompt(defaultPath) : defaultPath;
-  if (!selected) return { cancelled: true, defaultPath };
-  return { installationRoot: selected, cancelled: false, defaultPath };
+export interface ReceiptBackedHarnessPaths {
+  paths: HarnessPaths;
+  receipt?: InstallationReceipt;
+}
+
+/** Resolve normal maintenance paths, following the strict receipt when no explicit root is supplied. */
+export async function resolveReceiptBackedHarnessPaths(options: PathOptions = {}): Promise<ReceiptBackedHarnessPaths> {
+  const initialPaths = resolveHarnessPaths(options);
+  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
+  if (receipt && !options.installationRoot) {
+    return {
+      receipt,
+      paths: resolveHarnessPaths({
+        ...options,
+        installationRoot: receipt.installationRoot,
+        localStateRoot: receipt.localStateRoot,
+        mutableRoot: receipt.localStateRoot
+      })
+    };
+  }
+  return { paths: initialPaths, ...(receipt ? { receipt } : {}) };
 }
 
 export function defaultInstallationRoot(env: Record<string, string | undefined> = process.env): string {

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 
-import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
+import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PRODUCT_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
 import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgejo-mcp';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, RELEASE_ENTRIES, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
@@ -26,7 +26,7 @@ import { run as runProcessObservation } from '../scripts/process-observation.mjs
 import { cleanupInstalledGateWorkspace, resolveInstalledNode, runInstalledMount } from '../scripts/phase7-windows-installed-gate';
 import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, uninstallHarness, UninstallSafetyError } from '../src/windows';
-import { commitInstallationReceipt } from '../src/installation-root';
+import { commitInstallationReceipt, INSTALLATION_CAPACITY_BASIS, INSTALLATION_CAPACITY_FORMULA, INSTALLATION_STAGING_HEADROOM_BYTES, installationReceiptPath, readInstallationReceipt } from '../src/installation-root';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -37,6 +37,7 @@ async function installedGateTemp(suffix = ''): Promise<string> {
 }
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const RELEASE_BUILD_TEST_TIMEOUT_MS = 180_000;
 
 const prepareAgentDependencies = async (): Promise<void> => undefined;
 
@@ -601,7 +602,9 @@ describe('Windows release gate foundations', () => {
     const root = await temp('phase7-paths');
     try {
       const paths = resolveHarnessPaths({ platform: 'win32', env: { LOCALAPPDATA: root, APPDATA: join(root, 'appdata') } });
-      expect(paths.programRoot).toBe(resolve(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV'));
+      expect(paths.programRoot).toBe(resolve(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV', 'program'));
+      const legacyIgnored = resolveHarnessPaths({ platform: 'win32', env: { LOCALAPPDATA: root, DSH_RPGMAKER_PROGRAM_ROOT: join(root, 'legacy-program') } });
+      expect(legacyIgnored.programRoot).toBe(resolve(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV', 'program'));
       expect(paths.mutableRoot).toBe(resolve(root, 'BaiheStudio', 'DSH-RPGMaker-MV'));
       expect(paths.dshHome).toBe(join(paths.mutableRoot, 'state'));
       expect(paths.logsDir).toBe(join(paths.mutableRoot, 'logs'));
@@ -797,7 +800,7 @@ describe('Windows release gate foundations', () => {
       await mkdir(dirname(imageMagick), { recursive: true });
       await writeFile(imageMagick, 'fixture');
       await cp(join(REPOSITORY_ROOT, 'tools', 'forgejo-mcp'), join(programRoot, 'tools', 'forgejo-mcp'), { recursive: true });
-      await ensureHarnessLayout({ platform: 'win32', env, installationRoot, mutableRoot, dshHome, programRoot, runtimeDir: runtime });
+      await ensureHarnessLayout({ platform: 'win32', env, installationRoot, mutableRoot, dshHome, runtimeDir: runtime });
       await commitInstallationReceipt({
         product: PRODUCT_NAME,
         owner: PROGRAM_OWNER,
@@ -1276,7 +1279,6 @@ describe('Windows release gate foundations', () => {
         env: { ...env, APPDATA: appData, DEEPSEEK_API_KEY: 'must-not-be-written' },
         releaseRoot: REPOSITORY_ROOT,
         installationRoot,
-        programRoot: program,
         mutableRoot: mutable,
         dshHome: state,
         commandRunner: prerequisiteRunner(),
@@ -1293,6 +1295,11 @@ describe('Windows release gate foundations', () => {
         }
       });
       expect(result.paths.programRoot).toBe(program);
+      expect(result.timing?.productVersion).toBe(PRODUCT_VERSION);
+      expect(result.timing?.runtimeVersion).toContain(DSH_VERSION);
+      expect(result.timing?.capacity?.headroomBytes).toBe(INSTALLATION_STAGING_HEADROOM_BYTES);
+      expect(result.timing?.capacity?.formula).toBe(INSTALLATION_CAPACITY_FORMULA);
+      expect(result.timing?.capacity?.basis).toBe(INSTALLATION_CAPACITY_BASIS);
       expect(dependencyPreparations).toBe(1);
       expect(await Bun.file(join(program, 'Install.cmd')).exists()).toBe(true);
       expect(await Bun.file(join(program, PROGRAM_OWNERSHIP_FILE)).exists()).toBe(true);
@@ -1337,7 +1344,8 @@ describe('Windows release gate foundations', () => {
     try {
       const { bin, env: prerequisiteEnv } = await prerequisiteBin(root);
       const mutable = join(root, 'mutable');
-      const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const installationRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const program = join(installationRoot, 'program');
       const state = join(mutable, 'state');
       const retiredGameDesignPreset = join(state, '.agent-presets', 'game-design');
       const retiredAssetPreset = join(state, '.agent-presets', 'asset-workshop');
@@ -1361,7 +1369,7 @@ describe('Windows release gate foundations', () => {
         platform: 'win32',
         env,
         releaseRoot: REPOSITORY_ROOT,
-        programRoot: program,
+        installationRoot,
         mutableRoot: mutable,
         dshHome: state,
         npmExecutable: npm,
@@ -1580,7 +1588,8 @@ describe('Windows release gate foundations', () => {
       }
       await writeFile(join(releaseRoot, 'tools', 'forgejo-mcp', 'forgejo-mcp.exe'), 'tampered release artifact');
       const { env } = await prerequisiteBin(root);
-      const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const installationRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const program = join(installationRoot, 'program');
       const mutable = join(root, 'mutable');
       await mkdir(program, { recursive: true });
       await writeFile(join(program, 'old-tree.txt'), 'prior Forgejo runtime\n');
@@ -1589,7 +1598,7 @@ describe('Windows release gate foundations', () => {
         platform: 'win32',
         env,
         releaseRoot,
-        programRoot: program,
+        installationRoot,
         mutableRoot: mutable,
         dshHome: join(mutable, 'state'),
         commandRunner: prerequisiteRunner(),
@@ -1610,7 +1619,8 @@ describe('Windows release gate foundations', () => {
       const root = await temp(`phase7-transaction-${failure}`);
       try {
         const { env } = await prerequisiteBin(root);
-        const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+        const installationRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+        const program = join(installationRoot, 'program');
         const mutable = join(root, 'mutable');
         const state = join(mutable, 'state');
         await mkdir(program, { recursive: true });
@@ -1625,7 +1635,7 @@ describe('Windows release gate foundations', () => {
           platform: 'win32',
           env,
           releaseRoot: REPOSITORY_ROOT,
-          programRoot: program,
+          installationRoot,
           mutableRoot: mutable,
           dshHome: state,
           commandRunner,
@@ -1659,7 +1669,6 @@ describe('Windows release gate foundations', () => {
         env,
         releaseRoot: REPOSITORY_ROOT,
         installationRoot,
-        programRoot: program,
         mutableRoot: mutable,
         dshHome: join(mutable, 'state'),
         commandRunner: prerequisiteRunner(),
@@ -1693,7 +1702,7 @@ describe('Windows release gate foundations', () => {
       await writeFile(join(state, '.credentials.yaml'), 'provider: local\n');
       await mkdir(resolve(shortcut, '..'), { recursive: true });
       await writeFile(shortcut, 'shortcut');
-      const options = { platform: 'win32', installationRoot, programRoot: program, mutableRoot: mutable, dshHome: state, runtimeDir: join(program, 'runtime', 'dsh'), startMenuShortcutPath: shortcut };
+      const options = { platform: 'win32', installationRoot, mutableRoot: mutable, dshHome: state, runtimeDir: join(program, 'runtime', 'dsh'), startMenuShortcutPath: shortcut };
       await writeFile(join(program, PROGRAM_OWNERSHIP_FILE), `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1 })}\n`);
       await writeFile(join(program, 'install.json'), `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1, installationRoot, localStateRoot: mutable, installationCacheDir: cache, programRoot: program, mutableRoot: mutable, dshHome: state, runtimeDir: join(program, 'runtime', 'dsh') })}\n`);
       const outerRollback = `${program}.rollback-old`;
@@ -1724,7 +1733,8 @@ describe('Windows release gate foundations', () => {
   test('uninstall refuses an unowned program tree before deleting any app state', async () => {
     const root = await temp('phase7-uninstall-safety');
     try {
-      const program = join(root, 'program');
+      const installationRoot = join(root, 'installation');
+      const program = join(installationRoot, 'program');
       const mutable = join(root, 'mutable');
       const cache = join(mutable, 'cache');
       const shortcut = join(root, 'Start Menu', 'DSH.lnk');
@@ -1734,10 +1744,34 @@ describe('Windows release gate foundations', () => {
       await writeFile(join(program, 'user-file.txt'), 'must remain');
       await writeFile(join(cache, 'cache.txt'), 'must remain');
       await writeFile(shortcut, 'must remain');
-      await expect(uninstallHarness({ platform: 'win32', programRoot: program, mutableRoot: mutable, dshHome: join(mutable, 'state'), startMenuShortcutPath: shortcut })).rejects.toBeInstanceOf(UninstallSafetyError);
+      await expect(uninstallHarness({ platform: 'win32', installationRoot, mutableRoot: mutable, dshHome: join(mutable, 'state'), startMenuShortcutPath: shortcut })).rejects.toBeInstanceOf(UninstallSafetyError);
       expect(await Bun.file(join(program, 'user-file.txt')).exists()).toBe(true);
       expect(await Bun.file(join(cache, 'cache.txt')).exists()).toBe(true);
       expect(await Bun.file(shortcut).exists()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed when an existing installation receipt is malformed', async () => {
+    const root = await temp('phase7-invalid-receipt');
+    try {
+      const localStateRoot = join(root, 'local-state');
+      const installationRoot = join(root, 'installation');
+      await mkdir(localStateRoot, { recursive: true });
+      await writeFile(installationReceiptPath(localStateRoot), '{"schemaVersion":1,"product":"wrong"}\n');
+      await expect(installWindowsRelease({
+        platform: 'win32',
+        env: {},
+        releaseRoot: REPOSITORY_ROOT,
+        installationRoot,
+        localStateRoot,
+        commandRunner: prerequisiteRunner(),
+        consent: true,
+        prepareAgentDependencies
+      })).rejects.toThrow(/receipt .*invalid.*refusing to start another installation/i);
+      expect(await Bun.file(join(installationRoot, 'program')).exists()).toBe(false);
+      await expect(readInstallationReceipt(localStateRoot)).rejects.toThrow(/invalid/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1776,7 +1810,33 @@ describe('Windows release gate foundations', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  }, { timeout: 120_000 });
+  }, { timeout: RELEASE_BUILD_TEST_TIMEOUT_MS });
+
+  test('redacts installer compiler exceptions and diagnostics', async () => {
+    const root = await temp('phase7-installer-redaction');
+    try {
+      const secret = 'compiler-secret-7f5d';
+      const runner = async () => ({ exitCode: 17, stdout: `stdout ${secret}`, stderr: `stderr ${secret}` });
+      let failure: unknown;
+      try {
+        await buildReleaseZip({
+          sourceRoot: REPOSITORY_ROOT,
+          outputZip: join(root, 'release.zip'),
+          platform: 'linux',
+          env: { DEEPSEEK_API_KEY: secret },
+          bunExecutable: 'bun',
+          commandRunner: runner
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain('installer.exe compilation failed');
+      expect((failure as Error).message).not.toContain(secret);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   test('repeated setup repairs the local web-profile bundle after a Release ZIP extraction', async () => {
     const root = await temp('phase7-release-repair-选择');
@@ -1792,10 +1852,19 @@ describe('Windows release gate foundations', () => {
         : await runCommand(extractor!, ['-q', archive, '-d', extracted], { platform: process.platform, env: process.env, timeoutMs: 60_000 });
       expect(extractedResult.exitCode).toBe(0);
       expect(await Bun.file(join(extracted, 'Launch.cmd')).exists()).toBe(true);
+      const installerEvidence = JSON.parse(await readFile(join(extracted, 'installer-build.json'), 'utf8')) as {
+        capacity?: { formula?: string; basis?: string; reserveBytes?: number; measuredPayloadBytes?: number; nativeInstallerBytes?: number }
+      };
+      expect(installerEvidence.capacity?.formula).toBe(INSTALLATION_CAPACITY_FORMULA);
+      expect(installerEvidence.capacity?.basis).toBe(INSTALLATION_CAPACITY_BASIS);
+      expect(installerEvidence.capacity?.reserveBytes).toBe(INSTALLATION_STAGING_HEADROOM_BYTES);
+      expect(installerEvidence.capacity?.measuredPayloadBytes).toBeGreaterThan(0);
+      expect(installerEvidence.capacity?.nativeInstallerBytes).toBeGreaterThan(0);
 
       const { bin, env: prerequisiteEnv } = await prerequisiteBin(root);
       const mutable = join(root, 'Mutable state 选择 with spaces');
-      const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const installationRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const program = join(installationRoot, 'program');
       const state = join(mutable, 'state');
       const npm = join(bin, 'npm.cmd');
       const env = {
@@ -1810,7 +1879,7 @@ describe('Windows release gate foundations', () => {
         platform: 'win32',
         env,
         releaseRoot: extracted,
-        programRoot: program,
+        installationRoot,
         mutableRoot: mutable,
         dshHome: state,
         npmExecutable: npm,
@@ -1832,7 +1901,7 @@ describe('Windows release gate foundations', () => {
         platform: 'win32',
         env,
         releaseRoot: extracted,
-        programRoot: program,
+        installationRoot,
         mutableRoot: mutable,
         dshHome: state,
         npmExecutable: npm,
@@ -1853,7 +1922,7 @@ describe('Windows release gate foundations', () => {
         platform: 'win32',
         env,
         dshHome: state,
-        programRoot: program,
+        installationRoot,
         mutableRoot: mutable,
         runtimeDir: join(program, 'runtime', 'dsh'),
         mcporterRuntimeDir: join(program, 'runtime', 'mcporter'),
@@ -1874,14 +1943,14 @@ describe('Windows release gate foundations', () => {
       const staleManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { dshRpgMaker?: { dshVersion?: string; revision?: number } };
       staleManifest.dshRpgMaker = { dshVersion: DSH_VERSION, revision: 2 };
       await writeFile(manifestPath, JSON.stringify(staleManifest));
-      const stale = await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') });
+      const stale = await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, installationRoot, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') });
       expect(stale.valid).toBe(false);
       expect(stale.errors.join(' ')).toMatch(/not built for pinned DSH/i);
       const repairedStalePreparation = await prepareRpgMakerLaunch(launchOptions);
       expect(repairedStalePreparation.managedWebProfile.materialized).toBe(true);
       const profilePackage = join(state, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
       await rm(profilePackage, { recursive: true, force: true });
-      const broken = await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') });
+      const broken = await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, installationRoot, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') });
       expect(broken.valid).toBe(false);
       expect(broken.errors.join(' ')).toMatch(/installed profile package/i);
 
@@ -1889,11 +1958,11 @@ describe('Windows release gate foundations', () => {
       expect(repairedPreparation.managedWebProfile.valid).toBe(true);
       expect(repairedPreparation.managedWebProfile.materialized).toBe(true);
       expect(repairedPreparation.managedWebProfile.packages).toHaveLength(4);
-      expect((await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, programRoot: program, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') })).valid).toBe(true);
+      expect((await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, installationRoot, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') })).valid).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  }, { timeout: 120_000 });
+  }, { timeout: RELEASE_BUILD_TEST_TIMEOUT_MS });
 
   test('adds fixed binding args only for the project-neutral DSH web launch', async () => {
     const root = await temp('phase7-launch');
@@ -1909,7 +1978,7 @@ describe('Windows release gate foundations', () => {
         platform: 'win32',
         dshHome: join(root, 'mutable', 'state'),
         mutableRoot: join(root, 'mutable'),
-        programRoot: join(root, 'program'),
+        installationRoot: join(root, 'installation'),
         dshExecutable: dsh,
         bindWeb: true,
         portProbe: async () => { probes += 1; return probes > 1; },
@@ -1920,8 +1989,8 @@ describe('Windows release gate foundations', () => {
       });
       expect(args).toEqual(['--profile', 'web', '--patch', 'composition.yml', '--host', '127.0.0.1', '--port', '3081']);
       expect(opened).toEqual(['http://127.0.0.1:3081/']);
-      expect(result.cwd).toBe(join(root, 'program', 'neutral'));
-      expect(childEnv.DSH_FORGEJO_MCP_COMMAND).toBe(forgejoMcpExecutablePath(join(root, 'program')));
+      expect(result.cwd).toBe(join(root, 'installation', 'program', 'neutral'));
+      expect(childEnv.DSH_FORGEJO_MCP_COMMAND).toBe(forgejoMcpExecutablePath(join(root, 'installation', 'program')));
       await expect(Bun.file(join(root, 'mutable', 'recent-projects.json')).exists()).resolves.toBe(false);
       launched.exitCode = 0;
       launched.emit('exit', 0);

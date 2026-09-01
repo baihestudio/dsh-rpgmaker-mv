@@ -2,8 +2,8 @@ import { cp, mkdir, mkdtemp, readFile, realpath, rename as fsRename, rm, writeFi
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { bootstrapRuntime, findDshExecutable, findDshJavaScriptEntrypoint, type BootstrapOptions, type BootstrapResult } from './bootstrap';
-import { resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
+import { bootstrapRuntime, resolveDshEntrypoint, type BootstrapOptions, type BootstrapResult } from './bootstrap';
+import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 import { pathExists } from './project';
@@ -16,7 +16,7 @@ import {
   WORKSPACE_MCP_AGENT_ROW_ID
 } from './workspace-mcp';
 import { ensureManagedWebProfile, type ManagedWebProfileOptions, type ManagedWebProfileResult } from './managed-web-profile';
-import { readInstallationReceipt } from './installation-root';
+import { resolveReceiptBackedHarnessPaths } from './installation-root';
 
 export const RPGMAKER_MV_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
 export const RPGMAKER_MV_MCP_VERSION = '0.1.0';
@@ -639,11 +639,7 @@ async function validatePresetComposition(
 export async function deployRpgMakerPresets(options: RpgMakerPresetDeploymentOptions): Promise<RpgMakerPresetDeployment> {
   const platform = options.platform ?? process.platform;
   const ambientEnv = options.env ?? process.env;
-  const initialPaths = resolveHarnessPaths({ ...options, platform, env: ambientEnv });
-  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
-  const paths = receipt && !options.programRoot && !options.installationRoot
-    ? resolveHarnessPaths({ ...options, platform, env: ambientEnv, installationRoot: receipt.installationRoot, programRoot: receipt.programRoot, mutableRoot: receipt.localStateRoot, localStateRoot: receipt.localStateRoot })
-    : initialPaths;
+  const { paths } = await resolveReceiptBackedHarnessPaths({ ...options, platform, env: ambientEnv });
   const env = { ...ambientEnv, DSH_HOME: paths.dshHome };
   const agentPreset = options.agentPreset ?? RPGMAKER_PRESET_ID;
   if (!CUSTOM_AGENT_PRESET_IDS.includes(agentPreset as typeof CUSTOM_AGENT_PRESET_IDS[number])) {
@@ -682,11 +678,7 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   const platform = options.platform ?? process.platform;
   if (platform !== 'win32') throw new RpgMakerStartupError('RPG Maker Agent is supported on Windows only.');
   const ambientEnv = options.env ?? process.env;
-  const initialPaths = resolveHarnessPaths({ ...options, platform, env: ambientEnv });
-  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
-  const paths = receipt && !options.programRoot && !options.installationRoot
-    ? resolveHarnessPaths({ ...options, platform, env: ambientEnv, installationRoot: receipt.installationRoot, programRoot: receipt.programRoot, mutableRoot: receipt.localStateRoot, localStateRoot: receipt.localStateRoot })
-    : initialPaths;
+  const { paths } = await resolveReceiptBackedHarnessPaths({ ...options, platform, env: ambientEnv });
   const env = { ...ambientEnv, DSH_HOME: paths.dshHome };
   const agentPreset = options.agentPreset ?? RPGMAKER_PRESET_ID;
   if (!CUSTOM_AGENT_PRESET_IDS.includes(agentPreset as typeof CUSTOM_AGENT_PRESET_IDS[number])) {
@@ -698,7 +690,6 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
     platform,
     env,
     dshHome: paths.dshHome,
-    programRoot: paths.programRoot,
     mutableRoot: paths.mutableRoot,
     runtimeDir: paths.runtimeDir,
     nodeExecutable: options.jsExecutable ?? options.nodeExecutable,
@@ -710,7 +701,7 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   if (!dshBootstrap.verification.valid) {
     throw new RpgMakerStartupError(`Pinned DSH runtime is not usable: ${dshBootstrap.verification.errors.join('; ')}`);
   }
-  const dshExecutable = options.dshExecutable ?? dshBootstrap.verification.dshExecutable ?? await findDshJavaScriptEntrypoint(paths.runtimeDir) ?? await findDshExecutable(paths.runtimeDir, platform);
+  const dshExecutable = options.dshExecutable ?? dshBootstrap.verification.dshExecutable ?? await resolveDshEntrypoint(paths.runtimeDir, platform);
   if (!dshExecutable) throw new RpgMakerStartupError('Pinned DSH executable was not found; refusing to launch an unverified project-neutral Host.');
   if (!(await pathExists(dshExecutable))) {
     throw new RpgMakerStartupError(`DSH executable does not exist: ${dshExecutable}. Run bootstrap, then retry.`);
@@ -722,7 +713,6 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
     platform,
     env,
     dshHome: paths.dshHome,
-    programRoot: paths.programRoot,
     mutableRoot: paths.mutableRoot,
     runtimeDir: paths.runtimeDir,
     nodeExecutable: options.jsExecutable ?? options.nodeExecutable,
@@ -751,7 +741,6 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
     platform,
     env,
     dshHome: paths.dshHome,
-    programRoot: paths.programRoot,
     mutableRoot: paths.mutableRoot,
     runtimeDir: paths.runtimeDir,
     dshExecutable,
@@ -772,7 +761,6 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
     platform,
     env,
     dshHome: paths.dshHome,
-    programRoot: paths.programRoot,
     mutableRoot: paths.mutableRoot,
     runtimeDir: paths.runtimeDir,
     dshExecutable,
@@ -806,11 +794,7 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
   if (options.dshArgs) addFixedWebBinding(options.dshArgs);
   await ensureLaunchPort({ ...options, bindWeb: true, webHost: WINDOWS_DSH_HOST, webPort: WINDOWS_DSH_PORT });
   const deployment = await prepareRpgMakerLaunch(options);
-  const initialPaths = resolveHarnessPaths(options);
-  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
-  const paths = receipt && !options.programRoot && !options.installationRoot
-    ? resolveHarnessPaths({ ...options, installationRoot: receipt.installationRoot, programRoot: receipt.programRoot, mutableRoot: receipt.localStateRoot, localStateRoot: receipt.localStateRoot })
-    : initialPaths;
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   const env = { ...(options.env ?? process.env), DSH_HOME: paths.dshHome };
   const ownedEnvironment = {
     [MCPORTER_RUNTIME_ENV]: deployment.mcporterRuntimeDir,

@@ -4,7 +4,6 @@ import { renderNdjsonEvent, renderPlainEvent, type InstallationEventListener, ty
 
 export interface InstallationRendererIO {
   stdout: { write: (text: string) => unknown };
-  stderr?: { write: (text: string) => unknown };
 }
 
 function boundedError(message: string | undefined, limit = 2_000): string | undefined {

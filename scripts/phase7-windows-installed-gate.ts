@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { strict as assert } from 'node:assert';
 import { fileURLToPath } from 'node:url';
 
-import { DSH_VERSION, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, withEnvironmentPath } from '../src/config';
+import { DSH_VERSION, PRODUCT_VERSION, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, withEnvironmentPath } from '../src/config';
 import { verifyRuntime } from '../src/bootstrap';
 import { prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, type CommandRunner, withoutCredentials } from '../src/process';
 import { verifyRpgMakerMcpRuntime } from '../src/rpgmaker';
@@ -16,7 +16,7 @@ import { PNPM_VERSION, verifyPnpmRuntimeForDoctor } from '../src/profile';
 import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
 import { atLeast, verifyWindowsPrerequisites } from '../src/prerequisites';
 import { buildReleaseZip, inspectReleaseZip, INSTALLER_EXECUTABLE_NAME, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
-import { readInstallationReceipt } from '../src/installation-root';
+import { INSTALLATION_CAPACITY_FORMULA, INSTALLATION_STAGING_HEADROOM_BYTES, readInstallationReceipt } from '../src/installation-root';
 import { verifyDesktopHostPayload, DESKTOP_HOST_PAYLOAD_RELATIVE } from '../src/desktop-host';
 import {
   JS_RUNNER_ENV,
@@ -477,6 +477,9 @@ async function runInstaller(installer: string, args: string[], cwd: string, env:
 async function main(): Promise<void> {
   if (process.platform !== 'win32') throw new Error('The disposable fresh-install gate is a Windows-only native acceptance.');
   const argv = process.argv.slice(2);
+  console.log('PREFLIGHT: expected duration 5-8 minutes on the disposable native Windows host.');
+  console.log('PREFLIGHT: disposable artifacts/roots include a temporary Release ZIP, extracted Release tree, installation/program tree, local-state/logs, shortcut, and npm cache; all are removed during gate cleanup.');
+  console.log('PREFLIGHT: external services are the npm registry for release-owned npm ci and local loopback DSH Web/MCP probes; no WinGet or system-prerequisite mutation is performed.');
   const sourceRoot = resolve(requiredOption(argv, 'source-root'));
   const desktopHostRoot = resolve(requiredOption(argv, 'desktop-host-root'));
   const requestedBun = optionalOption(argv, 'bun-executable');
@@ -518,6 +521,11 @@ async function main(): Promise<void> {
     const inspection = await inspectReleaseZip({ zipPath: archive, platform: 'win32', env: sourceEnv, requireDesktopHost: true });
     assert.equal(inspection.valid, true, `fresh Release inspection failed: ${inspection.missing.join(', ')}`);
     await extractRelease(archive, extractedRelease, sourceEnv);
+    const installerBuildEvidence = JSON.parse(await (await import('node:fs/promises')).readFile(join(extractedRelease, 'installer-build.json'), 'utf8')) as { capacity?: { formula?: string; reserveBytes?: number; measuredPayloadBytes?: number; nativeInstallerBytes?: number } };
+    assert.equal(installerBuildEvidence.capacity?.formula, INSTALLATION_CAPACITY_FORMULA);
+    assert.equal(installerBuildEvidence.capacity?.reserveBytes, INSTALLATION_STAGING_HEADROOM_BYTES);
+    assert.ok((installerBuildEvidence.capacity?.measuredPayloadBytes ?? 0) > 0);
+    assert.ok((installerBuildEvidence.capacity?.nativeInstallerBytes ?? 0) > 0);
     const installer = join(extractedRelease, INSTALLER_EXECUTABLE_NAME);
     assert.equal(await exists(installer), true, 'fresh Release did not contain installer.exe');
     const host = await verifyDesktopHostPayload(join(extractedRelease, DESKTOP_HOST_PAYLOAD_RELATIVE));
@@ -555,7 +563,7 @@ async function main(): Promise<void> {
     assert.ok(firstReceipt, 'fresh install did not commit an installation receipt');
     assert.equal(firstReceipt.installationRoot.toLowerCase(), installationRoot.toLowerCase());
     await verifyInstalledRuntimes(programRoot, nodeExecutable, npmExecutable);
-    const firstProfile = await verifyManagedWebProfile({ platform: 'win32', env: targetEnv, dshHome, programRoot, mutableRoot: localStateRoot, runtimeDir: join(programRoot, 'runtime', 'dsh') });
+    const firstProfile = await verifyManagedWebProfile({ platform: 'win32', env: targetEnv, dshHome, installationRoot, mutableRoot: localStateRoot, runtimeDir: join(programRoot, 'runtime', 'dsh') });
     assert.equal(firstProfile.valid, true, `fresh installed Web profile failed: ${firstProfile.errors.join('; ')}`);
     const firstHost = await verifyDesktopHostPayload(join(programRoot, DESKTOP_HOST_PAYLOAD_RELATIVE));
     assert.equal(firstHost.valid, true, `installed desktop host failed: ${firstHost.errors.join('; ')}`);
@@ -579,7 +587,7 @@ async function main(): Promise<void> {
     assert.ok(secondReceipt, 'repair did not preserve the installation receipt');
     assert.equal(secondReceipt.installationRoot.toLowerCase(), firstReceipt.installationRoot.toLowerCase());
     await verifyInstalledRuntimes(programRoot, nodeExecutable, npmExecutable);
-    const repairedProfile = await verifyManagedWebProfile({ platform: 'win32', env: targetEnv, dshHome, programRoot, mutableRoot: localStateRoot, runtimeDir: join(programRoot, 'runtime', 'dsh') });
+    const repairedProfile = await verifyManagedWebProfile({ platform: 'win32', env: targetEnv, dshHome, installationRoot, mutableRoot: localStateRoot, runtimeDir: join(programRoot, 'runtime', 'dsh') });
     assert.equal(repairedProfile.valid, true, `receipt-driven repair Web profile failed: ${repairedProfile.errors.join('; ')}`);
 
     const evidenceDir = join(localStateRoot, 'logs', 'install-runs');
@@ -588,8 +596,10 @@ async function main(): Promise<void> {
     const logFiles = evidenceEntries.filter((entry) => entry.endsWith('.log'));
     assert.equal(timingFiles.length, 2, 'fresh install and repair did not leave exactly two timing records');
     assert.equal(logFiles.length, 2, 'fresh install and repair did not leave exactly two diagnostic logs');
-    const timings = await Promise.all(timingFiles.map(async (entry) => JSON.parse(await (await import('node:fs/promises')).readFile(join(evidenceDir, entry), 'utf8')) as { operation?: string; finalStatus?: string; installationRoot?: string; phases?: unknown[] }));
+    const timings = await Promise.all(timingFiles.map(async (entry) => JSON.parse(await (await import('node:fs/promises')).readFile(join(evidenceDir, entry), 'utf8')) as { operation?: string; finalStatus?: string; installationRoot?: string; phases?: unknown[]; productVersion?: string; runtimeVersion?: string; capacity?: { formula?: string; reserveBytes?: number; requiredBytes?: number; availableBytes?: number } }));
     assert.equal(timings.every((item) => item.finalStatus === 'succeeded' && item.installationRoot?.toLowerCase() === installationRoot.toLowerCase() && (item.phases?.length ?? 0) >= 8), true, 'timing records did not capture all successful phases and the selected root');
+    assert.equal(timings.every((item) => item.productVersion === PRODUCT_VERSION && item.runtimeVersion === DSH_VERSION), true, 'timing records did not keep product and runtime versions distinct');
+    assert.equal(timings.every((item) => item.capacity?.formula === INSTALLATION_CAPACITY_FORMULA && item.capacity.reserveBytes === INSTALLATION_STAGING_HEADROOM_BYTES && (item.capacity.requiredBytes ?? 0) > 0), true, 'timing records did not capture installation capacity evidence');
     assert.equal(timings.some((item) => item.operation === 'repair'), true, 'second timing record was not classified as repair');
     assert.equal(await exists(join(programRoot, 'runtime', 'bun')), false, 'stale Bun runtime directory was installed');
     assert.equal(await exists(join(programRoot, 'runtime', 'bun.lock')), false, 'stale Bun lock was installed');

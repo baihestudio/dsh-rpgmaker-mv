@@ -4,10 +4,10 @@ import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'no
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type HarnessPaths, type PathOptions } from './config';
+import { PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type HarnessPaths, type PathOptions } from './config';
 import { resolveWindowsPwsh } from './executable';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
-import { readInstallationReceipt } from './installation-root';
+import { resolveReceiptBackedHarnessPaths } from './installation-root';
 
 export interface HarnessLayout {
   paths: HarnessPaths;
@@ -17,11 +17,7 @@ export interface HarnessLayout {
 }
 
 export async function ensureHarnessLayout(options: PathOptions = {}): Promise<HarnessLayout> {
-  const initialPaths = resolveHarnessPaths(options);
-  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
-  const paths = receipt && !options.programRoot && !options.installationRoot
-    ? resolveHarnessPaths({ ...options, installationRoot: receipt.installationRoot, programRoot: receipt.programRoot, mutableRoot: receipt.localStateRoot, localStateRoot: receipt.localStateRoot })
-    : initialPaths;
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   await mkdir(paths.mutableRoot, { recursive: true });
   await mkdir(paths.dshHome, { recursive: true });
   await mkdir(paths.logsDir, { recursive: true });
@@ -133,11 +129,7 @@ export interface ShortcutCreationOptions extends PathOptions {
 export async function createStartMenuShortcut(options: ShortcutCreationOptions): Promise<string> {
   const platform = options.platform ?? process.platform;
   if (platform !== 'win32') throw new Error('Start Menu shortcuts are supported on Windows only.');
-  const initialPaths = resolveHarnessPaths(options);
-  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
-  const paths = receipt && !options.programRoot && !options.installationRoot
-    ? resolveHarnessPaths({ ...options, installationRoot: receipt.installationRoot, programRoot: receipt.programRoot, mutableRoot: receipt.localStateRoot, localStateRoot: receipt.localStateRoot })
-    : initialPaths;
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   const env = options.env ?? process.env;
   const helperScript = options.helperScript ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'create-shortcut.ps1');
   const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform, env }) ?? 'pwsh.exe';
@@ -229,7 +221,7 @@ function sameWindowsPath(left: unknown, right: string, platform: string): boolea
 
 export async function validateHarnessOwnership(options: PathOptions = {}): Promise<void> {
   const platform = options.platform ?? process.platform;
-  const paths = resolveHarnessPaths(options);
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   if (!(await fileIsDirectory(paths.programRoot))) throw new UninstallSafetyError(`Harness program root does not exist: ${paths.programRoot}`);
   const markerPath = join(paths.programRoot, PROGRAM_OWNERSHIP_FILE);
   const marker = await readObject(markerPath);
@@ -312,18 +304,14 @@ export interface UninstallResult {
 export async function uninstallHarness(options: UninstallOptions = {}): Promise<UninstallResult> {
   const platform = options.platform ?? process.platform;
   if (platform !== 'win32') throw new Error('The Windows harness uninstaller can only run on Windows.');
-  const initialPaths = resolveHarnessPaths(options);
-  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
-  const paths = receipt && !options.programRoot && !options.installationRoot
-    ? resolveHarnessPaths({ ...options, installationRoot: receipt.installationRoot, programRoot: receipt.programRoot, mutableRoot: receipt.localStateRoot, localStateRoot: receipt.localStateRoot })
-    : initialPaths;
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   const removed: string[] = [];
   const preserved = await recoveryEntries(dirname(paths.programRoot), basename(paths.programRoot));
   const programStat = await lstat(paths.programRoot).catch(() => undefined);
   if (programStat?.isSymbolicLink()) throw new UninstallSafetyError(`Refusing to remove ${paths.programRoot}: the harness program root is a symbolic link.`);
   if (programStat && !programStat.isDirectory()) throw new UninstallSafetyError(`Refusing to remove ${paths.programRoot}: the harness program root is not a directory.`);
   const programExists = programStat?.isDirectory() ?? false;
-  if (programExists) await validateHarnessOwnership({ ...options, installationRoot: paths.installationRoot, programRoot: paths.programRoot, mutableRoot: paths.mutableRoot, localStateRoot: paths.localStateRoot, dshHome: paths.dshHome, runtimeDir: paths.runtimeDir });
+  if (programExists) await validateHarnessOwnership({ ...options, installationRoot: paths.installationRoot, mutableRoot: paths.mutableRoot, localStateRoot: paths.localStateRoot, dshHome: paths.dshHome, runtimeDir: paths.runtimeDir });
 
   // A missing active tree is already uninstalled. Never remove a shortcut or
   // recovery tree in that case: neither can be proven to be ours here.

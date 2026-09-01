@@ -251,8 +251,30 @@ export function commandFailure(command: string, args: string[], result: CommandR
 
 export function childExitCode(child: unknown): Promise<number> {
   if (!child || typeof (child as { once?: unknown }).once !== 'function') return Promise.resolve(0);
+  const lifecycle = child as ChildProcess;
+  if (typeof lifecycle.exitCode === 'number') return Promise.resolve(lifecycle.exitCode);
+  if (lifecycle.signalCode !== null && lifecycle.signalCode !== undefined) return Promise.resolve(1);
   return new Promise((resolve) => {
-    (child as ChildProcess).once('error', () => resolve(1));
-    (child as ChildProcess).once('exit', (code) => resolve(code ?? 1));
+    let settled = false;
+    const listeners: Array<[string, (...args: unknown[]) => void]> = [];
+    const cleanup = (): void => {
+      if (typeof lifecycle.removeListener !== 'function') return;
+      for (const [event, listener] of listeners) lifecycle.removeListener(event, listener);
+    };
+    const finish = (code: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(typeof code === 'number' ? code : 1);
+    };
+    const register = (event: string, listener: (...args: unknown[]) => void): void => {
+      listeners.push([event, listener]);
+      lifecycle.once(event, listener);
+    };
+    register('error', () => finish(1));
+    register('exit', (code) => finish(code));
+    register('close', (code) => finish(code));
+    if (typeof lifecycle.exitCode === 'number') finish(lifecycle.exitCode);
+    else if (lifecycle.signalCode !== null && lifecycle.signalCode !== undefined) finish(1);
   });
 }

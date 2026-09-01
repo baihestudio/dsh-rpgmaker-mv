@@ -15,8 +15,8 @@ import { createInterface } from 'node:readline/promises';
 import { stdin as processStdin, stdout as processStdout } from 'node:process';
 
 export interface CliIO {
-  stdout: { write: (text: string) => unknown };
-  stderr: { write: (text: string) => unknown };
+  stdout: { write: (text: string) => unknown; isTTY?: boolean };
+  stderr: { write: (text: string) => unknown; isTTY?: boolean };
 }
 
 export interface CliDependencies {
@@ -88,7 +88,6 @@ function helpText(): string {
     '  --zip <path>              Release ZIP path (release-zip)',
     '  --installation-root <path> First-install root for program, runtimes, and cache',
     '  --local-state-root <path> Fixed per-user local state root override',
-    '  --program-root <path>     Installed program tree override (maintenance seam)',
     '  --mutable-root <path>     Alias for the fixed local state root',
     '  --start-menu-shortcut <path> Override the owned Start Menu shortcut path',
     '  --dsh-home <path>         Override DSH_HOME for this invocation',
@@ -129,7 +128,6 @@ function baseOptions(parsed: ParsedArgs, dependencies: CliDependencies): Record<
     runtimeDir: option(parsed.values, 'runtime-dir'),
     installationRoot: option(parsed.values, 'installation-root'),
     localStateRoot: option(parsed.values, 'local-state-root'),
-    programRoot: option(parsed.values, 'program-root'),
     mutableRoot: option(parsed.values, 'mutable-root'),
     startMenuShortcutPath: option(parsed.values, 'start-menu-shortcut'),
     nodeExecutable: option(parsed.values, 'node-executable'),
@@ -196,6 +194,9 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
   }
 
   try {
+    if (parsed.values['program-root'] !== undefined || parsed.flags.has('program-root')) {
+      throw new Error('--program-root was removed; use --installation-root and its owned program child.');
+    }
     if ((dependencies.platform ?? process.platform) !== 'win32') {
       throw new Error('RPG Maker Agent is supported on Windows only.');
     }
@@ -220,7 +221,7 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
           throw new Error('First installation requires an explicit --installation-root in noninteractive mode.');
         }
       }
-      const mode: InstallationRendererMode = parsed.flags.has('ndjson') ? 'ndjson' : parsed.flags.has('plain') || parsed.flags.has('non-interactive') ? 'plain' : rendererMode({ stdoutIsTTY: io.stdout === process.stdout });
+      const mode: InstallationRendererMode = parsed.flags.has('ndjson') ? 'ndjson' : parsed.flags.has('plain') || parsed.flags.has('non-interactive') ? 'plain' : rendererMode({ stdoutIsTTY: io.stdout.isTTY === true });
       const eventListener = dependencies.installEventListener ?? createInstallationRenderer(mode, io);
       const installationRootPicker = !installationRoot && !receipt
         ? (dependencies.installationPicker ?? (async (defaultPath: string): Promise<string | undefined> => {
@@ -256,7 +257,6 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         localStateRoot,
         dshHome: option(parsed.values, 'dsh-home'),
         runtimeDir: option(parsed.values, 'runtime-dir'),
-        programRoot: option(parsed.values, 'program-root'),
         mutableRoot: option(parsed.values, 'mutable-root'),
         startMenuShortcutPath: option(parsed.values, 'start-menu-shortcut'),
         pwshExecutable: option(parsed.values, 'pwsh-executable'),
@@ -288,7 +288,6 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         localStateRoot: option(parsed.values, 'local-state-root'),
         dshHome: option(parsed.values, 'dsh-home'),
         runtimeDir: option(parsed.values, 'runtime-dir'),
-        programRoot: option(parsed.values, 'program-root'),
         mutableRoot: option(parsed.values, 'mutable-root'),
         startMenuShortcutPath: option(parsed.values, 'start-menu-shortcut'),
         purge: parsed.flags.has('purge')

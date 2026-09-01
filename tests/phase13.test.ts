@@ -18,10 +18,11 @@ import { acquireHarnessLock } from '../src/lock';
 
 describe('Electrobun RPG Maker adapter', () => {
   test('delegates product launch and returns the normal child event', async () => {
-    const programRoot = '/tmp/dsh-rpgmaker-adapter-program';
+    const installationRoot = '/tmp/dsh-rpgmaker-adapter-installation';
+    const programRoot = `${installationRoot}/program`;
     const env = {
       LOCALAPPDATA: '/tmp/dsh-rpgmaker-localappdata',
-      DSH_RPGMAKER_PROGRAM_ROOT: programRoot,
+      DSH_RPGMAKER_INSTALLATION_ROOT: installationRoot,
       DSH_RPGMAKER_DATA_ROOT: '/tmp/dsh-rpgmaker-adapter-data',
       DSH_HOME: '/tmp/dsh-rpgmaker-adapter-data/state',
       DSH_RPGMAKER_RUNTIME: `${programRoot}/runtime/dsh`,
@@ -86,7 +87,7 @@ describe('Electrobun RPG Maker adapter', () => {
     child.signalCode = null;
     let releaseCount = 0;
 
-    const running = runRpgMakerSidecar({ DSH_RPGMAKER_PROGRAM_ROOT: '/tmp/already-exited-program' }, {
+    const running = runRpgMakerSidecar({ DSH_RPGMAKER_INSTALLATION_ROOT: '/tmp/already-exited-installation' }, {
       platform: 'win32',
       loadProductLauncher: async () => ({
         launchRpgmakerProject: async () => ({
@@ -114,7 +115,7 @@ describe('Electrobun RPG Maker adapter', () => {
       return registered;
     }) as typeof child.once;
 
-    const running = runRpgMakerSidecar({ DSH_RPGMAKER_PROGRAM_ROOT: '/tmp/race-program' }, {
+    const running = runRpgMakerSidecar({ DSH_RPGMAKER_INSTALLATION_ROOT: '/tmp/race-installation' }, {
       platform: 'win32',
       loadProductLauncher: async () => ({
         launchRpgmakerProject: async () => ({
