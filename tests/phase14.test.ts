@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -18,7 +18,7 @@ import {
   copyDesktopHostPayload,
   verifyDesktopHostPayload,
 } from '../src/desktop-host';
-import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, INSTALLER_BUILD_EVIDENCE_NAME, INSTALLER_EXECUTABLE_NAME, RELEASE_ENTRIES, ReleaseGateError } from '../src/release-gate';
+import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, ReleaseGateError } from '../src/release-gate';
 import {
   RunningAgentCloseDeclinedError,
   confirmAndStopOwnedAgent,
@@ -28,20 +28,10 @@ import {
 } from '../src/install-lifecycle';
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME } from '../src/config';
 import { DSH_RUNTIME_PEER_DEPENDENCIES } from '../src/bootstrap';
+import { releaseFixture } from './fixtures/release-fixture';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
-}
-
-async function releaseFixture(root: string): Promise<string> {
-  const releaseRoot = join(root, 'release fixture');
-  await mkdir(releaseRoot, { recursive: true });
-  for (const entry of RELEASE_ENTRIES) {
-    await cp(join(process.cwd(), entry), join(releaseRoot, entry), { recursive: true });
-  }
-  await writeFile(join(releaseRoot, INSTALLER_EXECUTABLE_NAME), 'synthetic installer executable\n');
-  await writeFile(join(releaseRoot, INSTALLER_BUILD_EVIDENCE_NAME), '{"fixture":true}\n');
-  return releaseRoot;
 }
 
 function runBunScript(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {

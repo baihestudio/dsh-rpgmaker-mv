@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdir, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -15,6 +15,18 @@ import { redactSensitive } from './process';
 
 export const SIDECAR_STARTUP_FAILURE_EVENT = 'rpgmaker-sidecar-startup-failed';
 const SIDECAR_DIAGNOSTIC_LIMIT = 2_000;
+
+export type SidecarStartupDiagnosticOperation =
+  | 'load-installed-launcher'
+  | 'launch-product'
+  | 'wait-for-child';
+
+export type SidecarStartupDiagnosticCategory =
+  | 'installed-launcher-missing'
+  | 'installed-launcher-load-failed'
+  | 'product-launch-failed'
+  | 'product-child-status-failed'
+  | 'product-child-exited';
 
 /**
  * The native host stages this file at
@@ -46,18 +58,25 @@ function sidecarLocalStateRoot(env: Record<string, string | undefined>, dependen
   );
 }
 
-function boundedDiagnostic(error: unknown, env: Record<string, string | undefined>): string {
+function boundedStderrDiagnostic(error: unknown, env: Record<string, string | undefined>): string {
   const message = redactDiagnosticCredentials(redactSensitive(error instanceof Error ? error.message : String(error), env)).trim();
   if (message.length <= SIDECAR_DIAGNOSTIC_LIMIT) return message;
   const marker = '[diagnostic truncated]\n';
   return `${marker}${message.slice(0, SIDECAR_DIAGNOSTIC_LIMIT - marker.length)}`;
 }
 
+function safeDiagnosticSummary(summary: string, env: Record<string, string | undefined>): string {
+  const redacted = redactSensitive(summary, env).trim();
+  if (redacted.length <= SIDECAR_DIAGNOSTIC_LIMIT) return redacted;
+  const marker = '[diagnostic truncated]\n';
+  return `${marker}${redacted.slice(0, SIDECAR_DIAGNOSTIC_LIMIT - marker.length)}`;
+}
+
 /**
- * The shared redactor knows the product's named environment secrets.  A
- * loader or dependency may still surface a conventional credential field
- * without putting its value in the environment, so startup diagnostics apply
- * one final key-oriented pass before they are persisted.
+ * The shared redactor knows the product's named environment secrets. The
+ * non-persistent stderr path may still surface a conventional credential field
+ * without putting its value in the environment, so it applies one final
+ * key-oriented pass before printing.
  */
 function redactDiagnosticCredentials(value: string): string {
   return value.replace(
@@ -69,7 +88,11 @@ function redactDiagnosticCredentials(value: string): string {
 export interface SidecarStartupDiagnostic {
   at: string;
   event: typeof SIDECAR_STARTUP_FAILURE_EVENT;
-  error: string;
+  operation: SidecarStartupDiagnosticOperation;
+  category: SidecarStartupDiagnosticCategory;
+  summary: string;
+  modulePath?: string;
+  exitCode?: number;
 }
 
 export type SidecarStartupDiagnosticWriter = (path: string, content: string) => Promise<void>;
@@ -77,7 +100,7 @@ export type SidecarStartupDiagnosticWriter = (path: string, content: string) => 
 async function appendSidecarStartupDiagnostic(
   env: Record<string, string | undefined>,
   dependencies: SidecarDependencies,
-  error: unknown,
+  details: Omit<SidecarStartupDiagnostic, 'at' | 'event'>,
 ): Promise<void> {
   try {
     const localStateRoot = sidecarLocalStateRoot(env, dependencies);
@@ -85,10 +108,8 @@ async function appendSidecarStartupDiagnostic(
     const diagnostic: SidecarStartupDiagnostic = {
       at: (dependencies.now ?? (() => new Date()))().toISOString(),
       event: SIDECAR_STARTUP_FAILURE_EVENT,
-      error: boundedDiagnostic(error, env)
+      ...details,
     };
-    // Redact the error before serialization so credential replacement cannot
-    // consume JSON delimiters and leave an invalid diagnostic record.
     const content = `${JSON.stringify(diagnostic)}\n`;
     if (dependencies.writeStartupDiagnostic) await dependencies.writeStartupDiagnostic(path, content);
     else {
@@ -99,6 +120,85 @@ async function appendSidecarStartupDiagnostic(
     // The startup diagnostic is optional. Never replace the original sidecar
     // failure with a local-state permission or filesystem error.
   }
+}
+
+class InstalledProductLauncherMissingError extends Error {
+  readonly modulePath: string;
+
+  constructor(modulePath: string) {
+    super(`The installed RPG Maker product launcher is missing: ${modulePath}`);
+    this.name = 'InstalledProductLauncherMissingError';
+    this.modulePath = modulePath;
+  }
+}
+
+function installedProductLauncherPath(programRoot: string): string {
+  return join(programRoot, 'src', 'rpgmaker.ts');
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function startupDiagnosticDetails(
+  operation: SidecarStartupDiagnosticOperation,
+  programRoot: string | undefined,
+  error: unknown,
+  env: Record<string, string | undefined>,
+): Omit<SidecarStartupDiagnostic, 'at' | 'event'> {
+  if (operation === 'load-installed-launcher') {
+    const modulePath = programRoot ? installedProductLauncherPath(programRoot) : undefined;
+    if (error instanceof InstalledProductLauncherMissingError) {
+      return {
+        operation,
+        category: 'installed-launcher-missing',
+        summary: safeDiagnosticSummary(`Installed product launcher is missing: ${modulePath ?? error.modulePath}`, env),
+        modulePath: modulePath ?? error.modulePath,
+      };
+    }
+    return {
+      operation,
+      category: 'installed-launcher-load-failed',
+      summary: safeDiagnosticSummary('Installed product launcher could not be loaded.', env),
+      ...(modulePath ? { modulePath } : {}),
+    };
+  }
+  if (operation === 'launch-product') {
+    return {
+      operation,
+      category: 'product-launch-failed',
+      summary: safeDiagnosticSummary('Product launcher failed before readiness.', env),
+    };
+  }
+  return {
+    operation,
+    category: 'product-child-status-failed',
+    summary: safeDiagnosticSummary('Product launcher child status could not be observed.', env),
+  };
+}
+
+function childExitDiagnostic(
+  exitCode: number,
+  env: Record<string, string | undefined>,
+): Omit<SidecarStartupDiagnostic, 'at' | 'event'> {
+  if (!Number.isSafeInteger(exitCode)) {
+    return {
+      operation: 'wait-for-child',
+      category: 'product-child-status-failed',
+      summary: safeDiagnosticSummary('Product launcher child returned an invalid exit status.', env),
+    };
+  }
+  return {
+    operation: 'wait-for-child',
+    category: 'product-child-exited',
+    summary: safeDiagnosticSummary(`Product launcher child exited with code ${exitCode}.`, env),
+    exitCode,
+  };
 }
 
 export interface ProductLauncherResult {
@@ -177,10 +277,11 @@ function waitForChildExit(child: unknown): Promise<number> {
 }
 
 async function loadInstalledProductLauncher(programRoot: string): Promise<ProductLauncherModule> {
-  const modulePath = join(programRoot, 'src', 'rpgmaker.ts');
+  const modulePath = installedProductLauncherPath(programRoot);
+  if (!(await pathExists(modulePath))) throw new InstalledProductLauncherMissingError(modulePath);
   const loaded = await import(pathToFileURL(modulePath).href) as Partial<ProductLauncherModule>;
   if (typeof loaded.launchRpgmakerProject !== 'function') {
-    throw new Error(`The installed RPG Maker product launcher is missing: ${modulePath}`);
+    throw new Error(`The installed RPG Maker product launcher is invalid: ${modulePath}`);
   }
   return loaded as ProductLauncherModule;
 }
@@ -196,10 +297,13 @@ export async function runRpgMakerSidecar(
 
   let result: ProductLauncherResult | undefined;
   let startupFailed = false;
+  let operation: SidecarStartupDiagnosticOperation = 'load-installed-launcher';
+  let programRoot: string | undefined;
   try {
-    const programRoot = sidecarProgramRoot(dependencies);
+    programRoot = sidecarProgramRoot(dependencies);
     const loadProductLauncher = dependencies.loadProductLauncher ?? loadInstalledProductLauncher;
     const product = await loadProductLauncher(programRoot);
+    operation = 'launch-product';
     result = await product.launchRpgmakerProject({
       platform,
       env,
@@ -218,15 +322,16 @@ export async function runRpgMakerSidecar(
       openExistingSession: async () => undefined,
       notify: () => undefined,
     });
+    operation = 'wait-for-child';
     const wait = dependencies.waitForChildExit ?? waitForChildExit;
     const exitCode = await wait(result.child);
     if (exitCode !== 0) {
-      await appendSidecarStartupDiagnostic(env, dependencies, new Error(`product launcher child exited with code ${exitCode}`));
+      await appendSidecarStartupDiagnostic(env, dependencies, childExitDiagnostic(exitCode, env));
     }
     return exitCode;
   } catch (error) {
     startupFailed = true;
-    await appendSidecarStartupDiagnostic(env, dependencies, error);
+    await appendSidecarStartupDiagnostic(env, dependencies, startupDiagnosticDetails(operation, programRoot, error, env));
     throw error;
   } finally {
     // launchRpgmakerProject also hooks child lifecycle events, but an
@@ -248,7 +353,7 @@ if (import.meta.main) {
   runRpgMakerSidecar()
     .then((code) => { process.exitCode = code; })
     .catch((error: unknown) => {
-      process.stderr.write(`${boundedDiagnostic(error, process.env)}\n`);
+      process.stderr.write(`${boundedStderrDiagnostic(error, process.env)}\n`);
       process.exitCode = 1;
     });
 }

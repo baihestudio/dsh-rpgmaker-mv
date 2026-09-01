@@ -48,10 +48,11 @@ not use the WSL Linux Bun to launch a Windows Electrobun application. The
 packaged sidecar derives the replaceable program root from its own staged
 entrypoint location (`<program>\\desktop-host\\Resources\\app\\payload\\sidecar`),
 so a user-selected installation root works without installer-only environment
-variables. It writes bounded, credential-redacted startup failures to the
-existing per-user log root. Tests may inject a packaged entrypoint and
-test-owned local-state root through the sidecar dependency seam; there is no
-legacy default installation-root fallback in the packaged process.
+variables. It writes bounded, structured startup summaries to the existing
+per-user log root without persisting arbitrary caught error text. Tests may
+inject a packaged entrypoint and test-owned local-state root through the
+sidecar dependency seam; there is no legacy default installation-root fallback
+in the packaged process.
 
 It dynamically loads `src/rpgmaker.ts` from the installed program tree,
 reusing the existing DSH runtime bootstrap, MCP/profile preparation, session

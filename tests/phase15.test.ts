@@ -127,15 +127,19 @@ describe('windows install recovery contracts', () => {
       })).rejects.toBe(original);
 
       const line = (await readFile(join(localStateRoot, 'logs', 'launcher.log'), 'utf8')).trim();
-      const diagnostic = JSON.parse(line) as { at: string; event: string; error: string };
-      expect(diagnostic).toMatchObject({ at: '2026-09-01T00:00:00.000Z', event: SIDECAR_STARTUP_FAILURE_EVENT });
-      expect(diagnostic.error).toContain('startup failed');
-      expect(diagnostic.error).not.toContain(secret);
-      expect(diagnostic.error).not.toContain(bearer);
-      expect(diagnostic.error).not.toContain(basic);
-      expect(diagnostic.error).toContain('Authorization: Bearer [redacted]');
-      expect(diagnostic.error).toContain('authorization: Basic [redacted]');
-      expect(diagnostic.error.length).toBeLessThanOrEqual(2_000);
+      const diagnostic = JSON.parse(line) as { at: string; event: string; operation: string; category: string; summary: string; modulePath?: string };
+      expect(diagnostic).toMatchObject({
+        at: '2026-09-01T00:00:00.000Z',
+        event: SIDECAR_STARTUP_FAILURE_EVENT,
+        operation: 'load-installed-launcher',
+        category: 'installed-launcher-load-failed',
+        summary: 'Installed product launcher could not be loaded.',
+        modulePath: join(root, 'program', 'src', 'rpgmaker.ts'),
+      });
+      expect(line).not.toContain(secret);
+      expect(line).not.toContain(bearer);
+      expect(line).not.toContain(basic);
+      expect(diagnostic.summary.length).toBeLessThanOrEqual(2_000);
 
       const writeFailure = new Error('the original startup failure');
       await expect(runRpgMakerSidecar({}, {
@@ -155,7 +159,70 @@ describe('windows install recovery contracts', () => {
           launchRpgmakerProject: async () => ({ child: childWithExit(9), releaseSession: async () => undefined }),
         }),
       })).resolves.toBe(9);
-      expect(await readFile(join(childFailureState, 'logs', 'launcher.log'), 'utf8')).toMatch(/child exited with code 9/);
+      const childDiagnostic = JSON.parse(await readFile(join(childFailureState, 'logs', 'launcher.log'), 'utf8')) as { operation: string; category: string; summary: string; exitCode?: number };
+      expect(childDiagnostic).toMatchObject({
+        operation: 'wait-for-child',
+        category: 'product-child-exited',
+        summary: 'Product launcher child exited with code 9.',
+        exitCode: 9,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('records only a structured summary for product-launch errors', async () => {
+    const root = await temporary('phase15-sidecar-structured-diagnostic');
+    try {
+      const entrypoint = join(root, 'program', 'desktop-host', 'Resources', 'app', 'payload', 'sidecar', 'dsh-rpgmaker-sidecar.js');
+      const localStateRoot = join(root, 'local-state');
+      const rawChildOutput = 'phase15-raw-child-output-marker-7f4d';
+      const original = new Error(`product launch failed: ${rawChildOutput}`);
+      await expect(runRpgMakerSidecar({}, {
+        platform: 'win32',
+        entrypointPath: entrypoint,
+        localStateRoot,
+        loadProductLauncher: async () => ({
+          launchRpgmakerProject: async () => { throw original; },
+        }),
+      })).rejects.toBe(original);
+
+      const log = await readFile(join(localStateRoot, 'logs', 'launcher.log'), 'utf8');
+      const diagnostic = JSON.parse(log) as { operation: string; category: string; summary: string };
+      expect(diagnostic).toMatchObject({
+        operation: 'launch-product',
+        category: 'product-launch-failed',
+        summary: 'Product launcher failed before readiness.',
+      });
+      expect(log).not.toContain(rawChildOutput);
+      expect(log).not.toContain(original.message);
+      expect(diagnostic.summary.length).toBeLessThanOrEqual(2_000);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the expected installed launcher path in a missing-launcher summary', async () => {
+    const root = await temporary('phase15-sidecar-missing-launcher');
+    try {
+      const programRoot = join(root, 'program');
+      const entrypoint = join(programRoot, 'desktop-host', 'Resources', 'app', 'payload', 'sidecar', 'dsh-rpgmaker-sidecar.js');
+      const localStateRoot = join(root, 'local-state');
+      const modulePath = join(programRoot, 'src', 'rpgmaker.ts');
+      await expect(runRpgMakerSidecar({}, {
+        platform: 'win32',
+        entrypointPath: entrypoint,
+        localStateRoot,
+      })).rejects.toThrow(/missing/i);
+
+      const log = await readFile(join(localStateRoot, 'logs', 'launcher.log'), 'utf8');
+      const diagnostic = JSON.parse(log) as { operation: string; category: string; summary: string; modulePath?: string };
+      expect(diagnostic).toMatchObject({
+        operation: 'load-installed-launcher',
+        category: 'installed-launcher-missing',
+        modulePath,
+      });
+      expect(diagnostic.summary).toContain(modulePath);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PRODUCT_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
 import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgejo-mcp';
-import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, RELEASE_ENTRIES, INSTALLER_EXECUTABLE_NAME, INSTALLER_BUILD_EVIDENCE_NAME, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
+import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, INSTALLER_EXECUTABLE_NAME, INSTALLER_BUILD_EVIDENCE_NAME, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { PNPM_VERSION } from '../src/profile';
 import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, DSH_WEB_PACKAGE, DSH_WEB_VERSION, MANAGED_WEB_PROFILE_BUNDLE_NAMES, verifyManagedWebProfile } from '../src/managed-web-profile';
@@ -27,6 +27,7 @@ import { cleanupInstalledGateWorkspace, resolveInstalledNode, runInstalledMount 
 import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, uninstallHarness, UninstallSafetyError } from '../src/windows';
 import { commitInstallationReceipt, INSTALLATION_CAPACITY_BASIS, INSTALLATION_CAPACITY_FORMULA, INSTALLATION_STAGING_HEADROOM_BYTES, installationReceiptPath, readInstallationReceipt, resolveReceiptBackedHarnessPaths } from '../src/installation-root';
+import { releaseFixture } from './fixtures/release-fixture';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -40,17 +41,6 @@ const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const RELEASE_BUILD_TEST_TIMEOUT_MS = 180_000;
 
 const prepareAgentDependencies = async (): Promise<void> => undefined;
-
-async function releaseFixture(root: string): Promise<string> {
-  const releaseRoot = join(root, 'release fixture');
-  await mkdir(releaseRoot, { recursive: true });
-  for (const entry of RELEASE_ENTRIES) {
-    await cp(join(REPOSITORY_ROOT, entry), join(releaseRoot, entry), { recursive: true });
-  }
-  await writeFile(join(releaseRoot, INSTALLER_EXECUTABLE_NAME), 'synthetic installer executable\n');
-  await writeFile(join(releaseRoot, INSTALLER_BUILD_EVIDENCE_NAME), '{"fixture":true}\n');
-  return releaseRoot;
-}
 
 async function project(root: string): Promise<string> {
   const path = join(root, '选择 project with spaces');
