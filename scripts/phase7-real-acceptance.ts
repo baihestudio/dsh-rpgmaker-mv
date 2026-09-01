@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { strict as assert } from 'node:assert';
@@ -53,6 +53,7 @@ async function mount(compositionPath: string, preset: string, dshLib: string, en
 }
 
 try {
+  await cp(join(process.cwd(), 'runtime-manifests'), join(root, 'program', 'runtime-manifests'), { recursive: true });
   await makeFixture();
   const boot = await bootstrapRuntime({ platform: 'win32', dshHome, runtimeDir: runtime, programRoot: join(root, 'program'), mutableRoot: root, env: safeEnv });
   assert.equal(boot.verification.dshPackageVersion, DSH_VERSION);

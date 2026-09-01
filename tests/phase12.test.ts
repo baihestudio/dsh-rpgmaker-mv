@@ -63,19 +63,15 @@ async function writeDualRuntime(root: string): Promise<string> {
       [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION
     }
   })}\n`);
-  await writeFile(join(runtime, 'bun.lock'), `${JSON.stringify({
-    lockfileVersion: 1,
-    workspaces: {
-      '': {
-        dependencies: {
-          [RPGMAKER_MV_MCP_PACKAGE]: RPGMAKER_MV_MCP_VERSION,
-          [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION
-        }
-      }
-    },
+  await writeFile(join(runtime, 'package-lock.json'), `${JSON.stringify({
+    lockfileVersion: 3,
     packages: {
-      [RPGMAKER_MV_MCP_PACKAGE]: [`${RPGMAKER_MV_MCP_PACKAGE}@${RPGMAKER_MV_MCP_VERSION}`, '', { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, RPGMAKER_MV_MCP_INTEGRITY],
-      [RPGMAKER_MZ_MCP_PACKAGE]: [`${RPGMAKER_MZ_MCP_PACKAGE}@${RPGMAKER_MZ_MCP_VERSION}`, '', { bin: { 'rpgmaker-mz-mcp': 'dist/index.js' } }, RPGMAKER_MZ_MCP_INTEGRITY]
+      '': { dependencies: {
+        [RPGMAKER_MV_MCP_PACKAGE]: RPGMAKER_MV_MCP_VERSION,
+        [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION
+      } },
+      [`node_modules/${RPGMAKER_MV_MCP_PACKAGE}`]: { version: RPGMAKER_MV_MCP_VERSION, integrity: RPGMAKER_MV_MCP_INTEGRITY },
+      [`node_modules/${RPGMAKER_MZ_MCP_PACKAGE}`]: { version: RPGMAKER_MZ_MCP_VERSION, integrity: RPGMAKER_MZ_MCP_INTEGRITY }
     }
   })}\n`);
   return runtime;
@@ -85,10 +81,12 @@ async function writeFixtureMcporter(runtime: string): Promise<void> {
   const packageDir = join(runtime, 'node_modules', MCPORTER_PACKAGE);
   await mkdir(join(packageDir, 'dist'), { recursive: true });
   await writeFile(join(runtime, 'package.json'), JSON.stringify({ private: true, dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } }));
-  await writeFile(join(runtime, 'bun.lock'), JSON.stringify({
-    lockfileVersion: 1,
-    workspaces: { '': { dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } } },
-    packages: { [MCPORTER_PACKAGE]: [`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`, '', {}, MCPORTER_NPM_INTEGRITY] }
+  await writeFile(join(runtime, 'package-lock.json'), JSON.stringify({
+    lockfileVersion: 3,
+    packages: {
+      '': { dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } },
+      [`node_modules/${MCPORTER_PACKAGE}`]: { version: MCPORTER_VERSION, integrity: MCPORTER_NPM_INTEGRITY }
+    }
   }));
   await writeFile(join(packageDir, 'package.json'), JSON.stringify({ version: MCPORTER_VERSION, main: 'dist/index.js' }));
   await writeFile(join(packageDir, 'dist', 'index.js'), await readFile(join(process.cwd(), 'tests', 'fixtures', 'fake-mcporter.mjs'), 'utf8'));
@@ -173,11 +171,11 @@ describe('dual-engine RPG Maker seams', () => {
       await mkdir(join(canonical, 'data'), { recursive: true });
       await mkdir(join(canonical, 'js'), { recursive: true });
       await writeFile(join(canonical, 'game.rmmzproject'), '{}\n');
-      const definition = await workspaceBundle.buildWorkspaceDefinition('mz', canonical, { rpgmakerRuntime: runtime, runner: 'bun' }, {
+      const definition = await workspaceBundle.buildWorkspaceDefinition('mz', canonical, { rpgmakerRuntime: runtime, runner: 'node.exe' }, {
         DSH_SECRET: 'must-be-removed',
         RPGMAKER_PROJECT_PATH: 'ambient-path'
       });
-      expect(definition.command).toMatchObject({ command: 'bun', args: [definition.command.args[0]], cwd: canonical });
+      expect(definition.command).toMatchObject({ command: 'node.exe', args: [definition.command.args[0]], cwd: canonical });
       expect(definition.command.args).not.toContain('--project');
       expect(definition.env?.RPGMAKER_PROJECT_PATH).toBe(canonical);
       expect(definition.env?.DSH_SECRET).toBe(environment.SECRET_MARKER);
@@ -236,15 +234,15 @@ describe('dual-engine RPG Maker seams', () => {
       expect(valid.valid).toBe(true);
       expect(valid.engines.mv.valid).toBe(true);
       expect(valid.engines.mz.valid).toBe(true);
-      const lockPath = join(runtime, 'bun.lock');
-      const lock = JSON.parse(await readFile(lockPath, 'utf8')) as { packages: Record<string, unknown[]> };
-      lock.packages[RPGMAKER_MZ_MCP_PACKAGE][3] = 'sha512-tampered';
+      const lockPath = join(runtime, 'package-lock.json');
+      const lock = JSON.parse(await readFile(lockPath, 'utf8')) as { packages: Record<string, Record<string, unknown>> };
+      lock.packages[`node_modules/${RPGMAKER_MZ_MCP_PACKAGE}`].integrity = 'sha512-tampered';
       await writeFile(lockPath, `${JSON.stringify(lock)}\n`);
       const tampered = await verifyRpgMakerMcpRuntime(runtime, 'linux');
       expect(tampered.valid).toBe(false);
       expect(tampered.engines.mv.valid).toBe(true);
       expect(tampered.engines.mz.valid).toBe(false);
-      expect(tampered.engines.mz.errors.join(' ')).toMatch(/MZ MCP bun\.lock/i);
+      expect(tampered.engines.mz.errors.join(' ')).toMatch(/MZ MCP package-lock\.json/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

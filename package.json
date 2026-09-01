@@ -20,5 +20,8 @@
     "release:zip": "bun run scripts/build-release-zip.ts",
     "desktop:stage": "bun run scripts/stage-electrobun-adapter.ts"
   },
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@clack/prompts": "1.7.0"
+  }
 }

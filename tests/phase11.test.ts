@@ -17,7 +17,7 @@ import {
   MANAGED_WEB_PROFILE_PACKAGE_NAMES,
   verifyManagedWebProfile
 } from '../src/managed-web-profile';
-import { PNPM_VERSION } from '../src/profile';
+import { PNPM_NPM_INTEGRITY, PNPM_VERSION } from '../src/profile';
 import { WORKSPACE_MCP_PACKAGE, WORKSPACE_MCP_VERSION, workspaceMcpBundleDirFor } from '../src/workspace-mcp';
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -31,6 +31,10 @@ async function writePnpmRuntime(runtimeDir: string): Promise<void> {
   await mkdir(join(packageDir, 'bin'), { recursive: true });
   await mkdir(join(runtimeDir, 'node_modules', '.bin'), { recursive: true });
   await writeFile(join(packageDir, 'package.json'), JSON.stringify({ version: PNPM_VERSION, bin: { pnpm: 'bin/pnpm.cjs' } }));
+  await writeFile(join(runtimeDir, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+    '': { dependencies: { pnpm: PNPM_VERSION } },
+    [`node_modules/pnpm`]: { version: PNPM_VERSION, integrity: PNPM_NPM_INTEGRITY }
+  } }));
   await writeFile(join(packageDir, 'bin', 'pnpm.cjs'), '/* disposable pnpm */\n');
   await writeFile(join(runtimeDir, 'node_modules', '.bin', 'pnpm.cmd'), '@echo off\r\n');
 }
@@ -83,8 +87,8 @@ function managedRunner(
   options: { failPackage?: string; wrongVersion?: string } = {}
 ) {
   return async (command: string, args: string[], context: { cwd?: string }) => {
-    calls.push(`${basename(command)} ${args.join(' ')}`);
-    if (args[0] === 'install' && args.includes(`pnpm@${PNPM_VERSION}`)) {
+    calls.push(`${basename(command)} ${args.join(' ')} ${context.cwd ?? ''}`);
+    if (args[0] === 'ci' && context.cwd?.includes('.pnpm.staging-')) {
       await writePnpmRuntime(context.cwd!);
       return { exitCode: 0, stdout: '', stderr: '' };
     }
@@ -145,6 +149,7 @@ async function appRoots(root: string) {
   const mutableRoot = join(root, 'mutable');
   const dshHome = join(mutableRoot, 'state');
   await cp(join(REPOSITORY_ROOT, 'bundle'), join(programRoot, 'bundle'), { recursive: true });
+  await cp(join(REPOSITORY_ROOT, 'runtime-manifests'), join(programRoot, 'runtime-manifests'), { recursive: true });
   await mkdir(join(programRoot, 'runtime', 'dsh'), { recursive: true });
   await writeFile(join(programRoot, 'runtime', 'dsh', 'dsh.exe'), 'fixture dsh');
   return {
@@ -197,7 +202,7 @@ describe('managed Web profile materialization', () => {
       expect(first.materialized).toBe(true);
       expect(Object.keys(first.dependencies).sort()).toEqual([...MANAGED_WEB_PROFILE_PACKAGE_NAMES].sort());
       expect(first.bundles).toEqual(expectedBundles);
-      expect(calls.filter((call) => call.includes(`pnpm@${PNPM_VERSION}`))).toHaveLength(1);
+      expect(calls.filter((call) => call.includes(' ci ' ) && call.includes('.pnpm.staging-'))).toHaveLength(1);
       expect(await rollbackSnapshotNames(roots.dshHome)).toEqual([]);
 
       const profileManifestPath = join(roots.dshHome, 'profiles', 'web', 'package.json');

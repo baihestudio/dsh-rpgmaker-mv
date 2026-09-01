@@ -3,14 +3,15 @@ import { cp, mkdir, mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promise
 import { basename, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { bootstrapRuntime, findDshExecutable, type BootstrapResult } from './bootstrap';
-import { environmentPath, legacyStartMenuShortcutPath, pathDelimiter, withEnvironmentPath, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { bootstrapRuntime, DSH_RUNTIME_MANIFEST_RELATIVE, findDshExecutable, findDshJavaScriptEntrypoint, type BootstrapResult } from './bootstrap';
+import { DSH_VERSION, environmentPath, legacyStartMenuShortcutPath, pathDelimiter, withEnvironmentPath, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
 import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { FORGEJO_MCP_EXECUTABLE_NAME, FORGEJO_MCP_LICENSE_NAME, FORGEJO_MCP_MANIFEST_NAME, FORGEJO_MCP_RUNTIME_RELATIVE, forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from './forgejo-mcp';
-import { withoutCredentials, runCommand, type CommandRunner } from './process';
-import { installWindowsPrerequisites, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
-import { deployRpgMakerPresets, prepareRpgMakerMcpRuntime } from './rpgmaker';
-import { prepareMcporterRuntime } from './mcport';
+import { redactSensitive, withoutCredentials, runCommand, type CommandRunner } from './process';
+import { installWindowsPrerequisites, PrerequisiteConsentError, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
+import { deployRpgMakerPresets, prepareRpgMakerMcpRuntime, RPGMAKER_MCP_MANIFEST_RELATIVE } from './rpgmaker';
+import { MCPORTER_MANIFEST_RELATIVE, prepareMcporterRuntime } from './mcport';
+import { PNPM_MANIFEST_RELATIVE } from './profile';
 import { DSH_BRAND_BUNDLE_RELATIVE, ensureManagedWebProfile } from './managed-web-profile';
 import { WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from './workspace-mcp';
 import {
@@ -31,8 +32,14 @@ import {
   type OwnedProcessLister
 } from './install-lifecycle';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
+import { withHarnessLock } from './lock';
+import { commitInstallationReceipt, defaultInstallationRoot, defaultLocalStateRoot, readInstallationReceipt, resolveRecordedInstallationRoot, validateInstallationRoot } from './installation-root';
+import { createInstallationSession, rendererMode, type InstallationEventListener, type InstallationOperation, type InstallationRendererMode } from './install-events';
+import { createInstallRunEvidence, type InstallRunEvidence } from './install-evidence';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
+export const INSTALLER_EXECUTABLE_NAME = 'installer.exe';
+export const INSTALLER_BUILD_EVIDENCE_NAME = 'installer-build.json';
 export const WINDOWS_GATE_CLEANUP_HELPER_RELATIVE = 'scripts/remove-phase7-gate-root.ps1';
 export const RELEASE_ENTRIES = [
   'Install.cmd',
@@ -48,7 +55,7 @@ export const RELEASE_ENTRIES = [
   'README.md',
   'docs',
   'package.json',
-  'bun.lock',
+  'runtime-manifests',
   'src',
   'presets',
   'scripts',
@@ -62,10 +69,20 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   env?: Record<string, string | undefined>;
   releaseRoot: string;
   consent?: PrerequisiteConsent;
+  installationRoot?: string;
+  localStateRoot?: string;
+  renderer?: InstallationRendererMode;
+  operation?: InstallationOperation;
+  onEvent?: InstallationEventListener;
+  nonInteractive?: boolean;
+  installationRootPicker?: (defaultPath: string) => Promise<string | undefined>;
+  requiredInstallationBytes?: number;
+  availableInstallationBytes?: number;
+  installationHeadroomBytes?: number;
   commandRunner?: CommandRunner;
   createShortcut?: (options: ShortcutCreationOptions) => Promise<string>;
   writeInstallMetadata?: (path: string, content: string) => Promise<void>;
-  prepareAgentDependencies?: (context: { paths: HarnessPaths; env: Record<string, string | undefined>; bunExecutable: string; npmExecutable?: string; commandRunner?: CommandRunner }) => Promise<void>;
+  prepareAgentDependencies?: (context: { paths: HarnessPaths; env: Record<string, string | undefined>; nodeExecutable?: string; npmExecutable?: string; commandRunner?: CommandRunner }) => Promise<void>;
   /** Prebuilt host payload to merge into the Release tree. */
   desktopHostRoot?: string;
   /** Require a native host payload even when running a simulated test host. */
@@ -76,6 +93,8 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   listOwnedProcesses?: OwnedProcessLister;
   stopOwnedProcessTree?: OwnedProcessTreeStopper;
   now?: () => Date;
+  lockTimeoutMs?: number;
+  lockRetryMs?: number;
 }
 
 export interface InstallReleaseResult {
@@ -87,6 +106,9 @@ export interface InstallReleaseResult {
   desktopHost?: DesktopHostCopyResult;
   launchTarget: string;
   rollbackRoot?: string;
+  timingPath?: string;
+  logPath?: string;
+  timing?: import('./install-evidence').InstallTimingRecord;
 }
 
 export interface ReleaseZipOptions {
@@ -99,6 +121,7 @@ export interface ReleaseZipOptions {
   pwshExecutable?: string;
   desktopHostRoot?: string;
   requireDesktopHost?: boolean;
+  bunExecutable?: string;
 }
 
 export interface ReleaseZipInspection {
@@ -113,6 +136,13 @@ export class ReleaseGateError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ReleaseGateError';
+  }
+}
+
+export class InstallationCancelledError extends ReleaseGateError {
+  constructor(message = 'Installation cancelled. No files were downloaded or changed.') {
+    super(message);
+    this.name = 'InstallationCancelledError';
   }
 }
 
@@ -160,20 +190,42 @@ async function copyReleaseTree(sourceRootInput: string, destination: string): Pr
 
 function generatedEnvironment(env: Record<string, string | undefined>, paths: HarnessPaths, prerequisites: WindowsPrerequisiteReport): Record<string, string | undefined> {
   const executableDirs = prerequisites.checks.flatMap((item) => item.executable ? [dirname(item.executable)] : []);
-  const path = [...new Set([...executableDirs, ...environmentPath(env, 'win32').split(pathDelimiter('win32')).filter(Boolean)])].join(pathDelimiter('win32'));
+  // Bun is a build-time maintainer tool only.  Do not leak an ambient Bun
+  // installation into target child environments or let a package script
+  // accidentally resolve it ahead of Node/npm.
+  const inheritedPath = environmentPath(env, 'win32')
+    .split(pathDelimiter('win32'))
+    .filter((entry) => entry && !/(?:^|[\\/])bun(?:[\\/]|$)/i.test(entry));
+  const path = [...new Set([...executableDirs, ...inheritedPath])].join(pathDelimiter('win32'));
   const next = withEnvironmentPath(env, path, 'win32');
+  for (const key of Object.keys(next)) {
+    if (/^bun(?:_|$)/i.test(key)) delete next[key];
+  }
   return {
     ...next,
     DSH_HOME: paths.dshHome,
     DSH_RPGMAKER_PROGRAM_ROOT: paths.programRoot,
+    DSH_RPGMAKER_INSTALLATION_ROOT: paths.installationRoot,
     DSH_RPGMAKER_DATA_ROOT: paths.mutableRoot,
     DSH_RPGMAKER_RUNTIME: paths.runtimeDir,
-    DSH_FORGEJO_MCP_COMMAND: forgejoMcpExecutablePath(paths.programRoot)
+    DSH_FORGEJO_MCP_COMMAND: forgejoMcpExecutablePath(paths.programRoot),
+    DSH_RPGMAKER_INSTALLATION_CACHE: paths.installationCacheDir,
+    DSH_RPGMAKER_CACHE_DIR: paths.installationCacheDir,
+    NODE_EXECUTABLE: prerequisites.executablePaths.node,
+    NPM_EXECUTABLE: prerequisites.executablePaths.npm,
+    NPM_CONFIG_CACHE: join(paths.installationCacheDir, 'npm-cache'),
+    npm_config_cache: join(paths.installationCacheDir, 'npm-cache')
   };
 }
 
 function ownershipMarker(): string {
   return `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1 })}\n`;
+}
+
+function boundedDiagnostic(message: string, env: Record<string, string | undefined>, limit = 2_000): string {
+  const redacted = redactSensitive(message, env).trim();
+  if (redacted.length <= limit) return redacted;
+  return `[diagnostic truncated]\n${redacted.slice(-limit)}`;
 }
 
 function installMetadata(
@@ -188,10 +240,13 @@ function installMetadata(
     product: PRODUCT_NAME,
     format: 1,
     installedAt: now().toISOString(),
+    installationRoot: paths.installationRoot,
     programRoot: paths.programRoot,
+    localStateRoot: paths.localStateRoot,
     mutableRoot: paths.mutableRoot,
     dshHome: paths.dshHome,
     runtimeDir: paths.runtimeDir,
+    installationCacheDir: paths.installationCacheDir,
     launchTarget,
     ...(desktopHost ? {
       desktopHost: {
@@ -243,12 +298,72 @@ async function restoreInstallTransaction(
   return failedRoot;
 }
 
-export async function installWindowsRelease(options: InstallReleaseOptions): Promise<InstallReleaseResult> {
+async function installWindowsReleaseCore(options: InstallReleaseOptions, session?: ReturnType<typeof createInstallationSession>, evidence?: InstallRunEvidence): Promise<InstallReleaseResult> {
   const platform = options.platform ?? process.platform;
   if (platform !== 'win32') throw new ReleaseGateError('The Release ZIP installer is Windows-only.');
   const env = options.env ?? process.env;
-  const paths = resolveHarnessPaths(options);
+  const baseCommandRunner = options.commandRunner ?? runCommand;
+  const commandRunner: CommandRunner = async (command, args, commandOptions) => {
+    try {
+      const result = await baseCommandRunner(command, args, commandOptions);
+      evidence?.command('child process', command, result, args);
+      return result;
+    } catch (error) {
+      evidence?.appendLog(`child process ${basename(command)} could not start: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  };
+  const now = options.now ?? (() => new Date());
   const releaseRoot = resolve(options.releaseRoot);
+  const localStateRoot = resolve(options.localStateRoot ?? options.mutableRoot ?? env.DSH_RPGMAKER_LOCAL_STATE_ROOT ?? env.DSH_RPGMAKER_DATA_ROOT ?? defaultLocalStateRoot(env));
+  const existingReceipt = await readInstallationReceipt(localStateRoot);
+  const startPhase = (phase: Parameters<NonNullable<typeof session>['startPhase']>[0], label?: string): void => {
+    session?.startPhase(phase, label);
+    evidence?.phaseStarted(phase);
+  };
+  const finishPhase = (status: 'succeeded' | 'failed' | 'cancelled' = 'succeeded', error?: string): void => {
+    session?.finishPhase(status, error ? { message: error } : undefined);
+    if (session) evidence?.phaseFinished(status, now(), 0, error);
+  };
+  startPhase('destination', existingReceipt ? 'reuse recorded installation root' : 'choose and validate installation root');
+  let selectedInstallationRoot = options.installationRoot ?? (existingReceipt ? undefined : options.programRoot);
+  let pickerAttempted = false;
+  if (!existingReceipt && !selectedInstallationRoot && options.installationRootPicker) {
+    pickerAttempted = true;
+    selectedInstallationRoot = await options.installationRootPicker(defaultInstallationRoot(env));
+  }
+  if (existingReceipt) {
+    const recorded = await resolveRecordedInstallationRoot(localStateRoot, selectedInstallationRoot, platform);
+    selectedInstallationRoot = recorded.installationRoot;
+  }
+  const paths = resolveHarnessPaths({ ...options, installationRoot: selectedInstallationRoot, localStateRoot, mutableRoot: localStateRoot, programRoot: existingReceipt?.programRoot ?? (options.programRoot && !options.installationRoot ? options.programRoot : undefined) });
+  evidence?.setInstallationRoot(paths.installationRoot);
+  if (!existingReceipt && !selectedInstallationRoot) {
+    if (pickerAttempted && !options.nonInteractive) {
+      throw new InstallationCancelledError();
+    }
+    throw new ReleaseGateError('No installation root was selected. Choose a destination before downloading prerequisites.');
+  }
+  if (existingReceipt && options.programRoot && options.programRoot.replaceAll('\\', '/').toLowerCase() !== existingReceipt.programRoot.replaceAll('\\', '/').toLowerCase()) {
+    throw new ReleaseGateError(`The recorded installation root is ${existingReceipt.installationRoot}; refusing to relocate it.`);
+  }
+  // A first-install destination owns a replaceable `program` child. Keep the
+  // older direct `programRoot` test/maintenance seam usable when no selected
+  // installation root was supplied, but never allow an explicit destination
+  // or receipt to commit a program tree outside that root.
+  // Repository-owned maintenance/test callers may intentionally use the
+  // historical direct `programRoot` seam. Such a receipt records the same
+  // path for both roots and is allowed to round-trip when no explicit
+  // installation root is supplied. A selected first-install root (or an
+  // explicit root on a receipt-backed run) must always own a distinct
+  // replaceable `program` child.
+  const directProgramRootReceipt = Boolean(existingReceipt)
+    && !options.installationRoot
+    && resolve(paths.installationRoot) === resolve(paths.programRoot);
+  if ((options.installationRoot || (existingReceipt && !directProgramRootReceipt))
+    && (!within(paths.installationRoot, paths.programRoot) || resolve(paths.installationRoot) === resolve(paths.programRoot))) {
+    throw new ReleaseGateError(`The program root ${paths.programRoot} must be a child of the selected installation root ${paths.installationRoot}.`);
+  }
   if (pathsNest(releaseRoot, paths.programRoot)) {
     throw new ReleaseGateError('The extracted Release ZIP must be separate from the installed program root.');
   }
@@ -272,15 +387,32 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
     throw new ReleaseGateError(`Release is missing the required ${DESKTOP_HOST_PAYLOAD_RELATIVE} payload.`);
   }
 
+  const rootValidation = await validateInstallationRoot(paths.installationRoot, {
+    platform,
+    localStateRoot: paths.mutableRoot,
+    releaseRoot,
+    requiredBytes: options.requiredInstallationBytes,
+    availableBytes: options.availableInstallationBytes,
+    headroomBytes: options.installationHeadroomBytes
+  });
+  if (!rootValidation.valid) {
+    const space = `${rootValidation.requiredBytes} bytes required${rootValidation.availableBytes === undefined ? '' : `, ${rootValidation.availableBytes} bytes available`}`;
+    const message = `Installation root ${paths.installationRoot} is not usable (${space}): ${rootValidation.errors.join('; ')}`;
+    finishPhase('failed', message);
+    throw new ReleaseGateError(message);
+  }
+  finishPhase();
+
   // This read-only lifecycle check is deliberately before prerequisite
   // verification, mutable-layout creation, or the program-tree swap. A user
   // who declines to close an active owned Agent therefore gets a true no-op.
+  startPhase('prerequisites', 'verify Node.js/npm and Windows prerequisites');
   try {
     await confirmAndStopOwnedAgent({
       platform,
       env,
       programRoot: paths.programRoot,
-      commandRunner: options.commandRunner,
+      commandRunner,
       pwshExecutable: options.pwshExecutable,
       processRecords: options.ownedProcessRecords,
       listProcesses: options.listOwnedProcesses,
@@ -294,21 +426,40 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
     throw new ReleaseGateError(`The installed RPG Maker Agent could not be safely closed before upgrade: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  const prerequisites = await installWindowsPrerequisites({
+  let prerequisites: WindowsPrerequisiteReport;
+  try {
+    prerequisites = await installWindowsPrerequisites({
+      ...options,
+      platform,
+      env,
+      commandRunner,
+      nodeExecutable: options.nodeExecutable,
+      npmExecutable: options.npmExecutable,
+      pwshExecutable: options.pwshExecutable,
+      gitExecutable: options.gitExecutable,
+      coreutilsExecutable: options.coreutilsExecutable,
+      wingetExecutable: options.wingetExecutable,
+      consent: options.consent
+    });
+  } catch (error) {
+    if (error instanceof PrerequisiteConsentError) {
+      for (const item of error.report.checks) evidence?.prerequisite(item.id, item.ok ? 'verified' : 'failed');
+    }
+    throw error;
+  }
+  for (const item of prerequisites.checks) evidence?.prerequisite(item.id, item.ok ? 'verified' : 'failed');
+  const nodeCheck = prerequisites.checks.find((item) => item.id === 'node');
+  evidence?.setRuntimeVersion(nodeCheck?.versions?.node ? `Node.js ${nodeCheck.versions.node}; npm ${nodeCheck.versions.npm ?? 'unknown'}` : 'Node.js/npm');
+  finishPhase();
+  await ensureHarnessLayout({
     ...options,
     platform,
     env,
-    commandRunner: options.commandRunner,
-    nodeExecutable: options.nodeExecutable,
-    npmExecutable: options.npmExecutable,
-    bunExecutable: options.bunExecutable,
-    pwshExecutable: options.pwshExecutable,
-    gitExecutable: options.gitExecutable,
-    coreutilsExecutable: options.coreutilsExecutable,
-    wingetExecutable: options.wingetExecutable,
-    consent: options.consent
+    dshHome: paths.dshHome,
+    mutableRoot: paths.mutableRoot,
+    installationRoot: paths.installationRoot,
+    programRoot: paths.programRoot,
   });
-  await ensureHarnessLayout({ ...options, platform, env, dshHome: paths.dshHome, mutableRoot: paths.mutableRoot, programRoot: paths.programRoot });
 
   const parent = dirname(paths.programRoot);
   await mkdir(parent, { recursive: true });
@@ -338,10 +489,11 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
     stagingActive = false;
 
     const installedEnv = generatedEnvironment(env, paths, prerequisites);
+    startPhase('runtime', 'install and verify the pinned DSH runtime');
     let bootstrap: BootstrapResult;
     let shortcutPath: string;
     try {
-      const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env, programRoot: paths.programRoot, commandRunner: options.commandRunner });
+      const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env, programRoot: paths.programRoot, commandRunner });
       if (!forgejoMcp.valid) throw new Error(`App-owned Forgejo MCP is not usable: ${forgejoMcp.errors.join('; ')}`);
       if (oldMoved) await carryForwardVerifiedDependencies(rollbackRoot, paths.programRoot);
       bootstrap = await bootstrapRuntime({
@@ -352,10 +504,13 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         runtimeDir: paths.runtimeDir,
         programRoot: paths.programRoot,
         mutableRoot: paths.mutableRoot,
-        bunExecutable: options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE,
-        commandRunner: options.commandRunner
+        nodeExecutable: options.nodeExecutable ?? prerequisites.executablePaths.node,
+        npmExecutable: options.npmExecutable ?? prerequisites.executablePaths.npm,
+        manifestRoot: join(paths.programRoot, DSH_RUNTIME_MANIFEST_RELATIVE),
+        commandRunner
       });
-      const bunExecutable = options.bunExecutable ?? prerequisites.checks.find((check) => check.id === 'bun')?.executable ?? env.BUN_EXECUTABLE ?? 'bun';
+      finishPhase();
+      startPhase('tools', 'install and verify app-owned tools');
       const prepareAgentDependencies = options.prepareAgentDependencies ?? (async (context) => {
         const mcporter = await prepareMcporterRuntime({
           platform,
@@ -364,13 +519,15 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           programRoot: context.paths.programRoot,
           mutableRoot: context.paths.mutableRoot,
           runtimeDir: context.paths.runtimeDir,
-          bunExecutable: context.bunExecutable,
+          nodeExecutable: context.nodeExecutable,
+          npmExecutable: context.npmExecutable,
+          manifestRoot: join(context.paths.programRoot, MCPORTER_MANIFEST_RELATIVE),
           commandRunner: context.commandRunner
         }, join(context.paths.programRoot, 'runtime', 'mcporter'));
         if (!mcporter.valid) throw new Error(`MCPorter runtime is not usable: ${mcporter.errors.join('; ')}`);
-        const mcp = await prepareRpgMakerMcpRuntime({ platform, env: context.env, bunExecutable: context.bunExecutable, commandRunner: context.commandRunner }, join(context.paths.programRoot, 'runtime', 'mcp'));
+        const mcp = await prepareRpgMakerMcpRuntime({ platform, env: context.env, nodeExecutable: context.nodeExecutable, npmExecutable: context.npmExecutable, manifestRoot: join(context.paths.programRoot, RPGMAKER_MCP_MANIFEST_RELATIVE), commandRunner: context.commandRunner }, join(context.paths.programRoot, 'runtime', 'mcp'));
         if (!mcp.valid) throw new Error(`RPG Maker MCP is not usable: ${mcp.errors.join('; ')}`);
-        const dshExecutable = bootstrap.verification.dshExecutable ?? await findDshExecutable(context.paths.runtimeDir, platform);
+        const dshExecutable = bootstrap.verification.dshExecutable ?? await findDshJavaScriptEntrypoint(context.paths.runtimeDir) ?? await findDshExecutable(context.paths.runtimeDir, platform);
         if (!dshExecutable) throw new Error('Pinned DSH executable was not found before managed Web profile materialization.');
         const managed = await ensureManagedWebProfile({
           platform,
@@ -381,6 +538,8 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
           runtimeDir: context.paths.runtimeDir,
           dshExecutable,
           npmExecutable: context.npmExecutable,
+          nodeExecutable: context.nodeExecutable,
+          manifestRoot: join(context.paths.programRoot, PNPM_MANIFEST_RELATIVE),
           commandRunner: context.commandRunner
         });
         if (!managed.valid) throw new Error(`Managed Web profile is not usable: ${managed.errors.join('; ')}`);
@@ -388,11 +547,13 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
       await prepareAgentDependencies({
         paths,
         env: installedEnv,
-        bunExecutable,
-        npmExecutable: options.npmExecutable ?? await resolveExecutable('npm', { platform, env: installedEnv }),
-        commandRunner: options.commandRunner
+        nodeExecutable: options.nodeExecutable ?? prerequisites.executablePaths.node,
+        npmExecutable: options.npmExecutable ?? prerequisites.executablePaths.npm ?? await resolveExecutable('npm', { platform, env: installedEnv }),
+        commandRunner
       });
-      const dshExecutable = bootstrap.verification.dshExecutable ?? await findDshExecutable(paths.runtimeDir, platform);
+      finishPhase();
+      startPhase('profile', 'materialize managed Web profile and presets');
+      const dshExecutable = bootstrap.verification.dshExecutable ?? await findDshJavaScriptEntrypoint(paths.runtimeDir) ?? await findDshExecutable(paths.runtimeDir, platform);
       if (!dshExecutable) throw new Error('Pinned DSH executable was not found after bootstrap.');
       await deployRpgMakerPresets({
         platform,
@@ -403,13 +564,17 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         runtimeDir: paths.runtimeDir,
         dshExecutable,
         sourceRoot: join(paths.programRoot, 'presets', 'rpgmaker'),
-        commandRunner: options.commandRunner
+        commandRunner
       });
+      finishPhase();
+      startPhase('metadata', 'write installation metadata');
       const metadataPath = join(paths.programRoot, 'install.json');
       const metadataWriter = options.writeInstallMetadata ?? ((path: string, content: string) => writeFile(path, content, 'utf8'));
       const launchTarget = desktopHost?.installedLaunchTarget ?? 'Launch.cmd';
-      await metadataWriter(metadataPath, installMetadata(paths, prerequisites, options.now ?? (() => new Date()), launchTarget, desktopHost));
+      await metadataWriter(metadataPath, installMetadata(paths, prerequisites, now, launchTarget, desktopHost));
       if (!(await exists(metadataPath))) throw new Error('Install metadata was not written.');
+      finishPhase();
+      startPhase('shortcut', 'create Start Menu shortcut');
       const createShortcut = options.createShortcut ?? createStartMenuShortcut;
       shortcutPath = await createShortcut({
         platform,
@@ -417,16 +582,31 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
         programRoot: paths.programRoot,
         mutableRoot: paths.mutableRoot,
         dshHome: paths.dshHome,
+        startMenuShortcutPath: paths.startMenuShortcutPath,
         targetPath: join(paths.programRoot, ...launchTarget.replaceAll('\\', '/').split('/')),
         workingDirectory: paths.programRoot,
         helperScript: join(paths.programRoot, 'scripts', 'create-shortcut.ps1'),
         pwshExecutable: options.pwshExecutable ?? prerequisites.checks.find((check) => check.id === 'powershell')?.executable,
-        commandRunner: options.commandRunner
+        commandRunner
       });
       if (!options.startMenuShortcutPath) {
         const legacyShortcut = legacyStartMenuShortcutPath({ env });
         if (legacyShortcut !== paths.startMenuShortcutPath) await rm(legacyShortcut, { force: true });
       }
+      finishPhase();
+      startPhase('verification', 'commit receipt after final verification');
+      // The receipt is the source of truth for maintenance.  Commit it only
+      // after the new program tree, runtime/profile verification, metadata,
+      // and shortcut work have all completed successfully.
+      await commitInstallationReceipt({
+        product: PRODUCT_NAME,
+        owner: PROGRAM_OWNER,
+        installationRoot: paths.installationRoot,
+        programRoot: paths.programRoot,
+        localStateRoot: paths.mutableRoot,
+        committedAt: now().toISOString()
+      });
+      finishPhase();
     } catch (error) {
       let failedRoot: string | undefined;
       let recoveryError: string | undefined;
@@ -460,6 +640,49 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
   }
 }
 
+/** Run one complete install/upgrade/repair session with a single terminal
+ * outcome and paired timing/diagnostic evidence. */
+export async function installWindowsRelease(options: InstallReleaseOptions): Promise<InstallReleaseResult> {
+  const env = options.env ?? process.env;
+  const localStateRoot = resolve(options.localStateRoot ?? options.mutableRoot ?? env.DSH_RPGMAKER_LOCAL_STATE_ROOT ?? env.DSH_RPGMAKER_DATA_ROOT ?? defaultLocalStateRoot(env));
+  const receipt = await readInstallationReceipt(localStateRoot);
+  const operation: InstallationOperation = options.operation ?? (receipt ? (await exists(receipt.programRoot) ? 'upgrade' : 'repair') : 'install');
+  const mode = rendererMode({ mode: options.renderer });
+  const session = createInstallationSession({ operation, now: options.now, onEvent: options.onEvent });
+  const evidence = createInstallRunEvidence({
+    localStateRoot,
+    installationRoot: options.installationRoot ?? options.programRoot ?? receipt?.installationRoot ?? '',
+    operation,
+    renderer: mode,
+    productVersion: DSH_VERSION,
+    runtimeVersion: DSH_VERSION,
+    now: options.now,
+    env
+  });
+  await evidence.start();
+  try {
+    session.start();
+    const result = await withHarnessLock(join(localStateRoot, 'install.lock'), () => installWindowsReleaseCore(options, session, evidence), {
+      timeoutMs: options.lockTimeoutMs ?? 45 * 60_000,
+      retryMs: options.lockRetryMs
+    });
+    session.succeed();
+    const timing = await evidence.finish('succeeded');
+    return { ...result, timingPath: evidence.timingPath, logPath: evidence.logPath, timing };
+  } catch (error) {
+    const message = boundedDiagnostic(error instanceof Error ? error.message : String(error), env);
+    const cancelled = error instanceof InstallationCancelledError || (session.isTerminal && message.toLowerCase().includes('cancel'));
+    if (!session.isTerminal) {
+      if (cancelled) session.cancel(message);
+      else session.fail({ message });
+    }
+    const timing = await evidence.finish(cancelled ? 'cancelled' : 'failed', { error: message });
+    if (error instanceof InstallationCancelledError) throw new InstallationCancelledError(message);
+    if (error instanceof ReleaseGateError) throw new ReleaseGateError(message);
+    throw new ReleaseGateError(message);
+  }
+}
+
 async function archiveWithZip(options: ReleaseZipOptions, staging: string, outputZip: string): Promise<void> {
   const env = options.env ?? process.env;
   const runner = options.commandRunner ?? runCommand;
@@ -475,8 +698,35 @@ async function archiveWithPowerShell(options: ReleaseZipOptions, staging: string
   const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform: 'win32', env });
   if (!pwsh) throw new ReleaseGateError('PowerShell 7 was not found to create the Release ZIP.');
   const helper = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'scripts', 'compress-release.ps1');
-  const result = await runner(pwsh, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', helper, '-SourceRoot', staging, '-Destination', outputZip], { env: withoutCredentials(env), platform: 'win32', timeoutMs: 15 * 60_000 });
+  const result = await runner(pwsh, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helper, '-SourceRoot', staging, '-Destination', outputZip], { env: withoutCredentials(env), platform: 'win32', timeoutMs: 15 * 60_000 });
   if (result.exitCode !== 0) throw new ReleaseGateError(`PowerShell ZIP creation failed: ${result.stderr || result.stdout}`.trim());
+}
+
+async function buildInstallerExecutable(options: ReleaseZipOptions, sourceRoot: string, staging: string): Promise<void> {
+  const env = options.env ?? process.env;
+  const runner = options.commandRunner ?? runCommand;
+  const bun = options.bunExecutable ?? env.BUN_EXECUTABLE ?? await resolveExecutable('bun', { platform: options.platform, env });
+  if (!bun) throw new ReleaseGateError('A build-time Bun executable is required to compile installer.exe. Target machines do not need Bun.');
+  const output = join(staging, INSTALLER_EXECUTABLE_NAME);
+  const entry = join(sourceRoot, 'src', 'installer.ts');
+  const args = ['build', entry, '--compile', '--target=bun-windows-x64', '--outfile', output];
+  let result;
+  try {
+    result = await runner(bun, args, { cwd: sourceRoot, env: withoutCredentials(env), platform: options.platform, timeoutMs: 15 * 60_000 });
+  } catch (error) {
+    throw new ReleaseGateError(`installer.exe compilation could not start: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (result.exitCode !== 0) throw new ReleaseGateError(`installer.exe compilation failed: ${result.stderr || result.stdout}`.trim());
+  if (!(await exists(output))) throw new ReleaseGateError('installer.exe compilation completed without producing a fresh executable.');
+  let version = 'unknown';
+  try {
+    const versionResult = await runner(bun, ['--version'], { cwd: sourceRoot, env: withoutCredentials(env), platform: options.platform, timeoutMs: 30_000 });
+    version = `${versionResult.stdout}\n${versionResult.stderr}`.trim() || version;
+  } catch {
+    // The executable itself is still valid evidence; retain an explicit
+    // unknown compiler version rather than inventing one.
+  }
+  await writeFile(join(staging, INSTALLER_BUILD_EVIDENCE_NAME), `${JSON.stringify({ schemaVersion: 1, artifact: INSTALLER_EXECUTABLE_NAME, target: 'bun-windows-x64', compiler: 'bun', compilerVersion: version, source: 'src/installer.ts', builtAt: new Date().toISOString() }, null, 2)}\n`, 'utf8');
 }
 
 export async function buildReleaseZip(options: ReleaseZipOptions): Promise<string> {
@@ -510,6 +760,9 @@ export async function buildReleaseZip(options: ReleaseZipOptions): Promise<strin
   const staging = await mkdtemp(join(dirname(outputZip), `.dsh-release-${randomUUID()}-`));
   try {
     await copyReleaseTree(sourceRoot, staging);
+    // Every Release ZIP carries a freshly compiled installer. This contract is
+    // independent of the host platform, desktop payload, and test seams.
+    await buildInstallerExecutable(options, sourceRoot, staging);
     if (desktopHostSource) {
       await copyDesktopHostPayload(sourceRoot, staging, {
         desktopHostRoot: desktopHostSource,
@@ -519,6 +772,19 @@ export async function buildReleaseZip(options: ReleaseZipOptions): Promise<strin
     if (platform === 'win32') await archiveWithPowerShell(options, staging, outputZip);
     else await archiveWithZip(options, staging, outputZip);
     if (!(await exists(outputZip))) throw new ReleaseGateError(`ZIP creation completed without producing ${outputZip}.`);
+    // A successful archive is not enough: inspect the archive that was just
+    // written and require the freshly compiled installer/evidence entries (as
+    // well as the rest of the Release contract) before returning it. This is
+    // intentionally unconditional so test seams cannot bypass the artifact
+    // contract.
+    const inspection = await inspectReleaseZip({
+      zipPath: outputZip,
+      platform,
+      env,
+      commandRunner: options.commandRunner,
+      requireDesktopHost
+    });
+    if (!inspection.valid) throw new ReleaseGateError(`Release ZIP is missing required entries: ${inspection.missing.join(', ')}`);
     return outputZip;
   } finally {
     await rm(staging, { recursive: true, force: true });
@@ -557,10 +823,19 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'docs/windows-release.md',
     WINDOWS_GATE_CLEANUP_HELPER_RELATIVE,
     'src/cli.ts',
+    'src/installer.ts',
     'src/mcport.ts',
     'src/workspace-mcp.ts',
     'src/profile.ts',
     'src/managed-web-profile.ts',
+    'runtime-manifests/dsh/package.json',
+    'runtime-manifests/dsh/package-lock.json',
+    'runtime-manifests/mcporter/package.json',
+    'runtime-manifests/mcporter/package-lock.json',
+    'runtime-manifests/rpgmaker-mcp/package.json',
+    'runtime-manifests/rpgmaker-mcp/package-lock.json',
+    'runtime-manifests/pnpm/package.json',
+    'runtime-manifests/pnpm/package-lock.json',
     'presets/rpgmaker/preset.yml',
     `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_EXECUTABLE_NAME}`,
     `${FORGEJO_MCP_RUNTIME_RELATIVE}/${FORGEJO_MCP_MANIFEST_NAME}`,
@@ -582,6 +857,7 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
     'docs/research/rpgmaker-mz-mcp-selection.md',
     'docs/research/rpgmaker-mz-enhancement-roadmap.md'
   ];
+  requiredEntries.unshift(INSTALLER_EXECUTABLE_NAME, INSTALLER_BUILD_EVIDENCE_NAME);
   const missing = requiredEntries.filter((entry) => !entries.includes(entry) && !entries.some((candidate) => candidate.startsWith(`${entry}/`)));
   const requireDesktopHost = options.requireDesktopHost ?? (platform === 'win32' && process.platform === 'win32');
   if (requireDesktopHost) {

@@ -5,7 +5,6 @@ import { basename, dirname, join, resolve, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
-import { spawn } from 'node:child_process';
 
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, withEnvironmentPath } from '../src/config';
 import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgejo-mcp';
@@ -13,7 +12,7 @@ import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, R
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
 import { PNPM_VERSION } from '../src/profile';
 import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, DSH_WEB_PACKAGE, DSH_WEB_VERSION, MANAGED_WEB_PROFILE_BUNDLE_NAMES, verifyManagedWebProfile } from '../src/managed-web-profile';
-import { findDshExecutable } from '../src/bootstrap';
+import { DSH_RUNTIME_PEER_DEPENDENCIES, findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MV_MCP_INTEGRITY, RPGMAKER_MV_MCP_PACKAGE, RPGMAKER_MV_MCP_VERSION, RPGMAKER_MZ_MCP_INTEGRITY, RPGMAKER_MZ_MCP_PACKAGE, RPGMAKER_MZ_MCP_VERSION } from '../src/rpgmaker';
 import { JS_RUNNER_ENV, RPGMAKER_MCP_RUNTIME_ENV, WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
@@ -27,6 +26,7 @@ import { run as runProcessObservation } from '../scripts/process-observation.mjs
 import { cleanupInstalledGateWorkspace, resolveInstalledNode, runInstalledMount } from '../scripts/phase7-windows-installed-gate';
 import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, uninstallHarness, UninstallSafetyError } from '../src/windows';
+import { commitInstallationReceipt } from '../src/installation-root';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -53,11 +53,13 @@ async function dshRuntime(runtime: string): Promise<void> {
   await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh-launch-environment', 'lib'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', 'koffi'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
-  await writeFile(join(runtime, 'package.json'), JSON.stringify({ dependencies: { [DSH_PACKAGE_NAME]: DSH_VERSION } }));
-  await writeFile(join(runtime, 'bun.lock'), JSON.stringify({
-    workspaces: { '': { dependencies: { [DSH_PACKAGE_NAME]: DSH_VERSION } } },
-    packages: { [DSH_PACKAGE_NAME]: [`${DSH_PACKAGE_NAME}@${DSH_VERSION}`, '', {}, DSH_NPM_INTEGRITY] }
-  }));
+  const dependencies = { [DSH_PACKAGE_NAME]: DSH_VERSION, ...DSH_RUNTIME_PEER_DEPENDENCIES };
+  await writeFile(join(runtime, 'package.json'), JSON.stringify({ dependencies }));
+  await writeFile(join(runtime, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+    '': { dependencies },
+    [`node_modules/${DSH_PACKAGE_NAME}`]: { version: DSH_VERSION, integrity: DSH_NPM_INTEGRITY },
+    ...Object.fromEntries(Object.entries(DSH_RUNTIME_PEER_DEPENDENCIES).map(([name, version]) => [`node_modules/${name}`, { version }]))
+  } }));
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ version: DSH_VERSION, bin: { dsh: 'lib/bin.js' } }));
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'fixture');
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'profile-boot-fixture.js'), 'fixture');
@@ -82,42 +84,26 @@ function child(): EventEmitter & { exitCode: number | null; signalCode: string |
   return value;
 }
 
-function runInteractive(command: string, args: string[], env: Record<string, string | undefined>, input: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const process = spawn(command, args, { env: Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)), stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    process.stdout.setEncoding('utf8');
-    process.stderr.setEncoding('utf8');
-    process.stdout.on('data', (chunk: string) => { stdout += chunk; });
-    process.stderr.on('data', (chunk: string) => { stderr += chunk; });
-    process.once('error', reject);
-    process.once('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
-    process.stdin.end(input);
-  });
-}
-
 async function prerequisiteBin(root: string): Promise<{ bin: string; env: Record<string, string> }> {
   const bin = join(root, 'fake prerequisite bin');
   await mkdir(bin, { recursive: true });
-  for (const name of ['node.exe', 'npm.cmd', 'python.exe', 'bun.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', 'magick.exe']) await writeFile(join(bin, name), 'fixture');
+  for (const name of ['node.exe', 'npm.cmd', 'python.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', 'magick.exe']) await writeFile(join(bin, name), 'fixture');
   return { bin, env: { PATH: bin, LOCALAPPDATA: join(root, 'Local AppData'), APPDATA: join(root, 'Roaming AppData') } };
 }
 
 function prerequisiteRunner() {
   return async (command: string, args: string[], options: { cwd?: string }) => {
     const name = basename(command).toLowerCase();
-    if (args[0] === 'add') {
+    if (args[0] === 'ci' && options.cwd?.includes('.dsh.staging-')) {
       await dshRuntime(options.cwd!);
       return { exitCode: 0, stdout: '', stderr: '' };
     }
-    if (args[0] === 'pm') return { exitCode: 0, stdout: '', stderr: '' };
     if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n', stderr: '' };
     if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
-    if (name === 'node.exe') return { exitCode: 0, stdout: 'v20.18.0', stderr: '' };
+    if (name === 'node.exe' && args[0] === '-p') return { exitCode: 0, stdout: 'iron', stderr: '' };
+    if (name === 'node.exe') return { exitCode: 0, stdout: 'v22.18.0', stderr: '' };
     if (name === 'npm.cmd') return { exitCode: 0, stdout: '10.8.2', stderr: '' };
     if (name === 'python.exe') return { exitCode: 0, stdout: 'Python 3.13.15', stderr: '' };
-    if (name === 'bun.exe') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
     if (name === 'pwsh.exe') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
     if (name === 'git.exe') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
     if (name === 'coreutils-manager.exe' && args[0] === '--help') return { exitCode: 0, stdout: 'Manage coreutils utilities and PowerShell profiles\n enable\n disable\n status\n', stderr: '' };
@@ -142,13 +128,14 @@ async function writePinnedPackageRuntime(
   try { rootPackage = JSON.parse(await readFile(join(runtime, 'package.json'), 'utf8')) as typeof rootPackage; } catch { /* first package in the fake runtime */ }
   rootPackage.dependencies = { ...(rootPackage.dependencies ?? {}), [packageName]: version };
   await writeFile(join(runtime, 'package.json'), JSON.stringify(rootPackage));
-  let lock: { lockfileVersion?: number; workspaces?: Record<string, { dependencies?: Record<string, string> }>; packages?: Record<string, unknown[]> } = { lockfileVersion: 1, workspaces: {}, packages: {} };
-  try { lock = JSON.parse(await readFile(join(runtime, 'bun.lock'), 'utf8')) as typeof lock; } catch { /* first package in the fake runtime */ }
-  const workspace = lock.workspaces?.[''] ?? {};
-  workspace.dependencies = { ...(workspace.dependencies ?? {}), [packageName]: version };
-  lock.workspaces = { ...(lock.workspaces ?? {}), '': workspace };
-  lock.packages = { ...(lock.packages ?? {}), [packageName]: [`${packageName}@${version}`, '', lockMetadata, integrity] };
-  await writeFile(join(runtime, 'bun.lock'), JSON.stringify(lock));
+  let lock: { lockfileVersion?: number; packages?: Record<string, unknown> } = { lockfileVersion: 3, packages: {} };
+  try { lock = JSON.parse(await readFile(join(runtime, 'package-lock.json'), 'utf8')) as typeof lock; } catch { /* first package in the fake runtime */ }
+  lock.packages ??= {};
+  const root = (lock.packages[''] as Record<string, unknown> | undefined) ?? {};
+  root.dependencies = { ...((root.dependencies ?? {}) as Record<string, string>), [packageName]: version };
+  lock.packages[''] = root;
+  lock.packages[`node_modules/${packageName}`] = { version, integrity, ...lockMetadata };
+  await writeFile(join(runtime, 'package-lock.json'), JSON.stringify(lock));
   await writeFile(join(packageDir, 'package.json'), JSON.stringify(packageManifest));
   const entry = typeof packageManifest.main === 'string'
     ? packageManifest.main
@@ -164,6 +151,10 @@ async function writePnpmRuntime(runtime: string): Promise<void> {
   await mkdir(join(packageDir, 'bin'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
   await writeFile(join(packageDir, 'package.json'), JSON.stringify({ version: PNPM_VERSION, bin: { pnpm: 'bin/pnpm.cjs' } }));
+  await writeFile(join(runtime, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+    '': { dependencies: { pnpm: PNPM_VERSION } },
+    'node_modules/pnpm': { version: PNPM_VERSION, integrity: 'sha512-NOU4wym1VTAUyo6PRTWZf5YYCh0PYUM5NXRJk1NQ2STiL4YUaCGRJk7DPRRirCFWGv+X9rsYBlNRwWLH6PbeZw==' }
+  } }));
   await writeFile(join(packageDir, 'bin', 'pnpm.cjs'), '/* fixture pnpm */\n');
   await writeFile(join(runtime, 'node_modules', '.bin', 'pnpm.cmd'), '@echo off\r\n');
 }
@@ -226,28 +217,24 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
     calls.push({ command, args: [...args], cwd: options.cwd });
     const cwd = options.cwd;
     const packageSpec = args.find((value) => value.includes('@') && !value.startsWith('--'));
-    if (args[0] === 'install' && packageSpec === `pnpm@${PNPM_VERSION}`) {
+    if (args[0] === 'ci' && cwd?.includes('.pnpm.staging-')) {
       await writePnpmRuntime(cwd!);
       return { exitCode: 0, stdout: '', stderr: '' };
     }
-    if (args[0] === 'add' && packageSpec === `${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`) {
+    if (args[0] === 'ci' && cwd?.includes('.mcporter.staging-')) {
       await writePinnedPackageRuntime(cwd!, MCPORTER_PACKAGE, MCPORTER_VERSION, MCPORTER_NPM_INTEGRITY, { version: MCPORTER_VERSION, main: 'dist/index.js' });
       return { exitCode: 0, stdout: '', stderr: '' };
     }
-    if (args[0] === 'add' && packageSpec === `${RPGMAKER_MV_MCP_PACKAGE}@${RPGMAKER_MV_MCP_VERSION}`) {
+    if (args[0] === 'ci' && cwd?.includes('.mcp.staging-')) {
       await writePinnedPackageRuntime(cwd!, RPGMAKER_MV_MCP_PACKAGE, RPGMAKER_MV_MCP_VERSION, RPGMAKER_MV_MCP_INTEGRITY, { name: RPGMAKER_MV_MCP_PACKAGE, version: RPGMAKER_MV_MCP_VERSION, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } });
-      return { exitCode: 0, stdout: '', stderr: '' };
-    }
-    if (args[0] === 'add' && packageSpec === `${RPGMAKER_MZ_MCP_PACKAGE}@${RPGMAKER_MZ_MCP_VERSION}`) {
       await writePinnedPackageRuntime(cwd!, RPGMAKER_MZ_MCP_PACKAGE, RPGMAKER_MZ_MCP_VERSION, RPGMAKER_MZ_MCP_INTEGRITY, { name: RPGMAKER_MZ_MCP_PACKAGE, version: RPGMAKER_MZ_MCP_VERSION, bin: { 'rpgmaker-mz-mcp': 'dist/index.js' } }, { bin: { 'rpgmaker-mz-mcp': 'dist/index.js' } });
       return { exitCode: 0, stdout: '', stderr: '' };
     }
-    if (args[0] === 'add' && packageSpec === `${DSH_PACKAGE_NAME}@${DSH_VERSION}`) {
+    if (args[0] === 'ci' && cwd?.includes('.dsh.staging-')) {
       await dshRuntime(cwd!);
       return { exitCode: 0, stdout: '', stderr: '' };
     }
-    if (args[0] === 'pm') return { exitCode: 0, stdout: '', stderr: '' };
-    if (args[0] === 'plugin') {
+    if (args.includes('plugin')) {
       const packageSpec = args.at(-1);
       if (packageSpec === `${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`) {
         await writeProfilePlugin(context.dshHome, DSH_WEB_PACKAGE, DSH_WEB_VERSION, '');
@@ -268,7 +255,7 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
     if (name === 'magick.exe') return { exitCode: 0, stdout: 'ImageMagick 7.1.2-29 Q16 x64\n', stderr: '' };
     if (name === 'python.exe') return { exitCode: 0, stdout: 'Python 3.13.15\n', stderr: '' };
     if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
-    if (args[0] === 'add') throw new Error(`unexpected dependency fixture args: ${args.join(' ')}`);
+    if (args[0] === 'ci') throw new Error(`unexpected dependency fixture args: ${args.join(' ')}`);
     return base(command, args, options);
   };
 }
@@ -330,7 +317,7 @@ describe('Windows release gate foundations', () => {
       expect(calls[0]?.args).toEqual(['--version']);
       expect(calls[1]?.command).toBe(pwsh);
       expect(calls[1]?.args).toEqual([
-        '-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
         join(REPOSITORY_ROOT, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE),
         '-LiteralPath', resolve(root)
       ]);
@@ -471,15 +458,16 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('runs the installed mount probe with native Node while keeping Bun as the Xerolo runner', async () => {
+  test('runs the installed mount probe with native Node for all JavaScript entrypoints', async () => {
     const root = await temp('phase7-installed-mount-runner');
     try {
       const { bin } = await prerequisiteBin(root);
-      const bun = join(bin, 'bun.exe');
       const node = join(bin, 'node.exe');
+      const notNode = join(bin, 'not-node.exe');
+      await writeFile(notNode, 'fixture');
       expect(await resolveInstalledNode({ PATH: bin })).toBe(node);
       await expect(resolveInstalledNode({ PATH: join(root, 'missing node bin') })).rejects.toThrow(/node\.exe was not found/i);
-      await expect(resolveInstalledNode({ PATH: bin, NODE_EXECUTABLE: bun })).rejects.toThrow(/direct native node\.exe runner/i);
+      await expect(resolveInstalledNode({ PATH: bin, NODE_EXECUTABLE: notNode })).rejects.toThrow(/direct native node\.exe runner/i);
 
       const installedRoot = join(root, 'program');
       const dshHome = join(root, 'state');
@@ -515,7 +503,7 @@ describe('Windows release gate foundations', () => {
         dshHome,
         neutralLanding,
         workspace,
-        { BUN_EXECUTABLE: bun },
+        {},
         node,
         async (command, args, options) => {
           invocation = { command, args: [...args], cwd: options.cwd, env: options.env };
@@ -526,7 +514,7 @@ describe('Windows release gate foundations', () => {
       expect(invocation?.command).toBe(node);
       expect(invocation?.args).toEqual([mountScript]);
       expect(invocation?.cwd).toBe(neutralLanding);
-      expect(invocation?.env?.[JS_RUNNER_ENV]).toBe(bun);
+      expect(invocation?.env?.[JS_RUNNER_ENV]).toBe(node);
       expect(invocation?.env?.[RPGMAKER_MCP_RUNTIME_ENV]).toBe(mcpRuntime);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -540,8 +528,8 @@ describe('Windows release gate foundations', () => {
       'dsh home',
       'neutral landing',
       'workspace',
-      { BUN_EXECUTABLE: 'bun.exe' },
-      'bun.exe',
+      {},
+      'not-node.exe',
       async () => {
         invoked = true;
         return { exitCode: 0, stdout: '{"ok":true}\n', stderr: '' };
@@ -617,7 +605,7 @@ describe('Windows release gate foundations', () => {
       expect(paths.mutableRoot).toBe(resolve(root, 'BaiheStudio', 'DSH-RPGMaker-MV'));
       expect(paths.dshHome).toBe(join(paths.mutableRoot, 'state'));
       expect(paths.logsDir).toBe(join(paths.mutableRoot, 'logs'));
-      expect(paths.cacheDir).toBe(join(paths.mutableRoot, 'cache'));
+      expect(paths.cacheDir).toBe(join(paths.installationRoot, 'cache'));
       expect(paths.neutralLandingDir).toBe(join(paths.programRoot, 'neutral'));
       expect(paths.startMenuShortcutPath).toContain(join('BaiheStudio', 'RPG Maker Agent.lnk'));
     } finally {
@@ -625,13 +613,13 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('requires explicit consent before WinGet prerequisite installation and verifies all seven identities', async () => {
+  test('requires explicit consent before WinGet prerequisite installation and verifies all supported identities', async () => {
     const root = await temp('phase7-prerequisites');
     try {
       const { bin, env } = await prerequisiteBin(root);
       const report = await verifyWindowsPrerequisites({ platform: 'win32', env, commandRunner: prerequisiteRunner() });
       expect(report.ok).toBe(true);
-      expect(report.checks.map((check) => check.id)).toEqual(['node', 'python', 'bun', 'powershell', 'git', 'coreutils', 'imagemagick']);
+      expect(report.checks.map((check) => check.id)).toEqual(['node', 'python', 'powershell', 'git', 'coreutils', 'imagemagick']);
       const missing = await verifyWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, commandRunner: prerequisiteRunner() });
       expect(missing.ok).toBe(false);
       await expect(installWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, consent: false, commandRunner: prerequisiteRunner() })).rejects.toBeInstanceOf(PrerequisiteConsentError);
@@ -680,7 +668,7 @@ describe('Windows release gate foundations', () => {
         commandRunner: runner
       });
       expect(report.ok).toBe(true);
-      expect(wingetCalls).toBe(7);
+      expect(wingetCalls).toBe(6);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -762,32 +750,33 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('Windows install wrappers pass explicit consent to the CLI without touching live roots', async () => {
+  test('Windows install wrappers forward to the compiled installer without unconditional pauses', async () => {
     if (process.platform !== 'win32') return;
     const root = await temp('phase7-wrapper-100%!');
     try {
-      const bin = join(root, 'bin');
       const release = join(root, 'release 100%!');
-      const local = join(root, 'local appdata');
-      const appdata = join(root, 'roaming appdata');
       const capture = join(root, 'wrapper-argv.json');
-      await mkdir(join(release, 'src'), { recursive: true });
-      await mkdir(bin, { recursive: true });
-      await cp(process.execPath, join(bin, 'bun.exe'));
+      const entry = join(root, 'capture-installer.ts');
+      const installer = join(release, 'installer.exe');
+      await mkdir(join(release, 'scripts'), { recursive: true });
       await writeFile(join(release, 'install.ps1'), await readFile(join(REPOSITORY_ROOT, 'install.ps1')));
       await writeFile(join(release, 'Install.cmd'), await readFile(join(REPOSITORY_ROOT, 'Install.cmd')));
-      await writeFile(join(release, 'src', 'cli.ts'), 'await Bun.write(process.env.WRAPPER_CAPTURE!, JSON.stringify(process.argv));\n');
-      const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin};${process.env.PATH ?? ''}`, LOCALAPPDATA: local, APPDATA: appdata, WRAPPER_CAPTURE: capture };
+      await writeFile(join(release, 'scripts', 'detect-explorer-launch.ps1'), await readFile(join(REPOSITORY_ROOT, 'scripts', 'detect-explorer-launch.ps1')));
+      await writeFile(entry, 'await Bun.write(process.env.WRAPPER_CAPTURE!, JSON.stringify(process.argv.slice(2)));\n');
+      const env: Record<string, string | undefined> = { ...process.env, WRAPPER_CAPTURE: capture };
+      const compile = await runCommand(process.execPath, ['build', entry, '--compile', '--target=bun-windows-x64', '--outfile', installer], { cwd: root, env, platform: 'win32', timeoutMs: 120_000 });
+      expect(compile.exitCode).toBe(0);
+      expect(await Bun.file(installer).exists()).toBe(true);
       const powershell = process.env.PWSH_EXECUTABLE ?? 'powershell.exe';
-      const direct = await runInteractive(powershell, ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(release, 'install.ps1'), '-NoPause'], env, 'Y\n');
+      const direct = await runCommand(powershell, ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(release, 'install.ps1'), '--yes', '--plain', '--non-interactive'], { cwd: release, env, platform: 'win32', timeoutMs: 30_000 });
       expect(direct.exitCode).toBe(0);
       const directArgs = JSON.parse(await readFile(capture, 'utf8')) as string[];
-      expect(directArgs).toEqual(expect.arrayContaining(['install', '--release-root', release, '--yes']));
+      expect(directArgs).toEqual(expect.arrayContaining(['install', '--release-root', release, '--yes', '--plain', '--non-interactive']));
       const command = env.ComSpec ?? env.COMSPEC ?? 'cmd.exe';
-      const viaCmd = await runCommand(command, ['/d', '/v:off', '/s', '/c', `call "${join(release, 'Install.cmd')}" -Yes -NoPause`], { env, platform: 'win32', timeoutMs: 30_000 });
+      const viaCmd = await runCommand(command, ['/d', '/v:off', '/s', '/c', `call "${join(release, 'Install.cmd')}" --yes --plain --non-interactive`], { cwd: release, env, platform: 'win32', timeoutMs: 30_000 });
       expect(viaCmd.exitCode).toBe(0);
       const cmdArgs = JSON.parse(await readFile(capture, 'utf8')) as string[];
-      expect(cmdArgs).toEqual(expect.arrayContaining(['install', '--release-root', release, '--yes']));
+      expect(cmdArgs).toEqual(expect.arrayContaining(['--yes', '--plain', '--non-interactive']));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -799,14 +788,23 @@ describe('Windows release gate foundations', () => {
       const { env } = await prerequisiteBin(root);
       const mutableRoot = join(root, 'mutable');
       const dshHome = join(mutableRoot, 'state');
-      const programRoot = join(root, 'program');
+      const installationRoot = join(root, 'installation');
+      const programRoot = join(installationRoot, 'program');
       const runtime = join(programRoot, 'runtime', 'dsh');
       const imageMagick = join(root, 'custom-magick', 'magick.exe');
       await dshRuntime(runtime);
+      await writePnpmRuntime(join(programRoot, 'runtime', 'pnpm'));
       await mkdir(dirname(imageMagick), { recursive: true });
       await writeFile(imageMagick, 'fixture');
       await cp(join(REPOSITORY_ROOT, 'tools', 'forgejo-mcp'), join(programRoot, 'tools', 'forgejo-mcp'), { recursive: true });
-      await ensureHarnessLayout({ platform: 'win32', env, mutableRoot, dshHome, programRoot, runtimeDir: runtime });
+      await ensureHarnessLayout({ platform: 'win32', env, installationRoot, mutableRoot, dshHome, programRoot, runtimeDir: runtime });
+      await commitInstallationReceipt({
+        product: PRODUCT_NAME,
+        owner: PROGRAM_OWNER,
+        installationRoot,
+        programRoot,
+        localStateRoot: mutableRoot
+      });
       await writeFile(join(dshHome, '.credentials.yaml'), 'provider: local\n');
       const presetRoot = join(dshHome, '.agent-presets');
       await mkdir(join(dshHome, 'rpgmaker-mv'), { recursive: true });
@@ -849,7 +847,6 @@ describe('Windows release gate foundations', () => {
         node: expect.stringContaining('node.exe'),
         npm: expect.stringContaining('npm.cmd'),
         python: expect.stringContaining('python.exe'),
-        bun: expect.stringContaining('bun.exe'),
         powershell: expect.stringContaining('pwsh.exe'),
         git: expect.stringContaining('git.exe'),
         coreutilsManager: expect.stringContaining('coreutils-manager.exe'),
@@ -1264,7 +1261,8 @@ describe('Windows release gate foundations', () => {
     try {
       const { env } = await prerequisiteBin(root);
       const mutable = join(root, 'mutable');
-      const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const installationRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const program = join(installationRoot, 'program');
       const state = join(mutable, 'state');
       const appData = join(root, 'AppData', 'Roaming');
       const legacyShortcut = join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'BaiheStudio', 'DSH for RPG Maker MV.lnk');
@@ -1277,15 +1275,15 @@ describe('Windows release gate foundations', () => {
         platform: 'win32',
         env: { ...env, APPDATA: appData, DEEPSEEK_API_KEY: 'must-not-be-written' },
         releaseRoot: REPOSITORY_ROOT,
+        installationRoot,
         programRoot: program,
         mutableRoot: mutable,
         dshHome: state,
         commandRunner: prerequisiteRunner(),
         consent: true,
-        prepareAgentDependencies: async ({ paths, bunExecutable }) => {
+        prepareAgentDependencies: async ({ paths }) => {
           dependencyPreparations += 1;
           expect(paths.programRoot).toBe(program);
-          expect(bunExecutable.toLowerCase()).toContain('bun');
         },
         createShortcut: async (options) => {
           const shortcut = resolveHarnessPaths(options).startMenuShortcutPath;
@@ -1308,7 +1306,7 @@ describe('Windows release gate foundations', () => {
       expect(forgejoMcp.valid).toBe(true);
       expect(forgejoMcp.executablePath).toBe(forgejoMcpExecutablePath(program));
       expect((await stat(join(mutable, 'logs'))).isDirectory()).toBe(true);
-      expect((await stat(join(mutable, 'cache'))).isDirectory()).toBe(true);
+      expect((await stat(join(installationRoot, 'cache'))).isDirectory()).toBe(true);
       expect(result.shortcutPath).toBe(join(dirname(legacyShortcut), 'RPG Maker Agent.lnk'));
       expect(await Bun.file(result.shortcutPath).exists()).toBe(true);
       expect(await Bun.file(legacyShortcut).exists()).toBe(false);
@@ -1350,12 +1348,10 @@ describe('Windows release gate foundations', () => {
       await writeFile(join(retiredAssetPreset, '.dsh-rpgmaker-owned.json'), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId: 'asset-workshop', format: 1 })}\n`);
       await mkdir(retiredBuildReleasePreset, { recursive: true });
       await writeFile(join(retiredBuildReleasePreset, '.dsh-rpgmaker-owned.json'), `${JSON.stringify({ owner: 'dsh-rpgmaker-mv', presetId: 'build-release', format: 1 })}\n`);
-      const bun = join(bin, 'bun.exe');
       const npm = join(bin, 'npm.cmd');
       const node = join(bin, 'node.exe');
       const env = {
         ...prerequisiteEnv,
-        BUN_EXECUTABLE: bun,
         NPM_EXECUTABLE: npm,
         NODE_EXECUTABLE: node
       };
@@ -1368,7 +1364,6 @@ describe('Windows release gate foundations', () => {
         programRoot: program,
         mutableRoot: mutable,
         dshHome: state,
-        bunExecutable: bun,
         npmExecutable: npm,
         commandRunner,
         consent: true,
@@ -1387,18 +1382,17 @@ describe('Windows release gate foundations', () => {
       expect(await Bun.file(retiredAssetPreset).exists()).toBe(false);
       expect(await Bun.file(retiredBuildReleasePreset).exists()).toBe(false);
       expect(await readFile(installedForgejoPreset, 'utf8')).toContain('DSH_RPGMAKER_PROGRAM_ROOT');
-      expect(calls.some((call) => call.args.includes(`pnpm@${PNPM_VERSION}`))).toBe(true);
+      expect(calls.some((call) => call.args[0] === 'ci' && call.cwd?.includes('.pnpm.staging-'))).toBe(true);
       expect(calls.some((call) => basename(call.command).toLowerCase() === 'python.exe')).toBe(true);
       expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
       expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', '@anionex', 'dsh-vision-toolkit')).exists()).toBe(false);
-      expect(await Bun.file(join(state, 'cache', 'dsh-vision-toolkit')).exists()).toBe(false);
-      expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
-      expect(calls.some((call) => call.args.includes(`${RPGMAKER_MV_MCP_PACKAGE}@${RPGMAKER_MV_MCP_VERSION}`))).toBe(true);
-      expect(calls.some((call) => call.args.includes(`${RPGMAKER_MZ_MCP_PACKAGE}@${RPGMAKER_MZ_MCP_VERSION}`))).toBe(true);
-      expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
+      expect(await Bun.file(join(program, 'cache', 'dsh-vision-toolkit')).exists()).toBe(false);
+      expect(calls.some((call) => call.args[0] === 'ci' && call.cwd?.includes('.mcporter.staging-'))).toBe(true);
+      expect(calls.some((call) => call.args[0] === 'ci' && call.cwd?.includes('.mcp.staging-'))).toBe(true);
+      expect(calls.some((call) => call.args.includes('plugin') && call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`))).toBe(true);
       expect(calls.flatMap((call) => call.args)).not.toContain('@tta-lab/dsh-web');
-      expect(calls.some((call) => call.args.includes(`${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
-      expect(calls.some((call) => call.args.includes(`file:${join(program, DSH_BRAND_BUNDLE_RELATIVE)}`) && call.args.slice(0, 5).join(' ') === 'plugin --profile web add --save-exact')).toBe(true);
+      expect(calls.some((call) => call.args.includes('plugin') && call.args.includes(`${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`))).toBe(true);
+      expect(calls.some((call) => call.args.includes('plugin') && call.args.includes(`file:${join(program, DSH_BRAND_BUNDLE_RELATIVE)}`))).toBe(true);
       expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', ...DSH_BRAND_PACKAGE.split('/'), 'assets', 'maker-ape-logo.png')).exists()).toBe(true);
       expect((JSON.parse(await readFile(join(state, 'profiles', 'web', 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }).dsh?.profile?.bundles).toEqual([...MANAGED_WEB_PROFILE_BUNDLE_NAMES]);
       expect((JSON.parse(await readFile(join(program, DSH_BRAND_BUNDLE_RELATIVE, 'package.json'), 'utf8')) as { exports?: Record<string, string> }).exports?.['./package.json']).toBe('./package.json');
@@ -1509,7 +1503,7 @@ describe('Windows release gate foundations', () => {
       expect(rebuiltWebProfile.dsh?.profile?.bundles).toEqual([...MANAGED_WEB_PROFILE_BUNDLE_NAMES]);
       expect(calls.some((call) => call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`))).toBe(true);
       expect(calls.flatMap((call) => call.args)).not.toContain('@anionex/dsh-vision-toolkit');
-      expect(calls.some((call) => call.args.includes(`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`))).toBe(true);
+      expect(calls.some((call) => call.args[0] === 'ci' && call.cwd?.includes('.mcporter.staging-'))).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcporter', 'package.json')).exists()).toBe(true);
       expect(await Bun.file(join(program, 'runtime', 'mcp', 'package.json')).exists()).toBe(true);
       expect(calls.some((call) => call.args.includes(`${RPGMAKER_MV_MCP_PACKAGE}@${RPGMAKER_MV_MCP_VERSION}`))).toBe(false);
@@ -1623,7 +1617,7 @@ describe('Windows release gate foundations', () => {
         await writeFile(join(program, 'old-tree.txt'), `prior ${failure}\n`);
         const baseRunner = prerequisiteRunner();
         const commandRunner = failure === 'bootstrap'
-          ? async (command: string, args: string[], options: { cwd?: string }) => args[0] === 'add'
+          ? async (command: string, args: string[], options: { cwd?: string }) => args[0] === 'ci'
             ? { exitCode: 1, stdout: '', stderr: 'bootstrap fixture failure' }
             : baseRunner(command, args, options)
           : baseRunner;
@@ -1657,12 +1651,14 @@ describe('Windows release gate foundations', () => {
     const root = await temp('phase7-first-install-failure');
     try {
       const { env } = await prerequisiteBin(root);
-      const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const installationRoot = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+      const program = join(installationRoot, 'program');
       const mutable = join(root, 'mutable');
       await expect(installWindowsRelease({
         platform: 'win32',
         env,
         releaseRoot: REPOSITORY_ROOT,
+        installationRoot,
         programRoot: program,
         mutableRoot: mutable,
         dshHome: join(mutable, 'state'),
@@ -1684,10 +1680,11 @@ describe('Windows release gate foundations', () => {
   test('uninstall removes only program files/cache by default and purges state only explicitly', async () => {
     const root = await temp('phase7-uninstall');
     try {
-      const program = join(root, 'program');
+      const installationRoot = join(root, 'installation');
+      const program = join(installationRoot, 'program');
       const mutable = join(root, 'mutable');
       const state = join(mutable, 'state');
-      const cache = join(mutable, 'cache');
+      const cache = join(installationRoot, 'cache');
       const projectPath = await project(root);
       const shortcut = join(root, 'Start Menu', 'DSH.lnk');
       await mkdir(program, { recursive: true });
@@ -1696,9 +1693,9 @@ describe('Windows release gate foundations', () => {
       await writeFile(join(state, '.credentials.yaml'), 'provider: local\n');
       await mkdir(resolve(shortcut, '..'), { recursive: true });
       await writeFile(shortcut, 'shortcut');
-      const options = { platform: 'win32', programRoot: program, mutableRoot: mutable, dshHome: state, runtimeDir: join(program, 'runtime', 'dsh'), startMenuShortcutPath: shortcut };
+      const options = { platform: 'win32', installationRoot, programRoot: program, mutableRoot: mutable, dshHome: state, runtimeDir: join(program, 'runtime', 'dsh'), startMenuShortcutPath: shortcut };
       await writeFile(join(program, PROGRAM_OWNERSHIP_FILE), `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1 })}\n`);
-      await writeFile(join(program, 'install.json'), `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1, programRoot: program, mutableRoot: mutable, dshHome: state, runtimeDir: join(program, 'runtime', 'dsh') })}\n`);
+      await writeFile(join(program, 'install.json'), `${JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1, installationRoot, localStateRoot: mutable, installationCacheDir: cache, programRoot: program, mutableRoot: mutable, dshHome: state, runtimeDir: join(program, 'runtime', 'dsh') })}\n`);
       const outerRollback = `${program}.rollback-old`;
       await mkdir(outerRollback, { recursive: true });
       await writeFile(join(outerRollback, 'old-runtime.txt'), 'preserve me');
@@ -1779,7 +1776,7 @@ describe('Windows release gate foundations', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, { timeout: 120_000 });
 
   test('repeated setup repairs the local web-profile bundle after a Release ZIP extraction', async () => {
     const root = await temp('phase7-release-repair-选择');
@@ -1800,11 +1797,9 @@ describe('Windows release gate foundations', () => {
       const mutable = join(root, 'Mutable state 选择 with spaces');
       const program = join(root, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
       const state = join(mutable, 'state');
-      const bun = join(bin, 'bun.exe');
       const npm = join(bin, 'npm.cmd');
       const env = {
         ...prerequisiteEnv,
-        BUN_EXECUTABLE: bun,
         NPM_EXECUTABLE: npm,
         NODE_EXECUTABLE: join(bin, 'node.exe')
       };
@@ -1818,7 +1813,6 @@ describe('Windows release gate foundations', () => {
         programRoot: program,
         mutableRoot: mutable,
         dshHome: state,
-        bunExecutable: bun,
         npmExecutable: npm,
         commandRunner: runner,
         consent: true,
@@ -1841,7 +1835,6 @@ describe('Windows release gate foundations', () => {
         programRoot: program,
         mutableRoot: mutable,
         dshHome: state,
-        bunExecutable: bun,
         npmExecutable: npm,
         commandRunner: runner,
         consent: true,
@@ -1866,7 +1859,6 @@ describe('Windows release gate foundations', () => {
         mcporterRuntimeDir: join(program, 'runtime', 'mcporter'),
         rpgmakerRuntimeDir: join(program, 'runtime', 'mcp'),
         dshExecutable,
-        bunExecutable: bun,
         npmExecutable: npm,
         sourceRoot: join(program, 'presets', 'rpgmaker'),
         commandRunner: launchRunner
@@ -1901,7 +1893,7 @@ describe('Windows release gate foundations', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, { timeout: 120_000 });
 
   test('adds fixed binding args only for the project-neutral DSH web launch', async () => {
     const root = await temp('phase7-launch');

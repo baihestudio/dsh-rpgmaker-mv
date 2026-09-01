@@ -32,7 +32,7 @@ async function makeDshRuntime(root: string): Promise<string> {
   await mkdir(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: DSH_VERSION, bin: { dsh: 'lib/bin.js' } }));
-  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), '#!/usr/bin/env bun\n');
+  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), '#!/usr/bin/env node\n');
   await writeFile(join(runtime, 'node_modules', '.bin', 'dsh.cmd'), '@echo off\r\n');
   await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml'), "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: >-\n      generic Code persona\n- id: code-tool\n  name: fake-code-tool\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n");
   return runtime;
@@ -44,15 +44,16 @@ async function makeMcpRuntime(runtime: string): Promise<void> {
   await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', 'rpgmaker-mz-mcp', 'dist'), { recursive: true });
   await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'rpgmaker-mcp-runtime', private: true, dependencies: { [RPGMAKER_MV_MCP_PACKAGE]: RPGMAKER_MV_MCP_VERSION, [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION } }));
-  await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { [RPGMAKER_MV_MCP_PACKAGE]: RPGMAKER_MV_MCP_VERSION, [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION } } }, packages: {
-    [RPGMAKER_MV_MCP_PACKAGE]: [`${RPGMAKER_MV_MCP_PACKAGE}@${RPGMAKER_MV_MCP_VERSION}`, 'registry.npmjs.org', { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, RPGMAKER_MV_MCP_INTEGRITY],
-    [RPGMAKER_MZ_MCP_PACKAGE]: [`${RPGMAKER_MZ_MCP_PACKAGE}@${RPGMAKER_MZ_MCP_VERSION}`, 'registry.npmjs.org', { bin: { 'rpgmaker-mz-mcp': 'dist/index.js' } }, RPGMAKER_MZ_MCP_INTEGRITY]
+  await writeFile(join(runtime, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+    '': { dependencies: { [RPGMAKER_MV_MCP_PACKAGE]: RPGMAKER_MV_MCP_VERSION, [RPGMAKER_MZ_MCP_PACKAGE]: RPGMAKER_MZ_MCP_VERSION } },
+    [`node_modules/${RPGMAKER_MV_MCP_PACKAGE}`]: { version: RPGMAKER_MV_MCP_VERSION, integrity: RPGMAKER_MV_MCP_INTEGRITY },
+    [`node_modules/${RPGMAKER_MZ_MCP_PACKAGE}`]: { version: RPGMAKER_MZ_MCP_VERSION, integrity: RPGMAKER_MZ_MCP_INTEGRITY }
   } }));
   await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'package.json'), JSON.stringify({ name: RPGMAKER_MV_MCP_PACKAGE, version: RPGMAKER_MV_MCP_VERSION, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }));
   await writeFile(join(runtime, 'node_modules', 'rpgmaker-mz-mcp', 'package.json'), JSON.stringify({ name: RPGMAKER_MZ_MCP_PACKAGE, version: RPGMAKER_MZ_MCP_VERSION, bin: { 'rpgmaker-mz-mcp': 'dist/index.js' } }));
-  await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'bin', 'server.js'), '#!/usr/bin/env bun\n');
-  await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist', 'index.js'), '#!/usr/bin/env bun\n');
-  await writeFile(join(runtime, 'node_modules', 'rpgmaker-mz-mcp', 'dist', 'index.js'), '#!/usr/bin/env bun\n');
+  await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'bin', 'server.js'), '#!/usr/bin/env node\n');
+  await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'dist', 'index.js'), '#!/usr/bin/env node\n');
+  await writeFile(join(runtime, 'node_modules', 'rpgmaker-mz-mcp', 'dist', 'index.js'), '#!/usr/bin/env node\n');
   await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'bin', 'server.cmd'), '@echo off\r\n');
   await writeFile(join(runtime, 'node_modules', '.bin', 'rpgmaker-mv-mcp.cmd'), '@echo off\r\n');
 }
@@ -83,51 +84,50 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
     }
   });
 
-  test('rejects bun.cmd-only Windows runner paths without a shell fallback', async () => {
-    const root = await temp('phase2-bun-shim');
+  test('rejects non-Node Windows runner paths without a shell fallback', async () => {
+    const root = await temp('phase2-node-shim');
     try {
       const bin = join(root, '含 %! spaces', 'bin');
       await mkdir(bin, { recursive: true });
-      await writeFile(join(bin, 'bun.cmd'), '@echo off\r\n');
-      await expect(resolveMcpRunner({ projectPath: 'C:\\含 %! spaces\\project', bunExecutable: 'bun' }, 'win32', { PATH: bin })).rejects.toThrow(/resolved bun.exe or node.exe/i);
+      await writeFile(join(bin, 'node.cmd'), '@echo off\r\n');
+      await expect(resolveMcpRunner({ projectPath: 'C:\\含 %! spaces\\project', nodeExecutable: 'node' }, 'win32', { PATH: bin })).rejects.toThrow(/direct node\.exe/i);
       for (const badRunner of ['cmd.exe', 'command.com']) {
         const badPath = join(root, '含 %! spaces', badRunner);
         await writeFile(badPath, '');
-        await expect(resolveMcpRunner({ projectPath: 'C:\\含 %! spaces\\project', jsExecutable: badPath }, 'win32', { PATH: bin })).rejects.toThrow(/resolved bun.exe or node.exe/i);
+        await expect(resolveMcpRunner({ projectPath: 'C:\\含 %! spaces\\project', jsExecutable: badPath }, 'win32', { PATH: bin })).rejects.toThrow(/direct node\.exe/i);
       }
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  test('fails closed for missing or tampered MCP bun.lock release facts', async () => {
+  test('fails closed for missing or tampered MCP package-lock release facts', async () => {
     const root = await temp('phase2-lockfile');
     try {
       const runtime = join(root, 'mcp-runtime');
       await makeMcpRuntime(runtime);
-      await rm(join(runtime, 'bun.lock'));
+      await rm(join(runtime, 'package-lock.json'));
       expect((await verifyRpgMakerMcpRuntime(runtime, 'win32')).valid).toBe(false);
       await makeMcpRuntime(runtime);
-      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '9.9.9' } } }, packages: {} }));
+      await writeFile(join(runtime, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { [RPGMAKER_MV_MCP_PACKAGE]: '9.9.9' } } } }));
       const tampered = await verifyRpgMakerMcpRuntime(runtime, 'win32');
       expect(tampered.valid).toBe(false);
-      expect(tampered.errors.join(' ')).toContain('bun.lock');
+      expect(tampered.errors.join(' ')).toContain('package-lock.json');
       await makeMcpRuntime(runtime);
-      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0', 'different-source', { bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } }, 'sha512-wrong'] } }));
-      const wrongIntegrity = await verifyRpgMakerMcpRuntime(runtime, 'win32');
-      expect(wrongIntegrity.valid).toBe(false);
-      expect(wrongIntegrity.errors.join(' ')).toContain('npm integrity');
+      const wrongIntegrity = JSON.parse(await readFile(join(runtime, 'package-lock.json'), 'utf8')) as { packages: Record<string, Record<string, unknown>> };
+      wrongIntegrity.packages[`node_modules/${RPGMAKER_MV_MCP_PACKAGE}`].integrity = 'sha512-wrong';
+      await writeFile(join(runtime, 'package-lock.json'), JSON.stringify(wrongIntegrity));
+      const wrongIntegrityResult = await verifyRpgMakerMcpRuntime(runtime, 'win32');
+      expect(wrongIntegrityResult.valid).toBe(false);
+      expect(wrongIntegrityResult.errors.join(' ')).toContain('npm integrity');
       await makeMcpRuntime(runtime);
-      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({ lockfileVersion: 1, workspaces: { '': { dependencies: { '@xerolo44/rpgmaker-mv-mcp': '0.1.0' } } }, packages: { '@xerolo44/rpgmaker-mv-mcp': ['@xerolo44/rpgmaker-mv-mcp@0.1.0', 'different-source', { bin: { 'rpgmaker-mv-mcp': 'wrong.js' } }, 'sha512-oXdkSGKGiYAtexcoZBXhyUQub6zoYQ4tMU2aKTjAcqeKhUpQ4BypjuS0EYJ78/7zmOq3TwFNBkEaZyb8q+SGuA=='] } }));
+      const wrongBinManifest = JSON.parse(await readFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'package.json'), 'utf8')) as Record<string, unknown>;
+      wrongBinManifest.bin = { 'rpgmaker-mv-mcp': 'wrong.js' };
+      await writeFile(join(runtime, 'node_modules', '@xerolo44', 'rpgmaker-mv-mcp', 'package.json'), JSON.stringify(wrongBinManifest));
       const wrongBin = await verifyRpgMakerMcpRuntime(runtime, 'win32');
       expect(wrongBin.valid).toBe(false);
       expect(wrongBin.errors.join(' ')).toContain('bin');
       await makeMcpRuntime(runtime);
-      const futureLock = JSON.parse(await readFile(join(runtime, 'bun.lock'), 'utf8')) as { lockfileVersion: number; packages: Record<string, unknown[]> };
-      futureLock.lockfileVersion = 99;
-      futureLock.packages[RPGMAKER_MV_MCP_PACKAGE][1] = 'another-source';
-      futureLock.packages[RPGMAKER_MV_MCP_PACKAGE][2] = { dependencies: { completely: 'different' }, bin: { 'rpgmaker-mv-mcp': 'dist/index.js' } };
-      await writeFile(join(runtime, 'bun.lock'), JSON.stringify(futureLock));
       expect((await verifyRpgMakerMcpRuntime(runtime, 'win32')).valid).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -155,9 +155,9 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
     try {
       const runtime = await makeDshRuntime(root);
       const dsh = join(root, 'dsh');
-      const bun = join(root, 'bun.exe');
+      const node = join(root, 'node.exe');
       await writeFile(dsh, '');
-      await writeFile(bun, '');
+      await writeFile(node, '');
       const child = new EventEmitter() as EventEmitter & { exitCode: number | null; signalCode: NodeJS.Signals | null };
       child.exitCode = null;
       child.signalCode = null;
@@ -171,7 +171,7 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
         env: { DSH_HOME: ambientDshHome },
         runtimeDir: runtime,
         dshExecutable: dsh,
-        jsExecutable: bun,
+        jsExecutable: node,
         openWebBrowser: false,
         agentPreset: 'rpgmaker',
         sourceRoot: join(process.cwd(), 'presets', 'rpgmaker'),
@@ -251,7 +251,7 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
       expect(launch?.env?.DSH_HOME).toBe(dshHome);
       expect(launch?.env?.DSH_RPGMAKER_MCPORTER_RUNTIME).toBe(result.deployment.mcporterRuntimeDir);
       expect(launch?.env?.DSH_RPGMAKER_MCP_RUNTIME).toBe(result.deployment.rpgmakerRuntimeDir);
-      expect(launch?.env?.DSH_RPGMAKER_JS_RUNNER).toBe(bun);
+      expect(launch?.env?.DSH_RPGMAKER_JS_RUNNER).toBe(node);
       child.exitCode = 0;
       child.emit('exit', 0);
       await result.releaseSession();

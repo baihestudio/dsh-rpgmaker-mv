@@ -5,8 +5,14 @@ import { launchRpgmakerProject } from './rpgmaker';
 import { childExitCode, redactSensitive, runCommand, type CommandRunner, type InteractiveSpawner } from './process';
 import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT } from './config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, uninstallWindowsRelease } from './release-gate';
-import type { PrerequisiteConsent } from './prerequisites';
-import type { PortConflictAction, ExistingSessionOpener, PortProbe } from './windows';
+import type { PrerequisiteConsent, WindowsPrerequisiteCheck } from './prerequisites';
+import { pickInstallationRoot, type PortConflictAction, type ExistingSessionOpener, type PortProbe } from './windows';
+import { resolveExecutable } from './executable';
+import { createInstallationRenderer } from './install-renderer';
+import { rendererMode, type InstallationEventListener, type InstallationRendererMode } from './install-events';
+import { defaultLocalStateRoot, readInstallationReceipt } from './installation-root';
+import { createInterface } from 'node:readline/promises';
+import { stdin as processStdin, stdout as processStdout } from 'node:process';
 
 export interface CliIO {
   stdout: { write: (text: string) => unknown };
@@ -24,6 +30,8 @@ export interface CliDependencies {
   onPortConflict?: (url: string) => Promise<PortConflictAction> | PortConflictAction;
   openExistingSession?: ExistingSessionOpener;
   rpgmaker?: boolean;
+  installEventListener?: InstallationEventListener;
+  installationPicker?: (defaultPath: string) => Promise<string | undefined>;
 }
 
 interface ParsedArgs {
@@ -67,9 +75,10 @@ function helpText(): string {
     'RPG Maker Agent — workspace-selected MV/MZ harness',
     '',
     'Commands:',
-    '  bootstrap   Install or repair the pinned DSH runtime using Bun',
+    '  bootstrap   Install or repair the pinned DSH runtime using Node.js/npm',
     '  doctor      Check Windows prerequisites, DSH metadata, and an explicit workspace',
     '  install     Install a Release ZIP into the per-user Windows roots',
+    '  repair      Rebuild the recorded installation root without relocation',
     '  uninstall   Remove program files/cache (use --purge for state/credentials)',
     '  release-zip Build and inspect a distributable Release ZIP',
     '  launch      Start project-neutral DSH Web; choose workspaces in its UI',
@@ -77,22 +86,26 @@ function helpText(): string {
     'Options:',
     '  --release-root <path>     Extracted Release ZIP root (install)',
     '  --zip <path>              Release ZIP path (release-zip)',
-    '  --program-root <path>     Per-user installed program root override',
-    '  --mutable-root <path>     Per-user mutable data root override',
+    '  --installation-root <path> First-install root for program, runtimes, and cache',
+    '  --local-state-root <path> Fixed per-user local state root override',
+    '  --program-root <path>     Installed program tree override (maintenance seam)',
+    '  --mutable-root <path>     Alias for the fixed local state root',
     '  --start-menu-shortcut <path> Override the owned Start Menu shortcut path',
     '  --dsh-home <path>         Override DSH_HOME for this invocation',
     '  --runtime-dir <path>      Override the app-owned runtime tree',
     '  --dsh-executable <path>   Use an explicit DSH executable',
     '  --workspace <path>        Inspect one explicit Windows workspace with Doctor',
     '  --sandbox-probe            Run the pinned DSH workspace-write runner after workspace checks pass',
-    '  --bun-executable <path>   Use an explicit Bun executable',
-    '  --js-executable <path>    Use an explicit Bun or Node executable for MCP',
+    '  --js-executable <path>    Use an explicit Node executable for MCP',
     '  --mcp-runtime-dir <path>  Use the app-owned RPG Maker MCP runtime',
     '  --source-root <path>      Preset source root override',
     '  --desktop-host-root <path> Prebuilt desktop host payload to package/install',
     '  --require-desktop-host    Require a verified native desktop host payload',
     '  --pwsh-executable <path>  Use an explicit PowerShell executable',
     '  --node-executable <path>  Use an explicit Node.js executable',
+    '  --plain                   Use append-only plain installation events',
+    '  --ndjson                  Use machine-readable NDJSON installation events',
+    '  --non-interactive         Disable dialogs and keypress waits',
     '  --npm-executable <path>   Use an explicit npm executable',
     '  --winget-executable <path> Use an explicit WinGet executable',
     '  --git-executable <path>   Use an explicit Git executable',
@@ -114,10 +127,12 @@ function baseOptions(parsed: ParsedArgs, dependencies: CliDependencies): Record<
     env: dependencies.env,
     dshHome: option(parsed.values, 'dsh-home'),
     runtimeDir: option(parsed.values, 'runtime-dir'),
+    installationRoot: option(parsed.values, 'installation-root'),
+    localStateRoot: option(parsed.values, 'local-state-root'),
     programRoot: option(parsed.values, 'program-root'),
     mutableRoot: option(parsed.values, 'mutable-root'),
     startMenuShortcutPath: option(parsed.values, 'start-menu-shortcut'),
-    bunExecutable: option(parsed.values, 'bun-executable'),
+    nodeExecutable: option(parsed.values, 'node-executable'),
     jsExecutable: option(parsed.values, 'js-executable'),
     commandRunner: dependencies.commandRunner
   };
@@ -127,6 +142,19 @@ function requiredOption(parsed: ParsedArgs, name: string): string {
   const value = option(parsed.values, name);
   if (!value) throw new Error(`Missing required option --${name}.`);
   return value;
+}
+
+async function promptPrerequisiteConsent(missing: WindowsPrerequisiteCheck[], io: CliIO): Promise<boolean> {
+  io.stdout.write('RPG Maker Agent may use WinGet to install or repair these prerequisites:\n');
+  for (const item of missing) io.stdout.write(`  - ${item.label}\n`);
+  if (!processStdin.isTTY || !processStdout.isTTY) return false;
+  const readline = createInterface({ input: processStdin, output: processStdout });
+  try {
+    const answer = (await readline.question('Allow WinGet to install or repair the listed prerequisites? [Y/N] ')).trim();
+    return /^(?:y|yes)$/i.test(answer);
+  } finally {
+    readline.close();
+  }
 }
 
 function validateCliFixedBinding(argv: string[]): void {
@@ -174,24 +202,63 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
     if (parsed.command === 'bootstrap') {
       const result = await bootstrapRuntime({
         ...baseOptions(parsed, dependencies),
-        bunExecutable: option(parsed.values, 'bun-executable')
+        nodeExecutable: option(parsed.values, 'node-executable'),
+        npmExecutable: option(parsed.values, 'npm-executable')
       });
       io.stdout.write(`Bootstrap ${result.status}: ${result.runtimeDir}\n`);
       if (result.rollbackDir) io.stdout.write(`Previous runtime retained for rollback: ${result.rollbackDir}\n`);
       return 0;
     }
 
-    if (parsed.command === 'install') {
+    if (parsed.command === 'install' || parsed.command === 'repair') {
+      const localStateRoot = option(parsed.values, 'local-state-root') ?? option(parsed.values, 'mutable-root') ?? defaultLocalStateRoot(dependencies.env ?? process.env);
+      const receipt = await readInstallationReceipt(localStateRoot);
+      if (parsed.command === 'repair' && !receipt) throw new Error('Repair requires an existing installation-location receipt. Run install first.');
+      let installationRoot = option(parsed.values, 'installation-root');
+      if (!installationRoot && !receipt) {
+        if (parsed.flags.has('non-interactive') || parsed.flags.has('plain') || parsed.flags.has('ndjson') || !(dependencies.env ?? process.env).TERM && !processStdin.isTTY) {
+          throw new Error('First installation requires an explicit --installation-root in noninteractive mode.');
+        }
+      }
+      const mode: InstallationRendererMode = parsed.flags.has('ndjson') ? 'ndjson' : parsed.flags.has('plain') || parsed.flags.has('non-interactive') ? 'plain' : rendererMode({ stdoutIsTTY: io.stdout === process.stdout });
+      const eventListener = dependencies.installEventListener ?? createInstallationRenderer(mode, io);
+      const installationRootPicker = !installationRoot && !receipt
+        ? (dependencies.installationPicker ?? (async (defaultPath: string): Promise<string | undefined> => {
+          let nativeDialogUnavailable = false;
+          const selected = await pickInstallationRoot({
+            defaultPath,
+            platform: dependencies.platform,
+            env: dependencies.env,
+            commandRunner: dependencies.commandRunner,
+            onUnavailable: () => { nativeDialogUnavailable = true; }
+          });
+          // A successful dialog with no selected path is a user cancellation,
+          // not an invitation to ask a second time.  Only an unavailable
+          // native adapter falls back to the validated terminal prompt.
+          if (!nativeDialogUnavailable || !processStdin.isTTY || !processStdout.isTTY) return selected;
+          const readline = createInterface({ input: processStdin, output: processStdout });
+          try {
+            return (await readline.question(`Installation root [${defaultPath}]: `)).trim() || defaultPath;
+          } finally {
+            readline.close();
+          }
+        }))
+        : undefined;
+      const prerequisiteConsent: PrerequisiteConsent = dependencies.prerequisiteConsent
+        ?? (parsed.flags.has('yes') ? true : mode === 'interactive' ? (missing) => promptPrerequisiteConsent(missing, io) : false);
       const result = await installWindowsRelease({
         platform: dependencies.platform,
         env: dependencies.env,
         releaseRoot: option(parsed.values, 'release-root') ?? process.cwd(),
+        installationRoot,
+        installationRootPicker,
+        operation: parsed.command === 'repair' ? 'repair' : undefined,
+        localStateRoot,
         dshHome: option(parsed.values, 'dsh-home'),
         runtimeDir: option(parsed.values, 'runtime-dir'),
         programRoot: option(parsed.values, 'program-root'),
         mutableRoot: option(parsed.values, 'mutable-root'),
         startMenuShortcutPath: option(parsed.values, 'start-menu-shortcut'),
-        bunExecutable: option(parsed.values, 'bun-executable'),
         pwshExecutable: option(parsed.values, 'pwsh-executable'),
         nodeExecutable: option(parsed.values, 'node-executable'),
         npmExecutable: option(parsed.values, 'npm-executable'),
@@ -200,9 +267,13 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         wingetExecutable: option(parsed.values, 'winget-executable'),
         desktopHostRoot: option(parsed.values, 'desktop-host-root'),
         requireDesktopHost: parsed.flags.has('require-desktop-host') ? true : undefined,
-        consent: dependencies.prerequisiteConsent ?? parsed.flags.has('yes'),
+        consent: prerequisiteConsent,
+        renderer: mode,
+        onEvent: eventListener,
+        nonInteractive: parsed.flags.has('non-interactive') || mode !== 'interactive',
         commandRunner: dependencies.commandRunner
       });
+      if (mode === 'ndjson') return 0;
       io.stdout.write(`Installed RPG Maker Agent under ${result.paths.programRoot}\n`);
       io.stdout.write(`Mutable state: ${result.paths.mutableRoot}; DSH_HOME: ${result.paths.dshHome}\n`);
       io.stdout.write(`Start Menu shortcut: ${result.shortcutPath}\n`);
@@ -213,6 +284,8 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
       const result = await uninstallWindowsRelease({
         platform: dependencies.platform,
         env: dependencies.env,
+        installationRoot: option(parsed.values, 'installation-root'),
+        localStateRoot: option(parsed.values, 'local-state-root'),
         dshHome: option(parsed.values, 'dsh-home'),
         runtimeDir: option(parsed.values, 'runtime-dir'),
         programRoot: option(parsed.values, 'program-root'),
@@ -245,7 +318,6 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         ...baseOptions(parsed, dependencies),
         workspace,
         sandboxProbe: parsed.flags.has('sandbox-probe'),
-        bunExecutable: option(parsed.values, 'bun-executable'),
         pwshExecutable: option(parsed.values, 'pwsh-executable'),
         nodeExecutable: option(parsed.values, 'node-executable'),
         npmExecutable: option(parsed.values, 'npm-executable'),

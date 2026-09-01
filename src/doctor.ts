@@ -4,7 +4,7 @@ import { stat } from 'node:fs/promises';
 import { resolveHarnessPaths, type PathOptions } from './config';
 import { verifyForgejoMcpRuntime } from './forgejo-mcp';
 import { verifyWindowsPrerequisites } from './prerequisites';
-import { findDshExecutable, verifyRuntime, type RuntimeVerification } from './bootstrap';
+import { findDshExecutable, findDshJavaScriptEntrypoint, verifyRuntime, type RuntimeVerification } from './bootstrap';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 import { withHarnessLock } from './lock';
 import { inspectCredentialMetadata, type CredentialMetadata } from './credentials';
@@ -17,6 +17,8 @@ import {
 } from './rpgmaker';
 import { verifyManagedWebProfile, type ManagedWebProfileOptions, type ManagedWebProfileVerification } from './managed-web-profile';
 import { inspectWorkspaceSandbox } from './workspace-sandbox';
+import { readInstallationReceipt } from './installation-root';
+import { verifyPnpmRuntimeForDoctor } from './profile';
 
 export interface DoctorDependencyVerificationContext {
   platform: string;
@@ -34,7 +36,6 @@ export interface DoctorOptions extends PathOptions {
   workspace?: string;
   sandboxProbe?: boolean;
   commandRunner?: CommandRunner;
-  bunExecutable?: string;
   pwshExecutable?: string;
   coreutilsExecutable?: string;
   gitExecutable?: string;
@@ -63,6 +64,8 @@ export interface DoctorReport {
   dshHome: string;
   programRoot: string;
   mutableRoot: string;
+  installationRoot: string;
+  localStateRoot: string;
   executablePaths: Record<string, string | undefined>;
   credentials: CredentialMetadata;
   checks: DoctorCheck[];
@@ -77,17 +80,28 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   const platform = options.platform ?? process.platform;
   if (platform !== 'win32') throw new Error('Doctor is supported on Windows only.');
   const env = options.env ?? process.env;
-  const paths = resolveHarnessPaths({ ...options, platform, env });
-  return withHarnessLock(paths.lockDir, () => runDoctorUnlocked(options, platform, env, paths), {
+  const initialPaths = resolveHarnessPaths({ ...options, platform, env });
+  const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
+  const paths = receipt
+    ? resolveHarnessPaths({ ...options, platform, env, installationRoot: receipt.installationRoot, programRoot: receipt.programRoot, mutableRoot: receipt.localStateRoot, localStateRoot: receipt.localStateRoot })
+    : initialPaths;
+  return withHarnessLock(paths.lockDir, () => runDoctorUnlocked(options, platform, env, paths, receipt), {
     timeoutMs: options.lockTimeoutMs,
     retryMs: options.lockRetryMs
   });
 }
 
-async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: Record<string, string | undefined>, paths: ReturnType<typeof resolveHarnessPaths>): Promise<DoctorReport> {
+async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: Record<string, string | undefined>, paths: ReturnType<typeof resolveHarnessPaths>, receipt: Awaited<ReturnType<typeof readInstallationReceipt>>): Promise<DoctorReport> {
   const runner = options.commandRunner ?? runCommand;
   const commandEnv = withoutCredentials(env);
   const checks: DoctorCheck[] = [];
+  checks.push(check(
+    'installation-receipt',
+    'Installation location receipt',
+    Boolean(receipt),
+    receipt ? `Receipt records installation root ${receipt.installationRoot}` : 'Installation location receipt is missing; run Install.cmd to complete installation.',
+    paths.installationReceiptPath
+  ));
   const prerequisites = await verifyWindowsPrerequisites({
     platform,
     env,
@@ -95,7 +109,6 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     nodeExecutable: options.nodeExecutable,
     npmExecutable: options.npmExecutable,
     pythonExecutable: options.pythonExecutable,
-    bunExecutable: options.bunExecutable,
     pwshExecutable: options.pwshExecutable,
     gitExecutable: options.gitExecutable,
     coreutilsExecutable: options.coreutilsExecutable,
@@ -104,10 +117,9 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
   checks.push(...prerequisites.checks.map((item) => check(item.id, item.label, item.ok, item.detail, item.executable)));
   const executablePaths: Record<string, string | undefined> = { ...prerequisites.executablePaths };
   const pwsh = prerequisites.executablePaths.powershell;
-  const bun = prerequisites.executablePaths.bun;
   const node = prerequisites.executablePaths.node;
 
-  const runtime = await verifyRuntime(paths.runtimeDir, { bunExecutable: bun ?? 'bun', commandRunner: runner, env: commandEnv, platform });
+  const runtime = await verifyRuntime(paths.runtimeDir, { nodeExecutable: node, npmExecutable: prerequisites.executablePaths.npm, commandRunner: runner, env: commandEnv, platform });
   checks.push(check(
     'dsh-runtime',
     `DSH ${runtime.dshPackageVersion ?? 'runtime'}`,
@@ -115,7 +127,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     runtime.valid ? `Pinned DSH ${runtime.dshPackageVersion} and koffi are verified` : runtime.errors.join('; ')
   ));
 
-  const dshExecutable = runtime.dshExecutable ?? await findDshExecutable(paths.runtimeDir, platform);
+  const dshExecutable = runtime.dshExecutable ?? await findDshJavaScriptEntrypoint(paths.runtimeDir) ?? await findDshExecutable(paths.runtimeDir, platform);
   executablePaths.dsh = dshExecutable;
   checks.push(check(
     'dsh-executable',
@@ -175,6 +187,13 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     managedWebProfile.profileDir
   ));
 
+  const pnpm = await verifyPnpmRuntimeForDoctor(paths.programRoot, platform);
+  checks.push(check('app-owned-pnpm', 'App-owned pnpm', pnpm.valid, pnpm.valid ? `Exact pnpm ${pnpm.version} is installed under the selected root` : pnpm.error ?? 'App-owned pnpm is missing or invalid', pnpm.executable));
+
+  const staleBun = await stat(join(paths.programRoot, 'runtime', 'bun')).then(() => true).catch(() => false)
+    || await stat(join(paths.runtimeDir, 'bun.lock')).then(() => true).catch(() => false);
+  checks.push(check('no-stale-bun-runtime', 'No stale Bun runtime state', !staleBun, staleBun ? 'A stale Bun-shaped managed runtime was found; rerun Install.cmd to replace it.' : 'No stale Bun runtime or Bun lock was found.', paths.installationRoot));
+
   const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env: commandEnv, programRoot: paths.programRoot, commandRunner: runner });
   executablePaths.forgejoMcp = forgejoMcp.executablePath;
   checks.push(check(
@@ -215,14 +234,14 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     timeoutPolicy.hostCompositionPath
   ));
 
-  const layoutPaths = [paths.mutableRoot, paths.dshHome, paths.logsDir, paths.cacheDir];
+  const layoutPaths = [paths.installationRoot, paths.programRoot, paths.installationCacheDir, paths.mutableRoot, paths.dshHome, paths.logsDir, paths.cacheDir];
   const layoutValues = await Promise.all(layoutPaths.map(async (path) => (await stat(path).catch(() => undefined))?.isDirectory() ?? false));
   const layoutOk = layoutValues.every(Boolean);
   checks.push(check(
     'app-layout',
     'Per-user DSH state layout',
     layoutOk,
-    layoutOk ? `Program files use ${paths.programRoot}; mutable state uses ${paths.mutableRoot} with DSH_HOME at ${paths.dshHome}` : `Mutable state layout is incomplete under ${paths.mutableRoot}; run Install.cmd or repair the installation`,
+    layoutOk ? `Installation root uses ${paths.installationRoot}; mutable state uses ${paths.mutableRoot} with DSH_HOME at ${paths.dshHome}` : `Installation layout is incomplete under ${paths.installationRoot}; run Install.cmd or repair the installation`,
     paths.mutableRoot
   ));
 
@@ -246,6 +265,8 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     dshHome: paths.dshHome,
     programRoot: paths.programRoot,
     mutableRoot: paths.mutableRoot,
+    installationRoot: paths.installationRoot,
+    localStateRoot: paths.localStateRoot,
     executablePaths,
     credentials,
     checks,
@@ -254,7 +275,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
 }
 
 export function renderDoctorReport(report: DoctorReport): string {
-  const lines = [`DSH RPG Maker doctor (${report.platform})`, `Program root: ${report.programRoot}`, `Mutable root: ${report.mutableRoot}`, `DSH_HOME: ${report.dshHome}`, `Runtime: ${report.runtimeDir}`, ''];
+  const lines = [`DSH RPG Maker doctor (${report.platform})`, `Installation root: ${report.installationRoot}`, `Program root: ${report.programRoot}`, `Local state root: ${report.localStateRoot}`, `Mutable root: ${report.mutableRoot}`, `DSH_HOME: ${report.dshHome}`, `Runtime: ${report.runtimeDir}`, ''];
   for (const item of report.checks) {
     lines.push(`${item.ok ? 'PASS' : 'FAIL'} ${item.label}: ${item.detail}`);
   }

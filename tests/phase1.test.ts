@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from '
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { bootstrapRuntime, findDshExecutable, verifyRuntime } from '../src/bootstrap';
+import { bootstrapRuntime, DSH_RUNTIME_MANIFEST_RELATIVE, DSH_RUNTIME_PEER_DEPENDENCIES, findDshExecutable, verifyRuntime } from '../src/bootstrap';
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION } from '../src/config';
 import { launchProject } from '../src/launcher';
 import { acquireHarnessLock } from '../src/lock';
@@ -33,25 +33,31 @@ async function makeRuntime(runtime: string, version = DSH_VERSION): Promise<void
     JSON.stringify({
       name: 'dsh-rpgmaker-runtime',
       private: true,
-      dependencies: { [DSH_PACKAGE_NAME]: version }
+      dependencies: { [DSH_PACKAGE_NAME]: version, ...DSH_RUNTIME_PEER_DEPENDENCIES }
     })
   );
   await writeFile(
-    join(runtime, 'bun.lock'),
+    join(runtime, 'package-lock.json'),
     JSON.stringify({
-      lockfileVersion: 1,
-      workspaces: { '': { dependencies: { [DSH_PACKAGE_NAME]: version } } },
-      packages: { [DSH_PACKAGE_NAME]: [`${DSH_PACKAGE_NAME}@${version}`, '', {}, version === DSH_VERSION ? DSH_NPM_INTEGRITY : 'sha512-old-runtime'] }
+      name: 'dsh-rpgmaker-runtime',
+      lockfileVersion: 3,
+      packages: {
+        '': { dependencies: { [DSH_PACKAGE_NAME]: version, ...DSH_RUNTIME_PEER_DEPENDENCIES } },
+        [`node_modules/${DSH_PACKAGE_NAME}`]: { version, integrity: version === DSH_VERSION ? DSH_NPM_INTEGRITY : 'sha512-old-runtime' },
+        ...Object.fromEntries(Object.entries(DSH_RUNTIME_PEER_DEPENDENCIES).map(([name, peerVersion]) => [`node_modules/${name}`, { version: peerVersion }]))
+      }
     })
   );
   await writeFile(
     join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
     JSON.stringify({ name: DSH_PACKAGE_NAME, version, bin: { dsh: 'lib/bin.js' } })
   );
-  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), '#!/usr/bin/env bun\n');
+  await writeFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), '#!/usr/bin/env node\n');
   await writeFile(join(runtime, 'node_modules', 'koffi', 'package.json'), JSON.stringify({ name: 'koffi', version: '2.12.0' }));
-  await writeFile(join(runtime, 'node_modules', '.bin', 'dsh'), '#!/usr/bin/env bun\n');
+  await writeFile(join(runtime, 'node_modules', '.bin', 'dsh'), '#!/usr/bin/env node\n');
 }
+
+const dshManifestRoot = join(process.cwd(), DSH_RUNTIME_MANIFEST_RELATIVE);
 function makeTrackedChild(pid = 1234): EventEmitter & { pid: number; exitCode: number | null; signalCode: NodeJS.Signals | null } {
   const child = new EventEmitter() as EventEmitter & { pid: number; exitCode: number | null; signalCode: NodeJS.Signals | null };
   child.pid = pid;
@@ -94,9 +100,9 @@ function makeTrackedChild(pid = 1234): EventEmitter & { pid: number; exitCode: n
         await bootstrapRuntime({
           platform: 'win32',
           runtimeDir: join(root, 'runtime'),
-          bunExecutable: 'bun',
+          manifestRoot: dshManifestRoot,
           commandRunner: async (_command, args) => {
-            if (args[0] === 'add') throw new ProcessTerminationError('installer descendants are still running');
+            if (args[0] === 'ci') throw new ProcessTerminationError('installer descendants are still running');
             return { exitCode: 0, stdout: '', stderr: '' };
           }
         });
@@ -144,7 +150,7 @@ describe('staged DSH runtime bootstrap', () => {
       const result = await bootstrapRuntime({
         platform: 'win32',
         runtimeDir: runtime,
-        bunExecutable: 'bun',
+        manifestRoot: dshManifestRoot,
         commandRunner: async (_command, args) => {
           calls.push(args);
           return { exitCode: 0, stdout: 'koffi loaded', stderr: '' };
@@ -165,17 +171,17 @@ describe('staged DSH runtime bootstrap', () => {
       const runtime = join(root, 'runtime');
       await makeRuntime(runtime);
       const commandRunner = async () => ({ exitCode: 0, stdout: 'koffi loaded', stderr: '' });
-      expect((await verifyRuntime(runtime, { bunExecutable: 'bun', commandRunner })).valid).toBe(true);
-      const lockPath = join(runtime, 'bun.lock');
+      expect((await verifyRuntime(runtime, { commandRunner })).valid).toBe(true);
+      const lockPath = join(runtime, 'package-lock.json');
       const lock = await readFile(lockPath, 'utf8');
       await writeFile(lockPath, lock.replace(DSH_NPM_INTEGRITY, 'sha512-tampered'));
-      const tampered = await verifyRuntime(runtime, { bunExecutable: 'bun', commandRunner });
+      const tampered = await verifyRuntime(runtime, { commandRunner });
       expect(tampered.valid).toBe(false);
       expect(tampered.errors.join(' ')).toContain('npm integrity');
       await rm(lockPath);
-      const missing = await verifyRuntime(runtime, { bunExecutable: 'bun', commandRunner });
+      const missing = await verifyRuntime(runtime, { commandRunner });
       expect(missing.valid).toBe(false);
-      expect(missing.errors.join(' ')).toContain('bun.lock');
+      expect(missing.errors.join(' ')).toContain('package-lock.json');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -189,16 +195,16 @@ describe('staged DSH runtime bootstrap', () => {
       const result = await bootstrapRuntime({
         platform: 'win32',
         runtimeDir: runtime,
-        bunExecutable: 'bun',
+        manifestRoot: dshManifestRoot,
         commandRunner: async (_command, args, options) => {
           calls.push(args);
-          if (args[0] === 'add') await makeRuntime(options.cwd!);
+          if (args[0] === 'ci') await makeRuntime(options.cwd!);
           return { exitCode: 0, stdout: '', stderr: '' };
         }
       });
       expect(result.status).toBe('installed');
       expect(result.rollbackDir).toBeUndefined();
-      expect(calls[0]).toEqual(['add', '--exact', `${DSH_PACKAGE_NAME}@${DSH_VERSION}`]);
+      expect(calls[0]).toEqual(['ci', '--legacy-peer-deps', '--no-audit', '--no-fund']);
       expect(await readFile(join(runtime, 'package.json'), 'utf8')).toContain(DSH_VERSION);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -227,10 +233,10 @@ describe('staged DSH runtime bootstrap', () => {
       const result = await bootstrapRuntime({
         platform: 'win32',
         runtimeDir: runtime,
-        bunExecutable: 'bun',
+        manifestRoot: dshManifestRoot,
         commandRunner: async (_command, args, options) => {
           calls.push({ args, cwd: options.cwd });
-          if (args[0] === 'add') {
+          if (args[0] === 'ci') {
             await makeRuntime(options.cwd!);
           }
           return { exitCode: 0, stdout: '', stderr: '' };
@@ -241,8 +247,7 @@ describe('staged DSH runtime bootstrap', () => {
       expect(await readFile(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')).toContain(DSH_VERSION);
       expect(await readFile(join(result.rollbackDir!, 'package.json'), 'utf8')).toBe(oldPackage);
       expect(calls.map((call) => call.args.slice(0, 2))).toEqual([
-        ['add', '--exact'],
-        ['pm', 'trust'],
+        ['ci', '--legacy-peer-deps'],
         ['-e', "import('koffi').then(() => process.exit(0)).catch(() => process.exit(1))"],
         ['-e', "import('koffi').then(() => process.exit(0)).catch(() => process.exit(1))"]
       ]);
@@ -261,10 +266,10 @@ describe('staged DSH runtime bootstrap', () => {
         await bootstrapRuntime({
           platform: 'win32',
           runtimeDir: join(root, 'runtime'),
-          bunExecutable: 'bun',
+          manifestRoot: dshManifestRoot,
           env: { DEEPSEEK_API_KEY: secret },
           commandRunner: async (_command, args) => {
-            if (args[0] === 'add') return { exitCode: 1, stdout: '', stderr: `install failed for ${secret}` };
+            if (args[0] === 'ci') return { exitCode: 1, stdout: '', stderr: `install failed for ${secret}` };
             return { exitCode: 0, stdout: '', stderr: '' };
           }
         });
@@ -291,9 +296,9 @@ describe('staged DSH runtime bootstrap', () => {
         bootstrapRuntime({
           platform: 'win32',
           runtimeDir: runtime,
-          bunExecutable: 'bun',
+          manifestRoot: dshManifestRoot,
           commandRunner: async (_command, args, options) => {
-            if (args[0] === 'add') await makeRuntime(options.cwd!);
+            if (args[0] === 'ci') await makeRuntime(options.cwd!);
             if (args[0] === '-e') {
               evalCalls += 1;
               return { exitCode: evalCalls === 1 ? 0 : 1, stdout: '', stderr: '' };
@@ -319,14 +324,14 @@ describe('staged DSH runtime bootstrap', () => {
         await bootstrapRuntime({
           platform: 'win32',
           runtimeDir: runtime,
-          bunExecutable: 'bun',
+          manifestRoot: dshManifestRoot,
           renamePath: async (from, to) => {
             renameCalls += 1;
             if (renameCalls === 2 || renameCalls === 3) throw new Error(`injected rename failure ${renameCalls}`);
             await rename(from, to);
           },
           commandRunner: async (_command, args, options) => {
-            if (args[0] === 'add') await makeRuntime(options.cwd!);
+            if (args[0] === 'ci') await makeRuntime(options.cwd!);
             return { exitCode: 0, stdout: '', stderr: '' };
           }
         });
@@ -355,9 +360,9 @@ describe('staged DSH runtime bootstrap', () => {
         bootstrapRuntime({
           platform: 'win32',
           runtimeDir: runtime,
-          bunExecutable: 'bun',
+          manifestRoot: dshManifestRoot,
           commandRunner: async (_command, args, options) => {
-            if (args[0] === 'add') await makeRuntime(options.cwd!);
+            if (args[0] === 'ci') await makeRuntime(options.cwd!);
             if (args[0] === '-e') return { exitCode: 1, stdout: '', stderr: 'koffi failed' };
             return { exitCode: 0, stdout: '', stderr: '' };
           }
@@ -388,11 +393,11 @@ describe('runtime access lock', () => {
         platform: 'win32',
         runtimeDir: runtime,
         dshHome,
-        bunExecutable: 'bun',
+        manifestRoot: dshManifestRoot,
         lockTimeoutMs: 500,
         lockRetryMs: 5,
         commandRunner: async (_command, args, options) => {
-          if (args[0] === 'add') await makeRuntime(options.cwd!);
+          if (args[0] === 'ci') await makeRuntime(options.cwd!);
           return { exitCode: 0, stdout: '', stderr: '' };
         }
       });
@@ -450,12 +455,15 @@ describe('runtime access lock', () => {
     try {
       const runtime = join(root, 'runtime');
       const dshHome = join(root, 'dsh-home');
+      const node = join(root, 'node.exe');
+      await writeFile(node, 'fixture');
       await makeRuntime(runtime, '0.1.0-rc.5');
       await expect(
         launchProject({
           platform: 'win32',
           runtimeDir: runtime,
           dshHome,
+          nodeExecutable: node,
           env: { DSH_HOME: dshHome },
           spawnInteractive: () => { throw new Error('spawn failed'); }
         })
@@ -465,11 +473,11 @@ describe('runtime access lock', () => {
         platform: 'win32',
         runtimeDir: runtime,
         dshHome,
-        bunExecutable: 'bun',
+        manifestRoot: dshManifestRoot,
         lockTimeoutMs: 500,
         lockRetryMs: 5,
         commandRunner: async (_command, args, options) => {
-          if (args[0] === 'add') await makeRuntime(options.cwd!);
+          if (args[0] === 'ci') await makeRuntime(options.cwd!);
           return { exitCode: 0, stdout: '', stderr: '' };
         }
       });
@@ -486,18 +494,15 @@ describe('runtime access lock', () => {
       const dshHome = join(root, 'dsh-home');
       const bin = join(root, 'bin');
       await mkdir(bin, { recursive: true });
-      for (const name of ['pwsh', 'coreutils-manager', 'find', 'grep', 'git', 'bun']) await writeFile(join(bin, name), '');
+      for (const name of ['node', 'pwsh', 'coreutils-manager', 'find', 'grep', 'git']) await writeFile(join(bin, name), '');
 
       let signalBootstrapHold: (() => void) | undefined;
       let releaseBootstrapHold: (() => void) | undefined;
       const bootstrapHoldStarted = new Promise<void>((resolve) => { signalBootstrapHold = resolve; });
       const bootstrapHold = new Promise<void>((resolve) => { releaseBootstrapHold = resolve; });
       const commandRunner = async (command: string, args: string[], options: { cwd?: string }) => {
-        if (args[0] === 'add') {
+        if (args[0] === 'ci') {
           await makeRuntime(options.cwd!);
-          return { exitCode: 0, stdout: '', stderr: '' };
-        }
-        if (args[0] === 'pm') {
           signalBootstrapHold?.();
           await bootstrapHold;
           return { exitCode: 0, stdout: '', stderr: '' };
@@ -505,7 +510,6 @@ describe('runtime access lock', () => {
         if (args[0] === '-e') return { exitCode: 0, stdout: 'loaded', stderr: '' };
         const name = command.split(/[\\/]/).pop();
         if (name === 'pwsh') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
-        if (name === 'bun') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
         if (name === 'git') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
         if (name === 'coreutils-manager' && args[0] === '--help') return { exitCode: 0, stdout: "coreutils-manager 0.1.0\nManage coreutils utilities and PowerShell profiles\nUsage: coreutils-manager <COMMAND>\nCommands:\n  enable    Enable one or more utilities\n  disable   Disable one or more utilities\n  status    List all utilities with their status\n", stderr: '' };
         if (name === 'coreutils-manager' && args[0] === 'status') return { exitCode: 0, stdout: "find            enabled\ngrep            enabled\n", stderr: '' };
@@ -518,7 +522,7 @@ describe('runtime access lock', () => {
         runtimeDir: runtime,
         dshHome,
         env: { PATH: bin, DSH_HOME: dshHome },
-        bunExecutable: 'bun',
+        manifestRoot: dshManifestRoot,
         commandRunner,
         lockTimeoutMs: 1000,
         lockRetryMs: 5
@@ -558,12 +562,15 @@ describe('runtime access lock', () => {
     try {
       const runtime = join(root, 'runtime');
       const dshHome = join(root, 'dsh-home');
+      const node = join(root, 'node.exe');
+      await writeFile(node, 'fixture');
       await makeRuntime(runtime, '0.1.0-rc.5');
       const child = makeTrackedChild(701);
       const launch = await launchProject({
         platform: 'win32',
         runtimeDir: runtime,
         dshHome,
+        nodeExecutable: node,
         env: { DSH_HOME: dshHome },
         spawnInteractive: () => child
       });
@@ -573,11 +580,11 @@ describe('runtime access lock', () => {
         platform: 'win32',
         runtimeDir: runtime,
         dshHome,
-        bunExecutable: 'bun',
+        manifestRoot: dshManifestRoot,
         lockTimeoutMs: 1000,
         lockRetryMs: 5,
         commandRunner: async (_command, args, options) => {
-          if (args[0] === 'add') {
+          if (args[0] === 'ci') {
             swapStarted = true;
             await makeRuntime(options.cwd!);
           }

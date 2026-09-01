@@ -6,7 +6,7 @@ The AI production agent for RPG Maker MV and MZ
 
 ## Windows Release ZIP (Phase 7)
 
-For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The guided installer verifies the bundled prebuilt desktop host from the pinned host/Bun contract, then obtains one explicit consent before any WinGet install or repair, including missing, wrong-version, and wrong-identity prerequisites. It verifies the real executable paths and versions, installs Python 3.13 and ImageMagick 7 as Windows-wide Agent utilities, installs the pinned DSH plus both RPG Maker MV and MZ editing MCPs, and creates the per-user Start Menu shortcut **RPG Maker Agent** targeting the native host. Re-running the same command upgrades an owned installation after one explicit running-Agent close confirmation. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
+For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The standalone compiled installer opens a folder picker before downloading, verifies the bundled desktop host, then obtains one explicit consent before any WinGet install or repair. It requires Node.js LTS 22+ with npm, installs the pinned DSH and RPG Maker MCPs, and creates the per-user Start Menu shortcut **RPG Maker Agent** targeting the native host. Re-running the same command upgrades an owned installation after one explicit running-Agent close confirmation. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
 
 The full first-run, repair, port-conflict, workspace-selection, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata and preserves rollback/recovery state, mutable state, credentials, logs, and projects; `uninstall.ps1 -Purge` is explicit.
 
@@ -25,23 +25,23 @@ CJK/space workspace, one pooled Host server, synchronously collected stable
 `rpgmaker_*` tools, direct Agent-scoped calls, and observed engine/workspace child
 identity. Its machine JSON reports the actual child/process evidence and shell
 process observations; it does not claim a picker or permission retry from a
-constant. The installed-tree Windows gate is the exact NUC command sequence:
+constant. The disposable native Windows fresh-install gate accepts explicit
+source and desktop-host roots:
 
 ```powershell
-Set-Location "$env:LOCALAPPDATA\Programs\BaiheStudio\DSH-RPGMaker-MV"
-bun run phase7:windows-installed -- --installed-root (Get-Location).Path
+bun run phase7:windows-installed -- --source-root (Get-Location).Path --desktop-host-root C:\temp\built-desktop-host
 ```
 
-It launches the supported installed `Launch.cmd`, observes the real fixed-port
-Web readiness and project-neutral process arguments, repairs a deliberately
-broken local profile link, runs the installed-tree Agent probe, and cleans up
-all disposable state/processes.
+It builds a fresh archive, runs the compiled installer with Node and Bun absent
+from its target `PATH`, performs a receipt-driven repair, verifies the host,
+Node-based runtimes, app-owned pnpm/profile, shortcut, timing record, and
+redacted log, and cleans only its disposable roots.
 
 ### Install and repair
 
-`bootstrap.ps1` builds a fresh staging tree with the exact DSH package and npm integrity declared in [`src/config.ts`](src/config.ts), runs `bun pm trust --all`, verifies the exact package/lock facts and `koffi`, then swaps it into place. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched; older DSH releases are not accepted. If process termination or rollback cannot be confirmed, the lock reports a degraded state and preserves recoverable staging/rollback paths for manual recovery. Re-running against a valid runtime is a no-op; bootstrap, doctor, and launch serialize short runtime operations through the operation lock. A live DSH child also holds a session lease that prevents bootstrap or a second launch from swapping the runtime, while doctor remains available.
+`bootstrap.ps1` builds a fresh staging tree with the exact DSH package and npm integrity declared in [`src/config.ts`](src/config.ts), copies the release-owned `runtime-manifests/dsh/package.json` and `package-lock.json`, runs `npm ci`, verifies the exact package/lock facts and `koffi` with Node, then swaps it into place. The Release also carries equivalent locked manifests for MCPorter, RPG Maker MCP, and app-owned pnpm; target setup never generates a lock from the registry. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched; older DSH releases are not accepted. If process termination or rollback cannot be confirmed, the lock reports a degraded state and preserves recoverable staging/rollback paths for manual recovery. Re-running against a valid runtime is a no-op; bootstrap, doctor, and launch serialize short runtime operations through the operation lock. A live DSH child also holds a session lease that prevents bootstrap or a second launch from swapping the runtime, while doctor remains available.
 
-On Windows, program-owned DSH/MCP/tool runtimes default under `%LOCALAPPDATA%\\Programs\\BaiheStudio\\DSH-RPGMaker-MV`; mutable DSH state defaults under `%LOCALAPPDATA%\\BaiheStudio\\DSH-RPGMaker-MV\\state`. Set `DSH_HOME`, `DSH_RPGMAKER_PROGRAM_ROOT`, `DSH_RPGMAKER_DATA_ROOT`, or `DSH_RPGMAKER_RUNTIME` for a test-owned or alternate location. The doctor checks the actual executable paths and versions visible to the launcher, rather than trusting package-manager metadata.
+On Windows, the selected installation root owns program files, runtimes, and disposable cache. The fixed local state root remains `%LOCALAPPDATA%\\BaiheStudio\\DSH-RPGMaker-MV` for settings, credentials, logs, locks, and the installation-location receipt. Set `DSH_RPGMAKER_INSTALLATION_ROOT`, `DSH_HOME`, `DSH_RPGMAKER_DATA_ROOT`, or `DSH_RPGMAKER_RUNTIME` for a test-owned or alternate location. The doctor checks the actual executable paths and versions visible to the launcher, rather than trusting package-manager metadata.
 
 ### Launch DSH Web
 
@@ -184,9 +184,9 @@ preset reports that boundary instead of launching an MV runtime.
 
 ## Phase 6: DSH runtime foundation
 
-All launcher, preset, Windows shell, MCP, and Playtest contracts are mounted and checked against the official DSH runtime declared in [`src/config.ts`](src/config.ts). The staged runtime verifies Bun installation/trust, the exact top-level package version and npm integrity, the DSH executable, and `koffi` before an atomic swap. Post-swap verification restores the prior runtime on failure and preserves the unverified tree for inspection; no live runtime is mutated in place.
+All launcher, preset, Windows shell, MCP, and Playtest contracts are mounted and checked against the official DSH runtime declared in [`src/config.ts`](src/config.ts). The staged runtime verifies the exact npm package-lock, package version and integrity, the Node-based DSH executable, and `koffi` before an atomic swap. Post-swap verification restores the prior runtime on failure and preserves the unverified tree for inspection; no live runtime is mutated in place.
 
-The MV and MZ MCP lock checks are deliberately limited to their stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata and unrelated Bun lock internals are not pinned. The production editing contract is the mounted RPG Maker skills plus stable `rpgmaker_*` tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, and schema rejection.
+The MV and MZ MCP lock checks are deliberately limited to their stable release facts: exact top-level version, `dist/index.js` bin, and pinned npm integrity. Missing or tampered lock data fails closed; transitive dependency metadata is not pinned. The production editing contract is the mounted RPG Maker skills plus stable `rpgmaker_*` tools, with disposable real acceptance covering mutation rereads, validation, backup/restore, and schema rejection.
 
 ## Editing model
 

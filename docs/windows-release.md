@@ -4,19 +4,21 @@
 
 1. Download the Windows Release ZIP and extract it to a temporary folder.
 2. Double-click `Install.cmd`.
-3. Give the installer one explicit consent when prompted if it may install or repair prerequisites. This consent covers missing, wrong-version, and wrong-identity checks; command presence is never treated as consent. The installer uses WinGet only after that consent for:
+3. Choose an installation root in the native folder picker (or pass `--installation-root` for automation). The default is the standard per-user Programs location; the installer never selects another drive automatically.
+4. Give the installer one explicit consent when prompted if it may install or repair prerequisites. This consent covers missing, wrong-version, and wrong-identity checks; command presence is never treated as consent. The installer uses WinGet only after that consent for:
    - Node.js LTS and npm (`OpenJS.NodeJS.LTS`)
    - Python 3.13 (`Python.Python.3.13`; retained as a general Agent utility)
-   - Bun (`Oven-sh.Bun`)
    - PowerShell 7.4+ (`Microsoft.PowerShell`)
    - Git for Windows (`Git.Git`)
    - Microsoft Coreutils (`Microsoft.Coreutils`)
    - ImageMagick 7 (`ImageMagick.ImageMagick`; installed system-wide and exposed as `magick` on Windows PATH)
-4. The installer verifies the packaged, prebuilt desktop host (the pinned host revision and Bun `1.3.14` contract), executable paths, and prerequisite versions. It retains the verified WinGet Python as a general Agent utility, stages the source-pinned DSH runtime with Bun (package, version, and integrity are defined in [`src/config.ts`](../src/config.ts)), materializes one exact app-managed `web` profile with four direct managed dependencies (the external `@guionai/dsh-web` and `@lamplitisles/dsh-imagegen` packages at the exact versions defined in [`src/managed-web-profile.ts`](../src/managed-web-profile.ts), the release-owned `@baihestudio/dsh-rpgmaker-brand` bundle, and the app-owned `@baihestudio/dsh-workspace-mcp` bundle) plus the six ordered DSH bundle layers beginning with `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`, installs both source-pinned RPG Maker editing MCPs (declared in [`src/rpgmaker.ts`](../src/rpgmaker.ts)), then creates a per-user Start Menu shortcut named **RPG Maker Agent** targeting the staged native host executable. Normal launch additionally prepares the app-owned MCPorter runtime, the dual-engine RPG Maker runtime, default preset, and neutral composition as needed.
+5. The installer verifies the packaged, prebuilt desktop host, executable paths, and prerequisite versions. The Release ZIP carries the four release-owned npm manifests and `package-lock.json` files under `runtime-manifests/`; target setup copies those inputs into staging and runs only `npm ci` (it never creates a lock from the registry). It stages the source-pinned DSH runtime with Node/npm from an exact lock, verifies native modules with Node, materializes one exact app-managed `web` profile with four direct managed dependencies (the external `@guionai/dsh-web` and `@lamplitisles/dsh-imagegen` packages at the exact versions defined in [`src/managed-web-profile.ts`](../src/managed-web-profile.ts), the release-owned `@baihestudio/dsh-rpgmaker-brand` bundle, and the app-owned `@baihestudio/dsh-workspace-mcp` bundle) plus the six ordered DSH bundle layers beginning with `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`, installs both source-pinned RPG Maker editing MCPs (declared in [`src/rpgmaker.ts`](../src/rpgmaker.ts)), then creates a per-user Start Menu shortcut named **RPG Maker Agent** targeting the staged native host executable. Normal launch additionally prepares the app-owned exact pnpm runtime only for the managed Web profile, the MCP runtimes, default preset, and neutral composition as needed.
+
+`Install.cmd` is a thin wrapper around `installer.exe`. It asks its own Windows process-tree helper whether the batch file was launched by Explorer and pauses only in that case; terminal and redirected invocations return immediately without relying on a caller-set environment variable.
 
 The four direct package dependencies and six bundle layers belong to one DSH-managed profile state. DSH's `web` template layers (`@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`) remain in-box template bundles rather than profile dependencies. If a package command or final verification fails after initializing that state, the installer reports the materialization failure and restores the prior working profile (and its app-owned workspace bundle); rerun `Install.cmd` to complete the profile setup. Credentials, recent workspaces, presets, caches, logs, and other mutable state remain outside this rollback boundary.
 
-No Git clone, npm install, or manual package command is needed for this path. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported fresh-install, upgrade, and repair path; a previous runtime is retained by the staged runtime swap for recovery. If an owned Agent is running during an upgrade, the installer asks once whether to close it and stops only that owned process tree. Declining leaves the installed tree and mutable state untouched. If post-swap bootstrap, metadata, or shortcut creation fails, the prior program tree is restored and the failed new tree is retained as a named diagnostic/recovery directory.
+No Git clone or manual package command is needed for this path. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported fresh-install, upgrade, and repair path; a previous runtime is retained by the staged runtime swap for recovery. If an owned Agent is running during an upgrade, the installer asks once whether to close it and stops only that owned process tree. Declining leaves the installed tree and mutable state untouched. If post-swap bootstrap, metadata, or shortcut creation fails, the prior program tree is restored and the failed new tree is retained as a named diagnostic/recovery directory.
 
 ## Local WSL update helper
 
@@ -45,11 +47,12 @@ the installed DSH process tree, and runs the same installer on the NUC. Set
 
 ## Installed locations
 
-- Program files: `%LOCALAPPDATA%\Programs\BaiheStudio\DSH-RPGMaker-MV`
-- Mutable app data: `%LOCALAPPDATA%\BaiheStudio\DSH-RPGMaker-MV`
+- Installation root (program files, runtimes, and disposable cache): selected during first install (default `%LOCALAPPDATA%\Programs\BaiheStudio\DSH-RPGMaker-MV`)
+- Replaceable program tree: `<installation-root>\program`
+- Fixed local state root: `%LOCALAPPDATA%\BaiheStudio\DSH-RPGMaker-MV`
 - DSH_HOME and local credential metadata: `%LOCALAPPDATA%\BaiheStudio\DSH-RPGMaker-MV\state`
 - Redacted launcher logs: `logs`
-- Disposable cache: `cache`
+- Disposable cache: `<installation-root>\cache`
 - Neutral DSH Web landing directory: `neutral`
 - DSH/MCP and app-owned tool runtimes: under the installed program root's `runtime` and `tools` directories
 
@@ -163,28 +166,24 @@ temporary CJK/space workspaces, then removes them. It performs no model request
 and no workspace mutation. The ordinary suite covers the disposable seams;
 real-package and native Windows gates remain explicit and unrun here.
 
-### Authorized NUC installed-release gate
+### Authorized disposable native Windows fresh-install gate
 
-Run these exact commands on the NUC from the installed program root:
+Run this command from the checkout on a Windows machine with a verified
+desktop-host payload (the gate does not install or mutate system prerequisites):
 
 ```powershell
-Set-Location "$env:LOCALAPPDATA\Programs\BaiheStudio\DSH-RPGMaker-MV"
-bun run phase7:windows-installed -- --installed-root (Get-Location).Path
+bun run phase7:windows-installed -- --source-root (Get-Location).Path --desktop-host-root C:\temp\built-desktop-host
 ```
 
-This first verifies the installed DSH, pnpm, MCPorter, and both RPG Maker MCP runtimes
-without downloading anything. It then provisions only disposable DSH state, a
-disposable CJK/space workspace, and temporary profile data. It launches the supported installed `Launch.cmd`,
-waits for an HTTP response on `127.0.0.1:3081`, observes the real launcher
-processes and neutral-landing message with zero `--project` arguments, shuts
-the process tree down with Windows `taskkill /T /F`, deliberately removes the
-local `web` profile bundle entry, repeats `Launch.cmd` for repair evidence, and
-runs the installed-tree Agent probe for the selected MV/MZ stable tools and one
-observed engine/workspace child. The JSON emits `firstLaunch`, `repair`, `agentEvidence`, and
-`shutdown.firstPortClosed`/`shutdown.repairPortClosed` evidence. It sends no
-model request, mutates no real game, and uses no external service beyond the
-local loopback Web process. The gate cleans its temporary roots and every
-process it starts.
+It builds a fresh archive, verifies the preinstalled Node/npm and other external
+prerequisites without invoking WinGet, then installs into unique disposable
+installation, local-state, shortcut, and npm-cache roots using normal npm
+registry access. It verifies the compiled standalone installer, desktop host,
+Node-based DSH/MCP runtimes, app-owned pnpm/profile, receipt, shortcut, final
+session event, timing JSON, and redacted log. It removes the program tree and
+runs repair against the same receipt to prove root reuse and the absence of a
+Bun dependency. Only gate-owned artifacts are removed; a true clean-machine
+prerequisite-install VM gate remains unverified and outside this run.
 
 ## Doctor and repair
 
@@ -194,7 +193,7 @@ From the installed program root:
 ./doctor.ps1
 ```
 
-Doctor reports the resolved Node/npm, Python, Bun, PowerShell, Git, Coreutils, global ImageMagick, DSH runtime, MV MCP runtime, MZ MCP runtime, exact managed Web profile, credential metadata, and mutable-layout facts without reading credential values. Python is verified independently as a general Agent utility. Each RPG Maker engine check is reported independently. Doctor only verifies the managed profile; it never repairs it. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
+Doctor reports the resolved Node/npm, Python, PowerShell, Git, Coreutils, global ImageMagick, DSH runtime, MV MCP runtime, MZ MCP runtime, exact managed Web profile, app-owned pnpm, credential metadata, and receipt-backed layout facts without reading credential values. Python is verified independently as a general Agent utility. Each RPG Maker engine check is reported independently. Doctor only verifies the managed profile; it never repairs it. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
 
 ### Diagnose a selected workspace sandbox
 

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
@@ -68,6 +68,7 @@ for (const key of ['PATH', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TE
 safeEnv.DSH_HOME = dshHome;
 
 try {
+  await cp(join(process.cwd(), 'runtime-manifests'), join(programRoot, 'runtime-manifests'), { recursive: true });
   const project = await makeFixture(root);
   const mzProject = await makeMZFixture(root);
   const boot = await bootstrapRuntime({ platform: 'win32', env: safeEnv, dshHome, programRoot, mutableRoot: root, runtimeDir });
