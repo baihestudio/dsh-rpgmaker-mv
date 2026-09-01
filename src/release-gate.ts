@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { cp, mkdir, mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -62,6 +62,16 @@ export const RELEASE_ENTRIES = [
   FORGEJO_MCP_RUNTIME_RELATIVE,
   WORKSPACE_MCP_BUNDLE_RELATIVE,
   DSH_BRAND_BUNDLE_RELATIVE
+] as const;
+/** Generated only while packaging; these are not part of the source tree contract. */
+export const GENERATED_RELEASE_ENTRIES = [
+  INSTALLER_EXECUTABLE_NAME,
+  INSTALLER_BUILD_EVIDENCE_NAME
+] as const;
+/** Files required in a replaceable installed program tree. */
+export const INSTALLED_PROGRAM_ENTRIES = [
+  ...RELEASE_ENTRIES,
+  ...GENERATED_RELEASE_ENTRIES
 ] as const;
 
 export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteOptions {
@@ -186,13 +196,56 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-async function copyReleaseTree(sourceRootInput: string, destination: string): Promise<void> {
+async function copyReleaseTree(
+  sourceRootInput: string,
+  destination: string,
+  entries: readonly string[] = RELEASE_ENTRIES,
+  allowMissingGenerated = false,
+): Promise<void> {
   const sourceRoot = resolve(sourceRootInput);
   await mkdir(destination, { recursive: true });
-  for (const entry of RELEASE_ENTRIES) {
+  for (const entry of entries) {
     const source = join(sourceRoot, entry);
-    if (!(await exists(source))) throw new ReleaseGateError(`Release source is incomplete: missing ${entry}.`);
+    if (GENERATED_RELEASE_ENTRIES.includes(entry as typeof GENERATED_RELEASE_ENTRIES[number])) {
+      if (!(await regularFile(source))) {
+        if (allowMissingGenerated && !(await exists(source))) continue;
+        throw new ReleaseGateError(`Release source is incomplete: required maintenance artifact ${entry} is missing or not a regular file.`);
+      }
+    } else if (!(await exists(source))) {
+      throw new ReleaseGateError(`Release source is incomplete: missing ${entry}.`);
+    }
     await cp(source, join(destination, entry), { recursive: true, force: false, errorOnExist: true });
+  }
+}
+
+async function regularFile(path: string): Promise<boolean> {
+  try {
+    const metadata = await lstat(path);
+    return metadata.isFile() && !metadata.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+async function releaseHasGeneratedMaintenance(sourceRoot: string): Promise<boolean> {
+  return (await exists(join(sourceRoot, INSTALLER_EXECUTABLE_NAME)))
+    || (await exists(join(sourceRoot, INSTALLER_BUILD_EVIDENCE_NAME)));
+}
+
+async function sourceCheckoutWithoutGeneratedMaintenance(sourceRoot: string): Promise<boolean> {
+  // Direct source-checkout installs are retained as a disposable development
+  // seam. A packaged/extracted Release never carries .git and therefore must
+  // satisfy the generated maintenance contract below.
+  return (await exists(join(sourceRoot, '.git')))
+    && !(await releaseHasGeneratedMaintenance(sourceRoot));
+}
+
+async function verifyInstalledMaintenanceContract(programRoot: string): Promise<void> {
+  for (const entry of GENERATED_RELEASE_ENTRIES) {
+    const path = join(programRoot, entry);
+    if (!(await regularFile(path))) {
+      throw new ReleaseGateError(`Installed program is incomplete: required maintenance artifact ${entry} is missing or not a regular file.`);
+    }
   }
 }
 
@@ -258,7 +311,10 @@ function installMetadata(
         payloadLaunchTarget: desktopHost.launchTarget,
         hostCommit: desktopHost.hostCommit,
         bunVersion: desktopHost.bunVersion,
-        productVersion: desktopHost.productVersion
+        productVersion: desktopHost.productVersion,
+        ...(desktopHost.adapterSourceSha256 ? { adapterSourceSha256: desktopHost.adapterSourceSha256 } : {}),
+        ...(desktopHost.sidecarSha256 ? { sidecarSha256: desktopHost.sidecarSha256 } : {}),
+        ...(desktopHost.sidecarProvenance ? { sidecarProvenance: desktopHost.sidecarProvenance } : {})
       }
     } : {}),
     prerequisites: prerequisites.checks.map((check) => ({ id: check.id, label: check.label, version: check.version, versions: check.versions, executable: check.executable }))
@@ -356,6 +412,9 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
     throw new ReleaseGateError('The extracted Release ZIP must be separate from the installed program root.');
   }
 
+  const sourceAdapterPath = join(releaseRoot, 'src', 'electrobun-sidecar.ts');
+  const sourceCheckoutWithoutGenerated = await sourceCheckoutWithoutGeneratedMaintenance(releaseRoot);
+  const sourceCheckoutCompat = sourceCheckoutWithoutGenerated;
   const desktopHostSource = await resolveDesktopHostPayload(releaseRoot, { desktopHostRoot: options.desktopHostRoot });
   const requireDesktopHost = options.requireDesktopHost ?? (platform === 'win32' && process.platform === 'win32');
   let desktopHost: DesktopHostCopyResult | undefined;
@@ -363,7 +422,10 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
     if (pathsNest(desktopHostSource, paths.programRoot)) {
       throw new ReleaseGateError('The desktop host payload must be separate from the installed program root.');
     }
-    const verifiedHost = await verifyDesktopHostPayload(desktopHostSource, { productVersion: ELECTROBUN_PRODUCT_VERSION });
+    const verifiedHost = await verifyDesktopHostPayload(desktopHostSource, {
+      productVersion: ELECTROBUN_PRODUCT_VERSION,
+      adapterSourcePath: sourceAdapterPath
+    });
     if (!verifiedHost.valid || !verifiedHost.launchTarget) {
       throw new ReleaseGateError(`Desktop host payload is not usable: ${verifiedHost.errors.join('; ')}`);
     }
@@ -465,11 +527,17 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
   let oldMoved = false;
   let stagingActive = true;
   try {
-    await copyReleaseTree(releaseRoot, staging);
+    const installEntries = sourceCheckoutCompat ? RELEASE_ENTRIES : INSTALLED_PROGRAM_ENTRIES;
+    // Missing generated maintenance is reported by the final installed-tree
+    // check below. Deferring only an absent generated file lets an upgrade
+    // transaction reach its normal rollback boundary while still guaranteeing
+    // that no receipt is committed for an incomplete program.
+    await copyReleaseTree(releaseRoot, staging, installEntries, !sourceCheckoutCompat);
     if (desktopHostSource) {
       const copiedHost = await copyDesktopHostPayload(releaseRoot, staging, {
         desktopHostRoot: desktopHostSource,
-        productVersion: ELECTROBUN_PRODUCT_VERSION
+        productVersion: ELECTROBUN_PRODUCT_VERSION,
+        adapterSourcePath: sourceAdapterPath
       });
       if (!copiedHost) throw new ReleaseGateError(`Release is missing the required ${DESKTOP_HOST_PAYLOAD_RELATIVE} payload.`);
       desktopHost = copiedHost;
@@ -588,6 +656,7 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
       // The receipt is the source of truth for maintenance.  Commit it only
       // after the new program tree, runtime/profile verification, metadata,
       // and shortcut work have all completed successfully.
+      if (!sourceCheckoutCompat) await verifyInstalledMaintenanceContract(paths.programRoot);
       await commitInstallationReceipt({
         product: PRODUCT_NAME,
         owner: PROGRAM_OWNER,
@@ -724,7 +793,10 @@ async function buildInstallerExecutable(options: ReleaseZipOptions, sourceRoot: 
     const detail = boundedDiagnostic(`${result.stderr}\n${result.stdout}`, env);
     throw new ReleaseGateError(`installer.exe compilation failed${detail ? `: ${detail}` : ''}`);
   }
-  if (!(await exists(output))) throw new ReleaseGateError('installer.exe compilation completed without producing a fresh executable.');
+  const installerStat = await stat(output).catch(() => undefined);
+  if (!(await regularFile(output)) || !installerStat || installerStat.size === 0) {
+    throw new ReleaseGateError('installer.exe compilation completed without producing a fresh executable.');
+  }
   let version = 'unknown';
   try {
     const versionResult = await runner(bun, ['--version'], { cwd: sourceRoot, env: withoutCredentials(env), platform: options.platform, timeoutMs: 30_000 });
@@ -761,7 +833,8 @@ export async function buildReleaseZip(options: ReleaseZipOptions): Promise<strin
   const desktopHostSource = await resolveDesktopHostPayload(sourceRoot, { desktopHostRoot: options.desktopHostRoot });
   // A Windows-targeted archive is strict by default. Contributor builds for
   // another platform may omit the native payload; a caller can still request
-  // the gate explicitly with requireDesktopHost.
+  // the gate explicitly with requireDesktopHost. Provenance remains strict for
+  // every supplied host payload as part of the release contract.
   const requireDesktopHost = options.requireDesktopHost ?? (platform === 'win32');
   if (!desktopHostSource && requireDesktopHost) {
     throw new ReleaseGateError(`Release is missing the required ${DESKTOP_HOST_PAYLOAD_RELATIVE} payload.`);
@@ -773,7 +846,10 @@ export async function buildReleaseZip(options: ReleaseZipOptions): Promise<strin
     if (pathsNest(desktopHostSource, sourceRoot) && resolve(desktopHostSource) !== resolve(join(sourceRoot, DESKTOP_HOST_PAYLOAD_RELATIVE))) {
       throw new ReleaseGateError('The desktop host payload must not be nested in an unrelated source tree.');
     }
-    const host = await verifyDesktopHostPayload(desktopHostSource, { productVersion: ELECTROBUN_PRODUCT_VERSION });
+    const host = await verifyDesktopHostPayload(desktopHostSource, {
+      productVersion: ELECTROBUN_PRODUCT_VERSION,
+      adapterSourcePath: join(sourceRoot, 'src', 'electrobun-sidecar.ts')
+    });
     if (!host.valid || !host.launchTarget) throw new ReleaseGateError(`Desktop host payload is not usable: ${host.errors.join('; ')}`);
   }
   const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env, programRoot: sourceRoot, probeVersion: false });
@@ -788,7 +864,8 @@ export async function buildReleaseZip(options: ReleaseZipOptions): Promise<strin
     if (desktopHostSource) {
       await copyDesktopHostPayload(sourceRoot, staging, {
         desktopHostRoot: desktopHostSource,
-        productVersion: ELECTROBUN_PRODUCT_VERSION
+        productVersion: ELECTROBUN_PRODUCT_VERSION,
+        adapterSourcePath: join(sourceRoot, 'src', 'electrobun-sidecar.ts')
       });
     }
     await writeInstallerBuildEvidence(staging, installerBuild);

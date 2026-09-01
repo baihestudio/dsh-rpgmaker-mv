@@ -7,6 +7,8 @@ import type { InstallationOperation, InstallationRendererMode, InstallPhaseName,
 import type { InstallationCapacity } from './installation-root';
 
 export const INSTALL_TIMING_SCHEMA_VERSION = 1;
+/** Stable event written before any install work begins. */
+export const INSTALL_RUN_STARTED_EVENT = 'install-run-started';
 
 export interface InstallPhaseTiming {
   phase: InstallPhaseName;
@@ -95,7 +97,23 @@ export class InstallRunEvidence {
 
   async start(): Promise<void> {
     await mkdir(join(this.options.localStateRoot, 'logs', 'install-runs'), { recursive: true });
-    await writeFile(this.logPath, '', 'utf8');
+    // Write one complete record before the lock or any install phase is
+    // entered.  If the process is forcibly terminated later, this header is
+    // still useful evidence and the log can never be an unexplained empty
+    // file.  Keep this an allow-list of identifying fields: no environment,
+    // command line, or child output belongs in the initial record.
+    const header = {
+      at: this.startedAt.toISOString(),
+      event: INSTALL_RUN_STARTED_EVENT,
+      runId: this.runId,
+      operation: this.options.operation,
+      productVersion: this.options.productVersion ?? 'unknown',
+      runtimeVersion: this.options.runtimeVersion ?? 'unknown',
+      renderer: this.options.renderer,
+      installationRoot: this.options.installationRoot,
+      localStateRoot: this.options.localStateRoot
+    };
+    await writeFile(this.logPath, `${redactSensitive(JSON.stringify(header), this.env)}\n`, 'utf8');
   }
 
   phaseStarted(phase: InstallPhaseName, at = this.now()): void {

@@ -1,4 +1,5 @@
-import { cp, mkdir, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -7,7 +8,9 @@ import {
   ELECTROBUN_BUN_VERSION as PINNED_ELECTROBUN_BUN_VERSION,
   ELECTROBUN_HOST_COMMIT as PINNED_ELECTROBUN_HOST_COMMIT,
   ELECTROBUN_PRODUCT_IDENTIFIER,
-  ELECTROBUN_PRODUCT_VERSION
+  ELECTROBUN_PRODUCT_VERSION,
+  DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION,
+  type DesktopHostSidecarProvenance
 } from '../src/desktop-host';
 
 /**
@@ -20,6 +23,8 @@ export const ELECTROBUN_BUN_VERSION = PINNED_ELECTROBUN_BUN_VERSION;
 export const ELECTROBUN_SUPERVISOR = 'bin/dsh-sidecar-supervisor.exe';
 export const ELECTROBUN_SIDECAR = 'payload/sidecar/dsh-rpgmaker-sidecar.js';
 export const ELECTROBUN_OUTPUT_MARKER = '.dsh-electronbun-adapter-output';
+/** Generated hand-off consumed by the native payload packaging step. */
+export const ELECTROBUN_PROVENANCE_FILE = 'adapter-provenance.json';
 const ELECTROBUN_OUTPUT_MARKER_CONTENT = 'dsh-electronbun-adapter-v1\n';
 
 export const ELECTROBUN_PRODUCT_MANIFEST = {
@@ -67,6 +72,9 @@ export interface StageElectrobunAdapterResult {
   bunVersion: string;
   sidecar: string;
   supervisor: string;
+  adapterSourceSha256: string;
+  sidecarSha256: string;
+  sidecarProvenance: DesktopHostSidecarProvenance;
 }
 
 interface CommandResult {
@@ -187,9 +195,15 @@ async function buildSidecar(productRootPath: string, outputRoot: string): Promis
   return output;
 }
 
-function productManifestText(): string {
+async function sha256File(path: string): Promise<string> {
+  return createHash('sha256').update(await readFile(path)).digest('hex');
+}
+
+function productManifestText(provenance: DesktopHostSidecarProvenance): string {
   return [
     'import type { ProductManifest } from "./src/host/manifest";',
+    '',
+    `export const sidecarProvenance = ${JSON.stringify(provenance, null, 2)} as const;`,
     '',
     `export const referenceManifest = ${JSON.stringify(ELECTROBUN_PRODUCT_MANIFEST, null, 2)} satisfies ProductManifest;`,
     '',
@@ -198,8 +212,9 @@ function productManifestText(): string {
   ].join('\n');
 }
 
-async function writeProductConfiguration(outputRoot: string): Promise<void> {
-  await writeFileCompat(join(outputRoot, 'product.manifest.ts'), productManifestText());
+async function writeProductConfiguration(outputRoot: string, provenance: DesktopHostSidecarProvenance): Promise<void> {
+  await writeFileCompat(join(outputRoot, 'product.manifest.ts'), productManifestText(provenance));
+  await writeFileCompat(join(outputRoot, ELECTROBUN_PROVENANCE_FILE), `${JSON.stringify(provenance, null, 2)}\n`);
 }
 
 async function writeFileCompat(path: string, content: string): Promise<void> {
@@ -233,8 +248,13 @@ export async function stageElectrobunAdapter(
   await prepareAdapterOutput(outputRoot, options.force);
 
   await copyTrackedHost(hostRoot, outputRoot);
-  await writeProductConfiguration(outputRoot);
   const sidecar = await buildSidecar(productRootPath, outputRoot);
+  const sidecarProvenance: DesktopHostSidecarProvenance = {
+    schemaVersion: DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION,
+    adapterSourceSha256: await sha256File(join(productRootPath, 'src', 'electrobun-sidecar.ts')),
+    sidecarSha256: await sha256File(sidecar)
+  };
+  await writeProductConfiguration(outputRoot, sidecarProvenance);
   const supervisor = await copySupervisor(hostRoot, outputRoot);
   return {
     hostRoot,
@@ -242,7 +262,10 @@ export async function stageElectrobunAdapter(
     hostCommit,
     bunVersion: ELECTROBUN_BUN_VERSION,
     sidecar,
-    supervisor
+    supervisor,
+    adapterSourceSha256: sidecarProvenance.adapterSourceSha256,
+    sidecarSha256: sidecarProvenance.sidecarSha256,
+    sidecarProvenance
   };
 }
 

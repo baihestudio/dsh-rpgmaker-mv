@@ -528,7 +528,9 @@ async function main(): Promise<void> {
     assert.ok((installerBuildEvidence.capacity?.nativeInstallerBytes ?? 0) > 0);
     const installer = join(extractedRelease, INSTALLER_EXECUTABLE_NAME);
     assert.equal(await exists(installer), true, 'fresh Release did not contain installer.exe');
-    const host = await verifyDesktopHostPayload(join(extractedRelease, DESKTOP_HOST_PAYLOAD_RELATIVE));
+    const host = await verifyDesktopHostPayload(join(extractedRelease, DESKTOP_HOST_PAYLOAD_RELATIVE), {
+      adapterSourcePath: join(extractedRelease, 'src', 'electrobun-sidecar.ts')
+    });
     assert.equal(host.valid, true, `fresh Release desktop host verification failed: ${host.errors.join('; ')}`);
     const help = await runCommand(installer, ['--help'], { cwd: extractedRelease, env: targetEnv, platform: 'win32', timeoutMs: 60_000 });
     assert.equal(help.exitCode, 0, `standalone installer help failed: ${diagnostic(help.stderr || help.stdout, targetEnv)}`);

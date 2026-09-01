@@ -1949,6 +1949,8 @@ describe('Windows release gate foundations', () => {
           return shortcut;
         }
       });
+      expect(await Bun.file(join(program, 'installer.exe')).exists()).toBe(true);
+      expect(await Bun.file(join(program, 'installer-build.json')).exists()).toBe(true);
 
       const forgejoMcpExecutable = forgejoMcpExecutablePath(program);
       const installedForgejoPreset = join(state, '.agent-presets', 'rpgmaker', 'agent.cordis.yml');
@@ -1969,6 +1971,8 @@ describe('Windows release gate foundations', () => {
       });
       expect((await verifyForgejoMcpRuntime({ platform: 'win32', env, programRoot: program, commandRunner: runner })).valid).toBe(true);
       expect(await readFile(installedForgejoPreset, 'utf8')).toContain('DSH_RPGMAKER_PROGRAM_ROOT');
+      expect(await Bun.file(join(program, 'installer.exe')).exists()).toBe(true);
+      expect(await Bun.file(join(program, 'installer-build.json')).exists()).toBe(true);
 
       const dshExecutable = await findDshExecutable(join(program, 'runtime', 'dsh'), 'win32');
       expect(dshExecutable).toBeDefined();
