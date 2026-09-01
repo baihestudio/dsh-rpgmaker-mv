@@ -26,7 +26,7 @@ import { run as runProcessObservation } from '../scripts/process-observation.mjs
 import { cleanupInstalledGateWorkspace, resolveInstalledNode, runInstalledMount } from '../scripts/phase7-windows-installed-gate';
 import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
 import { ensureFixedPortAvailable, ExistingDshSessionError, ensureHarnessLayout, uninstallHarness, UninstallSafetyError } from '../src/windows';
-import { commitInstallationReceipt, INSTALLATION_CAPACITY_BASIS, INSTALLATION_CAPACITY_FORMULA, INSTALLATION_STAGING_HEADROOM_BYTES, installationReceiptPath, readInstallationReceipt } from '../src/installation-root';
+import { commitInstallationReceipt, INSTALLATION_CAPACITY_BASIS, INSTALLATION_CAPACITY_FORMULA, INSTALLATION_STAGING_HEADROOM_BYTES, installationReceiptPath, readInstallationReceipt, resolveReceiptBackedHarnessPaths } from '../src/installation-root';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -1274,14 +1274,26 @@ describe('Windows release gate foundations', () => {
       await writeFile(join(state, '.credentials.yaml'), 'provider: local\n');
       await writeFile(legacyShortcut, 'legacy shortcut');
       let dependencyPreparations = 0;
+      const npmSecret = 'synthetic-install-npm-secret-never-log-this';
+      const baseRunner = prerequisiteRunner();
+      const commandRunner = async (command: string, args: string[], options: { cwd?: string; env?: Record<string, string | undefined> }) => {
+        const result = await baseRunner(command, args, options);
+        if (args[0] === 'ci') {
+          return {
+            ...result,
+            stdout: `NPM_TOKEN=${npmSecret}\nnpm_config_//registry.npmjs.org/:_authToken=${npmSecret}`
+          };
+        }
+        return result;
+      };
       const result = await installWindowsRelease({
         platform: 'win32',
-        env: { ...env, APPDATA: appData, DEEPSEEK_API_KEY: 'must-not-be-written' },
+        env: { ...env, APPDATA: appData, DEEPSEEK_API_KEY: 'must-not-be-written', NPM_TOKEN: npmSecret, 'npm_config_//registry.npmjs.org/:_authToken': npmSecret },
         releaseRoot: REPOSITORY_ROOT,
         installationRoot,
         mutableRoot: mutable,
         dshHome: state,
-        commandRunner: prerequisiteRunner(),
+        commandRunner,
         consent: true,
         prepareAgentDependencies: async ({ paths }) => {
           dependencyPreparations += 1;
@@ -1301,6 +1313,10 @@ describe('Windows release gate foundations', () => {
       expect(result.timing?.capacity?.formula).toBe(INSTALLATION_CAPACITY_FORMULA);
       expect(result.timing?.capacity?.basis).toBe(INSTALLATION_CAPACITY_BASIS);
       expect(dependencyPreparations).toBe(1);
+      const installLog = await readFile(result.logPath!, 'utf8');
+      expect(installLog).not.toContain(npmSecret);
+      expect(installLog).toContain('NPM_TOKEN=[redacted]');
+      expect(installLog).toContain('npm_config_//registry.npmjs.org/:_authToken=[redacted]');
       expect(await Bun.file(join(program, 'Install.cmd')).exists()).toBe(true);
       expect(await Bun.file(join(program, PROGRAM_OWNERSHIP_FILE)).exists()).toBe(true);
       const metadata = JSON.parse(await readFile(join(program, 'install.json'), 'utf8'));
@@ -1753,11 +1769,12 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('fails closed when an existing installation receipt is malformed', async () => {
+  test('fails closed when an existing installation receipt is malformed and records failed evidence', async () => {
     const root = await temp('phase7-invalid-receipt');
     try {
       const localStateRoot = join(root, 'local-state');
       const installationRoot = join(root, 'installation');
+      const events: Array<{ kind: string; status: string; error?: { message?: string } }> = [];
       await mkdir(localStateRoot, { recursive: true });
       await writeFile(installationReceiptPath(localStateRoot), '{"schemaVersion":1,"product":"wrong"}\n');
       await expect(installWindowsRelease({
@@ -1768,10 +1785,51 @@ describe('Windows release gate foundations', () => {
         localStateRoot,
         commandRunner: prerequisiteRunner(),
         consent: true,
-        prepareAgentDependencies
+        prepareAgentDependencies,
+        onEvent: (event) => { events.push(event); }
       })).rejects.toThrow(/receipt .*invalid.*refusing to start another installation/i);
+      const terminal = events.filter((event) => event.kind === 'session' && event.status !== 'started');
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0]).toMatchObject({ kind: 'session', status: 'failed' });
+      const evidenceDir = join(localStateRoot, 'logs', 'install-runs');
+      const evidenceFiles = await readdir(evidenceDir);
+      const timingPath = evidenceFiles.find((entry) => entry.endsWith('.json'));
+      const logPath = evidenceFiles.find((entry) => entry.endsWith('.log'));
+      expect(timingPath).toBeDefined();
+      expect(logPath).toBeDefined();
+      const timing = JSON.parse(await readFile(join(evidenceDir, timingPath!), 'utf8')) as { finalStatus?: string; error?: string };
+      expect(timing.finalStatus).toBe('failed');
+      expect(timing.error).toMatch(/receipt .*invalid/i);
+      const diagnosticLog = await readFile(join(evidenceDir, logPath!), 'utf8');
+      expect(diagnosticLog).toMatch(/receipt .*invalid/i);
+      expect(diagnosticLog).not.toContain('synthetic');
       expect(await Bun.file(join(installationRoot, 'program')).exists()).toBe(false);
       await expect(readInstallationReceipt(localStateRoot)).rejects.toThrow(/invalid/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('receipt-backed path resolution rejects a conflicting explicit installation root', async () => {
+    const root = await temp('phase7-receipt-root-conflict');
+    try {
+      const localStateRoot = join(root, 'local-state');
+      const installationRoot = join(root, 'recorded-installation');
+      await commitInstallationReceipt({
+        product: PRODUCT_NAME,
+        owner: PROGRAM_OWNER,
+        installationRoot,
+        programRoot: join(installationRoot, 'program'),
+        localStateRoot
+      });
+      await expect(resolveReceiptBackedHarnessPaths({
+        platform: 'win32',
+        localStateRoot,
+        installationRoot: join(root, 'conflicting-installation')
+      })).rejects.toThrow(/recorded installation root .* refusing to relocate/i);
+      const resolved = await resolveReceiptBackedHarnessPaths({ platform: 'win32', localStateRoot, installationRoot });
+      expect(resolved.paths.installationRoot).toBe(installationRoot);
+      expect(resolved.paths.programRoot).toBe(join(installationRoot, 'program'));
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -10,7 +10,7 @@ import { pickInstallationRoot, type PortConflictAction, type ExistingSessionOpen
 import { resolveExecutable } from './executable';
 import { createInstallationRenderer } from './install-renderer';
 import { rendererMode, type InstallationEventListener, type InstallationRendererMode } from './install-events';
-import { defaultLocalStateRoot, readInstallationReceipt } from './installation-root';
+import { defaultLocalStateRoot } from './installation-root';
 import { createInterface } from 'node:readline/promises';
 import { stdin as processStdin, stdout as processStdout } from 'node:process';
 
@@ -213,17 +213,11 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
 
     if (parsed.command === 'install' || parsed.command === 'repair') {
       const localStateRoot = option(parsed.values, 'local-state-root') ?? option(parsed.values, 'mutable-root') ?? defaultLocalStateRoot(dependencies.env ?? process.env);
-      const receipt = await readInstallationReceipt(localStateRoot);
-      if (parsed.command === 'repair' && !receipt) throw new Error('Repair requires an existing installation-location receipt. Run install first.');
       let installationRoot = option(parsed.values, 'installation-root');
-      if (!installationRoot && !receipt) {
-        if (parsed.flags.has('non-interactive') || parsed.flags.has('plain') || parsed.flags.has('ndjson') || !(dependencies.env ?? process.env).TERM && !processStdin.isTTY) {
-          throw new Error('First installation requires an explicit --installation-root in noninteractive mode.');
-        }
-      }
       const mode: InstallationRendererMode = parsed.flags.has('ndjson') ? 'ndjson' : parsed.flags.has('plain') || parsed.flags.has('non-interactive') ? 'plain' : rendererMode({ stdoutIsTTY: io.stdout.isTTY === true });
       const eventListener = dependencies.installEventListener ?? createInstallationRenderer(mode, io);
-      const installationRootPicker = !installationRoot && !receipt
+      const nonInteractive = parsed.flags.has('non-interactive') || mode !== 'interactive';
+      const installationRootPicker = !installationRoot && !nonInteractive
         ? (dependencies.installationPicker ?? (async (defaultPath: string): Promise<string | undefined> => {
           let nativeDialogUnavailable = false;
           const selected = await pickInstallationRoot({
@@ -270,7 +264,7 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         consent: prerequisiteConsent,
         renderer: mode,
         onEvent: eventListener,
-        nonInteractive: parsed.flags.has('non-interactive') || mode !== 'interactive',
+        nonInteractive,
         commandRunner: dependencies.commandRunner
       });
       if (mode === 'ndjson') return 0;

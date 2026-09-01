@@ -203,8 +203,27 @@ export async function readInstallationReceipt(localStateRoot: string): Promise<I
   }
 }
 
+export interface InstallationReceiptInspection {
+  receipt?: InstallationReceipt;
+  error?: Error;
+}
+
+/** Inspect the receipt without throwing so callers can enter their failure boundary first. */
+export async function inspectInstallationReceipt(localStateRoot: string): Promise<InstallationReceiptInspection> {
+  try {
+    const receipt = await readInstallationReceipt(localStateRoot);
+    return receipt ? { receipt } : {};
+  } catch (error) {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
+  }
+}
+
 /** Atomically commit the selected root only after final verification. */
-export async function commitInstallationReceipt(receipt: Omit<InstallationReceipt, 'schemaVersion' | 'committedAt'> & Partial<Pick<InstallationReceipt, 'committedAt'>>): Promise<InstallationReceipt> {
+export interface InstallationReceiptInput extends Omit<InstallationReceipt, 'schemaVersion' | 'committedAt'> {
+  committedAt?: string;
+}
+
+export async function commitInstallationReceipt(receipt: InstallationReceiptInput): Promise<InstallationReceipt> {
   const { product, owner, installationRoot, programRoot, localStateRoot } = receipt;
   if (normalizeInstallationPath(programRoot, process.platform) !== normalizeInstallationPath(join(resolve(installationRoot), 'program'), process.platform)) {
     throw new Error('Cannot commit an installation receipt whose programRoot is not the distinct program child of installationRoot.');
@@ -252,7 +271,10 @@ export interface ReceiptBackedHarnessPaths {
 export async function resolveReceiptBackedHarnessPaths(options: PathOptions = {}): Promise<ReceiptBackedHarnessPaths> {
   const initialPaths = resolveHarnessPaths(options);
   const receipt = await readInstallationReceipt(initialPaths.mutableRoot);
-  if (receipt && !options.installationRoot) {
+  if (receipt) {
+    if (options.installationRoot && normalizeInstallationPath(options.installationRoot, options.platform ?? process.platform) !== normalizeInstallationPath(receipt.installationRoot, options.platform ?? process.platform)) {
+      throw new Error(`The recorded installation root is ${receipt.installationRoot}; refusing to relocate it to ${options.installationRoot}.`);
+    }
     return {
       receipt,
       paths: resolveHarnessPaths({

@@ -65,9 +65,7 @@ export function profileDirFor(paths: HarnessPaths, profile: string): string {
 }
 
 export function pluginEnvironment(env: Record<string, string | undefined>): Record<string, string | undefined> {
-  const safe = withoutCredentials(env);
-  for (const key of ['NPM_TOKEN', 'NODE_AUTH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'npm_config__auth', 'npm_config_//registry.npmjs.org/:_authToken']) delete safe[key];
-  return safe;
+  return withoutCredentials(env);
 }
 
 function prependPath(env: Record<string, string | undefined>, directory: string, platform: string): Record<string, string | undefined> {

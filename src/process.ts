@@ -219,11 +219,18 @@ const SENSITIVE_ENVIRONMENT_KEYS = new Set([
   'DEEPSEEK_API_KEY',
   'DSH_API_KEY',
   'DSH_FORGEJO_ACCESS_TOKEN',
-  'FORGEJO_ACCESS_TOKEN'
+  'FORGEJO_ACCESS_TOKEN',
+  'NPM_TOKEN',
+  'NODE_AUTH_TOKEN',
+  'GITHUB_TOKEN',
+  'GITLAB_TOKEN',
+  'NPM_CONFIG__AUTH'
 ]);
 
 function sensitiveEnvironmentKey(key: string): boolean {
-  return SENSITIVE_ENVIRONMENT_KEYS.has(key.toUpperCase());
+  const normalized = key.toUpperCase();
+  return SENSITIVE_ENVIRONMENT_KEYS.has(normalized)
+    || /^NPM_CONFIG_.+:_AUTH(?:_?TOKEN)?$/.test(normalized);
 }
 
 export function withoutCredentials(env: Record<string, string | undefined>): Record<string, string | undefined> {
@@ -241,7 +248,7 @@ export function redactSensitive(text: string, env: Record<string, string | undef
     if (sensitiveEnvironmentKey(key) && value) secrets.push(value);
   }
   for (const secret of new Set(secrets)) redacted = redacted.split(secret).join('[redacted]');
-  return redacted.replace(/((?:DEEPSEEK_API_KEY|DSH_API_KEY|DSH_FORGEJO_ACCESS_TOKEN|FORGEJO_ACCESS_TOKEN)\s*[:=]\s*)[^\s,;}]+/gi, '$1[redacted]');
+  return redacted.replace(/((?:DEEPSEEK_API_KEY|DSH_API_KEY|DSH_FORGEJO_ACCESS_TOKEN|FORGEJO_ACCESS_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|GITHUB_TOKEN|GITLAB_TOKEN|NPM_CONFIG__AUTH|NPM_CONFIG_[^\s=]*:_AUTH(?:_?TOKEN)?)\s*[:=]\s*)[^\s,;}]+/gi, '$1[redacted]');
 }
 
 export function commandFailure(command: string, args: string[], result: CommandResult, env?: Record<string, string | undefined>): Error {

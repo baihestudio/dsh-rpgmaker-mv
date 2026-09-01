@@ -20,14 +20,24 @@ describe('credential environment scrubbing', () => {
       forgejo_access_token: 'synthetic-forgejo-secret',
       DsH_FoRgEjO_AcCeSs_ToKeN: 'synthetic-dsh-forgejo-secret',
       dsh_api_key: 'synthetic-dsh-secret',
+      npm_token: 'synthetic-npm-secret',
+      NoDe_AuTh_ToKeN: 'synthetic-node-auth-secret',
+      github_token: 'synthetic-github-secret',
+      GITLAB_TOKEN: 'synthetic-gitlab-secret',
+      npm_config__auth: 'synthetic-npm-config-secret',
+      'npm_config_//registry.npmjs.org/:_authToken': 'synthetic-registry-secret',
       SAFE_VALUE: 'safe'
     };
     expect(withoutCredentials(env)).toEqual({ SAFE_VALUE: 'safe' });
-    const redacted = redactSensitive('forgejo_access_token=synthetic-forgejo-secret DSH_API_KEY: synthetic-dsh-secret', env);
+    const redacted = redactSensitive('forgejo_access_token=synthetic-forgejo-secret DSH_API_KEY: synthetic-dsh-secret NPM_TOKEN=synthetic-npm-secret npm_config_//registry.npmjs.org/:_authToken=synthetic-registry-secret', env);
     expect(redacted).not.toContain('synthetic-forgejo-secret');
     expect(redacted).not.toContain('synthetic-dsh-secret');
+    expect(redacted).not.toContain('synthetic-npm-secret');
+    expect(redacted).not.toContain('synthetic-registry-secret');
     expect(redacted).toContain('forgejo_access_token=[redacted]');
     expect(redacted).toContain('DSH_API_KEY: [redacted]');
+    expect(redacted).toContain('NPM_TOKEN=[redacted]');
+    expect(redacted).toContain('npm_config_//registry.npmjs.org/:_authToken=[redacted]');
   });
 });
 

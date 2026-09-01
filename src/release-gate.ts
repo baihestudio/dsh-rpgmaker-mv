@@ -33,7 +33,7 @@ import {
 } from './install-lifecycle';
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 import { withHarnessLock } from './lock';
-import { commitInstallationReceipt, defaultInstallationRoot, defaultLocalStateRoot, INSTALLATION_CAPACITY_BASIS, INSTALLATION_CAPACITY_FORMULA, INSTALLATION_STAGING_HEADROOM_BYTES, measureReleasePayloadBytes, readInstallationReceipt, resolveRecordedInstallationRoot, validateInstallationRoot, type InstallationCapacity } from './installation-root';
+import { commitInstallationReceipt, defaultInstallationRoot, defaultLocalStateRoot, INSTALLATION_CAPACITY_BASIS, INSTALLATION_CAPACITY_FORMULA, INSTALLATION_STAGING_HEADROOM_BYTES, inspectInstallationReceipt, measureReleasePayloadBytes, readInstallationReceipt, resolveRecordedInstallationRoot, validateInstallationRoot, type InstallationCapacity } from './installation-root';
 import { createInstallationSession, rendererMode, type InstallationEventListener, type InstallationOperation, type InstallationRendererMode } from './install-events';
 import { createInstallRunEvidence, type InstallRunEvidence } from './install-evidence';
 
@@ -82,7 +82,7 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   commandRunner?: CommandRunner;
   createShortcut?: (options: ShortcutCreationOptions) => Promise<string>;
   writeInstallMetadata?: (path: string, content: string) => Promise<void>;
-  prepareAgentDependencies?: (context: { paths: HarnessPaths; env: Record<string, string | undefined>; nodeExecutable?: string; npmExecutable?: string; commandRunner?: CommandRunner }) => Promise<void>;
+  prepareAgentDependencies?: (context: PrepareAgentDependenciesContext) => Promise<void>;
   /** Prebuilt host payload to merge into the Release tree. */
   desktopHostRoot?: string;
   /** Require a native host payload even when running a simulated test host. */
@@ -95,6 +95,14 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   now?: () => Date;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
+}
+
+export interface PrepareAgentDependenciesContext {
+  paths: HarnessPaths;
+  env: Record<string, string | undefined>;
+  nodeExecutable?: string;
+  npmExecutable?: string;
+  commandRunner?: CommandRunner;
 }
 
 export interface InstallReleaseResult {
@@ -311,6 +319,9 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
   const releaseRoot = resolve(options.releaseRoot);
   const localStateRoot = resolve(options.localStateRoot ?? options.mutableRoot ?? env.DSH_RPGMAKER_LOCAL_STATE_ROOT ?? env.DSH_RPGMAKER_DATA_ROOT ?? defaultLocalStateRoot(env));
   const existingReceipt = await readInstallationReceipt(localStateRoot);
+  if (options.operation === 'repair' && !existingReceipt) {
+    throw new ReleaseGateError('Repair requires an existing installation-location receipt. Run install first.');
+  }
   const startPhase = (phase: Parameters<NonNullable<typeof session>['startPhase']>[0], label?: string): void => {
     session?.startPhase(phase, label);
     evidence?.phaseStarted(phase);
@@ -624,7 +635,8 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
 export async function installWindowsRelease(options: InstallReleaseOptions): Promise<InstallReleaseResult> {
   const env = options.env ?? process.env;
   const localStateRoot = resolve(options.localStateRoot ?? options.mutableRoot ?? env.DSH_RPGMAKER_LOCAL_STATE_ROOT ?? env.DSH_RPGMAKER_DATA_ROOT ?? defaultLocalStateRoot(env));
-  const receipt = await readInstallationReceipt(localStateRoot);
+  const receiptInspection = await inspectInstallationReceipt(localStateRoot);
+  const receipt = receiptInspection.receipt;
   const operation: InstallationOperation = options.operation ?? (receipt ? (await exists(receipt.programRoot) ? 'upgrade' : 'repair') : 'install');
   const mode = rendererMode({ mode: options.renderer });
   const session = createInstallationSession({ operation, now: options.now, onEvent: options.onEvent });
@@ -641,6 +653,7 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
   await evidence.start();
   try {
     session.start();
+    if (receiptInspection.error) throw receiptInspection.error;
     const result = await withHarnessLock(join(localStateRoot, 'install.lock'), () => installWindowsReleaseCore(options, session, evidence), {
       timeoutMs: options.lockTimeoutMs ?? 45 * 60_000,
       retryMs: options.lockRetryMs
@@ -655,6 +668,7 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
       if (cancelled) session.cancel(message);
       else session.fail({ message });
     }
+    evidence.appendLog(`installation ${cancelled ? 'cancelled' : 'failed'}: ${message}`);
     const timing = await evidence.finish(cancelled ? 'cancelled' : 'failed', { error: message });
     if (error instanceof InstallationCancelledError) throw new InstallationCancelledError(message);
     if (error instanceof ReleaseGateError) throw new ReleaseGateError(message);

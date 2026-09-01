@@ -61,6 +61,10 @@ export interface InstallationRendererModeOptions {
   stdoutIsTTY?: boolean;
 }
 
+export interface InstallationSessionEmitInput extends Omit<SessionEvent, 'operation' | 'at'> {
+  at?: string;
+}
+
 /** A single-use state machine that guarantees one terminal session event. */
 export class InstallationSession {
   readonly operation: InstallationOperation;
@@ -88,7 +92,7 @@ export class InstallationSession {
 
   get isTerminal(): boolean { return this.terminal; }
 
-  emit(event: Omit<SessionEvent, 'operation' | 'at'> & { at?: string }): SessionEvent {
+  emit(event: InstallationSessionEmitInput): SessionEvent {
     const next: SessionEvent = {
       ...event,
       operation: this.operation,

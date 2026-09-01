@@ -51,6 +51,13 @@ export interface InstallRunEvidenceOptions {
   env?: Record<string, string | undefined>;
 }
 
+export interface InstallRunEvidenceFinishDetails {
+  failedPhase?: InstallPhaseName;
+  exitCode?: number;
+  error?: string;
+  retries?: number;
+}
+
 /**
  * Per-run evidence writer.  Timing JSON is deliberately a small allow-list of
  * fields; command lines, environment dumps, and child output belong only in
@@ -140,7 +147,7 @@ export class InstallRunEvidence {
     this.logQueue = this.logQueue.then(() => appendFile(this.logPath, line, 'utf8')).catch(() => undefined);
   }
 
-  async finish(status: InstallTimingRecord['finalStatus'], details: { failedPhase?: InstallPhaseName; exitCode?: number; error?: string; retries?: number } = {}): Promise<InstallTimingRecord> {
+  async finish(status: InstallTimingRecord['finalStatus'], details: InstallRunEvidenceFinishDetails = {}): Promise<InstallTimingRecord> {
     if (this.finished) throw new Error('Install run evidence has already been finalized.');
     if (this.activePhase) this.phaseFinished(status === 'succeeded' ? 'failed' : status);
     this.finished = true;
