@@ -24,8 +24,7 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "path": {
-            "type": "string",
-            "description": "Path to the RPG Maker MZ project directory (a leading ~ is expanded)."
+            "type": "string"
           }
         },
         "required": [
@@ -41,21 +40,16 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "actorId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the actor to update"
+            "type": "number"
           },
           "updates": {
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {},
-            "description": "Object containing actor properties to update"
+            "additionalProperties": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -82,9 +76,7 @@ export const MZ_MANIFEST = {
             "type": "string"
           },
           "classId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "initialLevel": {
             "type": "number"
@@ -96,17 +88,13 @@ export const MZ_MANIFEST = {
             "type": "string"
           },
           "characterIndex": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "faceName": {
             "type": "string"
           },
           "faceIndex": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "battlerName": {
             "type": "string"
@@ -125,7 +113,6 @@ export const MZ_MANIFEST = {
             "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -142,8 +129,7 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "searchTerm": {
-            "type": "string",
-            "description": "The search term to find actors"
+            "type": "string"
           }
         },
         "required": [
@@ -159,79 +145,45 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Item name"
+            "type": "string"
           },
           "description": {
-            "description": "In-game description text",
             "type": "string"
           },
           "iconIndex": {
-            "description": "Icon index (IconSet.png)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "itypeId": {
-            "description": "Item type: 1 Regular, 2 Key Item, 3 Hidden A, 4 Hidden B",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "scope": {
-            "description": "Target scope (0 none, 1 one enemy, 7 one ally, …)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "occasion": {
-            "description": "Usable: 0 always, 1 battle, 2 menu, 3 never",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "price": {
-            "description": "Buy price (sells for half)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "consumable": {
-            "description": "Consumed on use",
             "type": "boolean"
           },
           "successRate": {
-            "description": "Success rate percent",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "repeats": {
-            "description": "Number of hits/repeats",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "tpGain": {
-            "description": "User TP gained on use",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "hitType": {
-            "description": "0 certain, 1 physical, 2 magical",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "animationId": {
-            "description": "Animation id shown on use",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "damage": {
-            "description": "Damage object { type, elementId, formula, variance, critical }",
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -239,16 +191,13 @@ export const MZ_MANIFEST = {
             "additionalProperties": {}
           },
           "effects": {
-            "description": "Effect objects { code, dataId, value1, value2 }",
             "type": "array",
             "items": {}
           },
           "note": {
-            "description": "Note field",
             "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -265,21 +214,16 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "itemId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the item to update"
+            "type": "number"
           },
           "updates": {
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {},
-            "description": "Object containing item properties to update"
+            "additionalProperties": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -297,8 +241,7 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "searchTerm": {
-            "type": "string",
-            "description": "The search term to find items"
+            "type": "string"
           }
         },
         "required": [
@@ -314,57 +257,37 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Weapon name"
+            "type": "string"
           },
           "description": {
-            "description": "In-game description text",
             "type": "string"
           },
           "iconIndex": {
-            "description": "Icon index (IconSet.png)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "wtypeId": {
-            "description": "Weapon type id (System.json weaponTypes)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "price": {
-            "description": "Buy price",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "params": {
-            "description": "8 flat stat bonuses [maxHP, maxMP, atk, def, mat, mdf, agi, luk]",
-            "minItems": 8,
-            "maxItems": 8,
             "type": "array",
             "items": {
               "type": "number"
             }
           },
           "animationId": {
-            "description": "Attack animation id",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "traits": {
-            "description": "Trait objects { code, dataId, value }",
             "type": "array",
             "items": {}
           },
           "note": {
-            "description": "Note field",
             "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -381,21 +304,16 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "weaponId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the weapon to update"
+            "type": "number"
           },
           "updates": {
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {},
-            "description": "Object containing weapon properties to update"
+            "additionalProperties": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -413,57 +331,37 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Armor name"
+            "type": "string"
           },
           "description": {
-            "description": "In-game description text",
             "type": "string"
           },
           "iconIndex": {
-            "description": "Icon index (IconSet.png)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "atypeId": {
-            "description": "Armor type id (System.json armorTypes)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "etypeId": {
-            "description": "Equip slot (equipTypes: 2 Shield, 3 Head, 4 Body, 5 Accessory)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "price": {
-            "description": "Buy price",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "params": {
-            "description": "8 flat stat bonuses [maxHP, maxMP, atk, def, mat, mdf, agi, luk]",
-            "minItems": 8,
-            "maxItems": 8,
             "type": "array",
             "items": {
               "type": "number"
             }
           },
           "traits": {
-            "description": "Trait objects { code, dataId, value }",
             "type": "array",
             "items": {}
           },
           "note": {
-            "description": "Note field",
             "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -480,21 +378,16 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "armorId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the armor to update"
+            "type": "number"
           },
           "updates": {
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {},
-            "description": "Object containing armor properties to update"
+            "additionalProperties": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -512,51 +405,33 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Skill name"
+            "type": "string"
           },
           "description": {
-            "description": "Skill description",
             "type": "string"
           },
           "iconIndex": {
-            "description": "Icon index (0-1000+)",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "mpCost": {
-            "description": "MP cost",
             "type": "number"
           },
           "tpCost": {
-            "description": "TP cost",
             "type": "number"
           },
           "scope": {
-            "description": "Target scope (1=enemy single, 2=enemy all, 7=ally all, etc.)",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "damage": {
-            "description": "Damage configuration",
             "type": "object",
             "properties": {
               "type": {
-                "description": "Damage type (0=none, 1=HP damage, 3=HP recover, etc.)",
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
+                "type": "number"
               },
               "elementId": {
-                "description": "Element ID (0=none, 2=fire, 3=ice, etc.)",
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
+                "type": "number"
               },
               "formula": {
-                "description": "Damage formula (e.g., \"a.mat * 4 - b.mdf * 2\")",
                 "type": "string"
               },
               "variance": {
@@ -568,28 +443,19 @@ export const MZ_MANIFEST = {
             }
           },
           "effects": {
-            "description": "Skill effects (buffs, debuffs, states, etc.)",
             "type": "array",
             "items": {}
           },
           "animationId": {
-            "description": "Animation ID",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "message1": {
-            "description": "Battle message",
             "type": "string"
           },
           "stypeId": {
-            "description": "Skill type (1=magic, 2=special, etc.)",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -606,35 +472,24 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Skill name"
+            "type": "string"
           },
           "damageFormula": {
-            "type": "string",
-            "description": "Damage formula (e.g., \"a.mat * 4\")"
+            "type": "string"
           },
           "mpCost": {
-            "type": "number",
-            "description": "MP cost"
+            "type": "number"
           },
           "scope": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Target scope (1=enemy single, 2=enemy all)"
+            "type": "number"
           },
           "elementId": {
-            "description": "Element ID (0=none, 2=fire, 3=ice, 4=thunder)",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "description": {
-            "description": "Skill description",
             "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -654,29 +509,21 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Skill name"
+            "type": "string"
           },
           "healFormula": {
-            "type": "string",
-            "description": "Heal formula (e.g., \"a.mat * 3 + 100\")"
+            "type": "string"
           },
           "mpCost": {
-            "type": "number",
-            "description": "MP cost"
+            "type": "number"
           },
           "scope": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Target scope (7=ally all, 11=user)"
+            "type": "number"
           },
           "description": {
-            "description": "Skill description",
             "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -696,35 +543,24 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Skill name"
+            "type": "string"
           },
           "buffType": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Buff type (2=ATK, 3=DEF, 4=MAT, 5=MDF, 6=AGI)"
+            "type": "number"
           },
           "turns": {
-            "type": "number",
-            "description": "Number of turns the buff lasts"
+            "type": "number"
           },
           "mpCost": {
-            "type": "number",
-            "description": "MP cost"
+            "type": "number"
           },
           "scope": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Target scope (7=ally all, 11=user)"
+            "type": "number"
           },
           "description": {
-            "description": "Skill description",
             "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -745,35 +581,24 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Skill name"
+            "type": "string"
           },
           "stateId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "State ID (4=poison, 5=blind, 6=silence, 8=confusion, etc.)"
+            "type": "number"
           },
           "chance": {
-            "type": "number",
-            "description": "Success chance (0.0-1.0)"
+            "type": "number"
           },
           "mpCost": {
-            "type": "number",
-            "description": "MP cost"
+            "type": "number"
           },
           "scope": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Target scope (1=enemy single, 2=enemy all)"
+            "type": "number"
           },
           "description": {
-            "description": "Skill description",
             "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -794,21 +619,16 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "skillId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The skill ID to update"
+            "type": "number"
           },
           "updates": {
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {},
-            "description": "Properties to update"
+            "additionalProperties": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -826,8 +646,7 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "searchTerm": {
-            "type": "string",
-            "description": "Search term"
+            "type": "string"
           }
         },
         "required": [
@@ -843,13 +662,9 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map to retrieve"
+            "type": "number"
           },
           "includeData": {
-            "description": "Include the full tile `data` array (default true). Pass false to omit it (returns dataTileCount) and avoid the token cost of a big painted map.",
             "type": "boolean"
           }
         },
@@ -866,40 +681,22 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "x": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Left edge of the window (tile column)"
+            "type": "number"
           },
           "y": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Top edge of the window (tile row)"
+            "type": "number"
           },
           "width": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Window width in tiles"
+            "type": "number"
           },
           "height": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Window height in tiles"
+            "type": "number"
           },
           "layer": {
-            "description": "Z-layer 0-5 (0-1 lower, 2-3 upper, 4 shadow, 5 region); default 0",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 5
+            "type": "number"
           }
         },
         "required": [
@@ -928,35 +725,21 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Map name shown in the editor map tree"
+            "type": "string"
           },
           "width": {
-            "description": "Width in tiles (default 17)",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "height": {
-            "description": "Height in tiles (default 13)",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "parentId": {
-            "description": "Parent map id in the tree; 0 (default) = top level",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "tilesetId": {
-            "description": "Tileset id (default 1)",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -973,13 +756,9 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map to delete"
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -1001,40 +780,27 @@ export const MZ_MANIFEST = {
               "type": "object",
               "properties": {
                 "mapId": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991,
-                  "description": "The map to update"
+                  "type": "number"
                 },
                 "parentId": {
-                  "description": "New parent map id; 0 = top level",
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
+                  "type": "number"
                 },
                 "order": {
-                  "description": "New sort order among siblings",
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
+                  "type": "number"
                 },
                 "name": {
-                  "description": "New tree display name",
                   "type": "string"
                 },
                 "expanded": {
-                  "description": "Whether the node is expanded in the tree",
                   "type": "boolean"
                 }
               },
               "required": [
                 "mapId"
               ]
-            },
-            "description": "One or more per-map tree edits to apply together"
+            }
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -1051,10 +817,7 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           }
         },
         "required": [
@@ -1070,16 +833,10 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "eventId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the event"
+            "type": "number"
           }
         },
         "required": [
@@ -1096,35 +853,25 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "eventId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the event"
+            "type": "number"
           },
           "updates": {
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {},
-            "description": "Object containing event properties to update"
+            "additionalProperties": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           },
           "verbose": {
-            "description": "Echo the full written record instead of the default summary. Off by default: the response reports identity, counts and command-list shape, which is what you would assert on, and omits the parameters/conditions you would only re-read. Read the full record with the matching get_* tool.",
             "type": "boolean"
           }
         },
@@ -1143,33 +890,21 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "name": {
-            "type": "string",
-            "description": "Event name"
+            "type": "string"
           },
           "x": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "X tile position"
+            "type": "number"
           },
           "y": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Y tile position"
+            "type": "number"
           },
           "note": {
-            "description": "Event note field",
             "type": "string"
           },
           "pages": {
-            "description": "Event pages; each is merged onto a blank page so you can pass only the differing fields. Omit for one blank page.",
             "type": "array",
             "items": {
               "type": "object",
@@ -1180,11 +915,9 @@ export const MZ_MANIFEST = {
             }
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           }
         },
@@ -1204,14 +937,10 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "searchTerm": {
-            "type": "string",
-            "description": "The search term to find events"
+            "type": "string"
           }
         },
         "required": [
@@ -1228,67 +957,44 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "eventId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the event"
+            "type": "number"
           },
           "pageIndex": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Zero-based page index"
+            "type": "number"
           },
           "command": {
             "type": "object",
             "properties": {
               "code": {
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991,
-                "description": "Event command code (see RPG Maker MZ documentation)"
+                "type": "number"
               },
               "indent": {
                 "default": 0,
-                "description": "Indentation level",
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
+                "type": "number"
               },
               "parameters": {
                 "type": "array",
-                "items": {},
-                "description": "Command parameters"
+                "items": {}
               }
             },
             "required": [
               "code",
               "parameters"
-            ],
-            "description": "The event command to insert"
+            ]
           },
           "position": {
-            "description": "Insertion index; defaults to end of the list",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           },
           "verbose": {
-            "description": "Echo the full written record instead of the default summary. Off by default: the response reports identity, counts and command-list shape, which is what you would assert on, and omits the parameters/conditions you would only re-read. Read the full record with the matching get_* tool.",
             "type": "boolean"
           }
         },
@@ -1308,25 +1014,19 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "updates": {
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {},
-            "description": "Partial MapData properties to merge"
+            "additionalProperties": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "verbose": {
-            "description": "Echo the full written record instead of the default summary. Off by default: the response reports identity, counts and command-list shape, which is what you would assert on, and omits the parameters/conditions you would only re-read. Read the full record with the matching get_* tool.",
             "type": "boolean"
           }
         },
@@ -1344,29 +1044,18 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map to resize"
+            "type": "number"
           },
           "width": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "New width in tiles"
+            "type": "number"
           },
           "height": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "New height in tiles"
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "verbose": {
-            "description": "Echo the full written record instead of the default summary. Off by default: the response reports identity, counts and command-list shape, which is what you would assert on, and omits the parameters/conditions you would only re-read. Read the full record with the matching get_* tool.",
             "type": "boolean"
           }
         },
@@ -1385,10 +1074,7 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "encounters": {
             "type": "array",
@@ -1396,41 +1082,27 @@ export const MZ_MANIFEST = {
               "type": "object",
               "properties": {
                 "troopId": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "Troop id from Troops.json"
+                  "type": "number"
                 },
                 "weight": {
-                  "description": "Relative encounter weight (default 5)",
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
+                  "type": "number"
                 },
                 "regionSet": {
-                  "description": "Region ids this encounter is restricted to (empty = anywhere)",
                   "type": "array",
                   "items": {
-                    "type": "integer",
-                    "minimum": -9007199254740991,
-                    "maximum": 9007199254740991
+                    "type": "number"
                   }
                 }
               },
               "required": [
                 "troopId"
               ]
-            },
-            "description": "The full encounter list to set (replaces any existing entries)"
+            }
           },
           "encounterStep": {
-            "description": "Average number of steps between encounters (unchanged if omitted)",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -1448,10 +1120,7 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           }
         },
         "required": [
@@ -1467,37 +1136,21 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "x": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "X tile position"
+            "type": "number"
           },
           "y": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Y tile position"
+            "type": "number"
           },
           "layer": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 5,
-            "description": "Z-layer 0-5 (0-1 lower, 2-3 upper, 4 shadow, 5 region)"
+            "type": "number"
           },
           "tileId": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Raw tile ID"
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -1518,19 +1171,12 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "eventId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the event"
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -1548,61 +1194,42 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Enemy name shown in battle and the database"
+            "type": "string"
           },
           "battlerName": {
-            "description": "Battler graphic filename (img/enemies)",
             "type": "string"
           },
           "battlerHue": {
-            "description": "Battler hue rotation 0-360",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "params": {
-            "description": "8 base params: [maxHP, maxMP, atk, def, mat, mdf, agi, luk]",
-            "minItems": 8,
-            "maxItems": 8,
             "type": "array",
             "items": {
               "type": "number"
             }
           },
           "exp": {
-            "description": "EXP granted when defeated",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "gold": {
-            "description": "Gold granted when defeated",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "note": {
-            "description": "Note field",
             "type": "string"
           },
           "traits": {
-            "description": "Trait objects { code, dataId, value }",
             "type": "array",
             "items": {}
           },
           "dropItems": {
-            "description": "Drop-item objects { kind, dataId, denominator }",
             "type": "array",
             "items": {}
           },
           "actions": {
-            "description": "Action patterns { skillId, conditionType, conditionParam1, conditionParam2, rating }",
             "type": "array",
             "items": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -1619,21 +1246,16 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "enemyId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the enemy to update"
+            "type": "number"
           },
           "updates": {
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {},
-            "description": "Object containing enemy properties to update"
+            "additionalProperties": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -1651,8 +1273,7 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "searchTerm": {
-            "type": "string",
-            "description": "The search term to find enemies"
+            "type": "string"
           }
         },
         "required": [
@@ -1668,36 +1289,24 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Troop name shown in the database"
+            "type": "string"
           },
           "members": {
-            "description": "Placed enemies; each references an existing enemyId",
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "enemyId": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "Enemy id from Enemies.json"
+                  "type": "number"
                 },
                 "x": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "X screen position of the enemy in battle"
+                  "type": "number"
                 },
                 "y": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "Y screen position of the enemy in battle"
+                  "type": "number"
                 },
                 "hidden": {
                   "default": false,
-                  "description": "Whether the enemy starts hidden",
                   "type": "boolean"
                 }
               },
@@ -1709,20 +1318,16 @@ export const MZ_MANIFEST = {
             }
           },
           "pages": {
-            "description": "Battle-event pages { conditions, list, span }; defaults to one blank page",
             "type": "array",
             "items": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           },
           "verbose": {
-            "description": "Echo the full written record instead of the default summary. Off by default: the response reports identity, counts and command-list shape, which is what you would assert on, and omits the parameters/conditions you would only re-read. Read the full record with the matching get_* tool.",
             "type": "boolean"
           }
         },
@@ -1739,29 +1344,22 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "troopId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the troop to update"
+            "type": "number"
           },
           "updates": {
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {},
-            "description": "Object containing troop properties to update (name, members, pages)"
+            "additionalProperties": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           },
           "verbose": {
-            "description": "Echo the full written record instead of the default summary. Off by default: the response reports identity, counts and command-list shape, which is what you would assert on, and omits the parameters/conditions you would only re-read. Read the full record with the matching get_* tool.",
             "type": "boolean"
           }
         },
@@ -1779,8 +1377,7 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "searchTerm": {
-            "type": "string",
-            "description": "The search term to find troops"
+            "type": "string"
           }
         },
         "required": [
@@ -1796,26 +1393,18 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Class name shown in the database"
+            "type": "string"
           },
           "maxLevel": {
-            "description": "Highest level the param curve covers (default 99); sizes the params matrix",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "expParams": {
-            "description": "EXP curve: [basis, extra, accelerationA, accelerationB]",
-            "minItems": 4,
-            "maxItems": 4,
             "type": "array",
             "items": {
               "type": "number"
             }
           },
           "params": {
-            "description": "8 param growth curves, each maxLevel+1 long: [maxHP,maxMP,atk,def,mat,mdf,agi,luk]",
             "type": "array",
             "items": {
               "type": "array",
@@ -1825,21 +1414,17 @@ export const MZ_MANIFEST = {
             }
           },
           "learnings": {
-            "description": "Learned-skill entries { level, skillId, note }",
             "type": "array",
             "items": {}
           },
           "traits": {
-            "description": "Trait objects { code, dataId, value }",
             "type": "array",
             "items": {}
           },
           "note": {
-            "description": "Note field",
             "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -1856,21 +1441,16 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "classId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the class to update"
+            "type": "number"
           },
           "updates": {
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {},
-            "description": "Object containing class properties to update"
+            "additionalProperties": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -1888,29 +1468,18 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "classId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the class to add the learning to"
+            "type": "number"
           },
           "skillId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The skill learned (must exist in data/Skills.json)"
+            "type": "number"
           },
           "level": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Level at which the skill is learned"
+            "type": "number"
           },
           "note": {
-            "description": "Optional note for the learning entry",
             "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -1929,26 +1498,18 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "classId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the class to edit"
+            "type": "number"
           },
           "paramId": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 7,
-            "description": "Which param: 0 maxHP,1 maxMP,2 atk,3 def,4 mat,5 mdf,6 agi,7 luk"
+            "type": "number"
           },
           "values": {
             "type": "array",
             "items": {
               "type": "number"
-            },
-            "description": "New curve, indexed by level; must match the existing curve length"
+            }
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -1967,122 +1528,76 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "State name shown in the database and battle messages"
+            "type": "string"
           },
           "restriction": {
-            "description": "Behavior restriction: 0 none, 1 attack enemy, 2 attack anyone, 3 attack ally, 4 cannot move",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "priority": {
-            "description": "Icon-slot display priority 0-100 (default 50)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "motion": {
-            "description": "SV-actor motion (0 normal, 2 sleep, 3 dead, …)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "overlay": {
-            "description": "Overlay animation index (0 = none)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "removeAtBattleEnd": {
-            "description": "Remove automatically when the battle ends",
             "type": "boolean"
           },
           "removeByRestriction": {
-            "description": "Remove when the battler's restriction changes",
             "type": "boolean"
           },
           "autoRemovalTiming": {
-            "description": "Auto-removal timing: 0 none, 1 at action end, 2 at turn end",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "minTurns": {
-            "description": "Minimum duration in turns when auto-removed",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "maxTurns": {
-            "description": "Maximum duration in turns when auto-removed",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "removeByDamage": {
-            "description": "Remove when the battler takes damage",
             "type": "boolean"
           },
           "chanceByDamage": {
-            "description": "Chance (%) of removal per damage instance when removeByDamage",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "removeByWalking": {
-            "description": "Remove after walking a number of steps",
             "type": "boolean"
           },
           "stepsToRemove": {
-            "description": "Steps to walk off the state when removeByWalking",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "releaseByDamage": {
-            "description": "Whether damage can release the state",
             "type": "boolean"
           },
           "iconIndex": {
-            "description": "Icon shown on the battler/status (0 = none)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "message1": {
-            "description": "Message when an actor gains the state",
             "type": "string"
           },
           "message2": {
-            "description": "Message when an enemy gains the state",
             "type": "string"
           },
           "message3": {
-            "description": "Message when the state persists",
             "type": "string"
           },
           "message4": {
-            "description": "Message when the state is removed",
             "type": "string"
           },
           "messageType": {
-            "description": "Engine's message routing form",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "traits": {
-            "description": "Trait objects { code, dataId, value }",
             "type": "array",
             "items": {}
           },
           "note": {
-            "description": "Note field",
             "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -2099,21 +1614,16 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "stateId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the state to update"
+            "type": "number"
           },
           "updates": {
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {},
-            "description": "Object containing state properties to update"
+            "additionalProperties": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -2131,36 +1641,25 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Common event name shown in the database"
+            "type": "string"
           },
           "trigger": {
-            "description": "How it runs on its own: 0 None (call-only), 1 Autorun, 2 Parallel",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "switchId": {
-            "description": "Switch that gates an Autorun/Parallel trigger (ignored when trigger is 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "list": {
-            "description": "Event-command list { code, indent, parameters }; must end with code 0",
             "type": "array",
             "items": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           },
           "verbose": {
-            "description": "Echo the full written record instead of the default summary. Off by default: the response reports identity, counts and command-list shape, which is what you would assert on, and omits the parameters/conditions you would only re-read. Read the full record with the matching get_* tool.",
             "type": "boolean"
           }
         },
@@ -2177,29 +1676,22 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "commonEventId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the common event to update"
+            "type": "number"
           },
           "updates": {
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {},
-            "description": "Object containing common event properties to update (name, trigger, switchId, list)"
+            "additionalProperties": {}
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           },
           "verbose": {
-            "description": "Echo the full written record instead of the default summary. Off by default: the response reports identity, counts and command-list shape, which is what you would assert on, and omits the parameters/conditions you would only re-read. Read the full record with the matching get_* tool.",
             "type": "boolean"
           }
         },
@@ -2217,16 +1709,10 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "commonEventId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the common event to call (must exist)"
+            "type": "number"
           },
           "indent": {
-            "description": "Indentation level in the target list (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -2249,11 +1735,9 @@ export const MZ_MANIFEST = {
               "flee",
               "wander",
               "custom"
-            ],
-            "description": "patrol (walk a direction and back), approach (toward player), flee (away from player), wander (random), or custom (your own move commands)"
+            ]
           },
           "direction": {
-            "description": "patrol only: primary direction, walked out and back (default right)",
             "type": "string",
             "enum": [
               "up",
@@ -2263,25 +1747,17 @@ export const MZ_MANIFEST = {
             ]
           },
           "steps": {
-            "description": "patrol only: steps per leg (default 3)",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "commands": {
-            "description": "custom only: raw move commands { code, parameters }",
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "code": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "Move-route command code (Game_Character ROUTE_*)"
+                  "type": "number"
                 },
                 "parameters": {
-                  "description": "Command parameters (default [])",
                   "type": "array",
                   "items": {}
                 }
@@ -2292,15 +1768,12 @@ export const MZ_MANIFEST = {
             }
           },
           "repeat": {
-            "description": "Loop the route (patterns loop by default)",
             "type": "boolean"
           },
           "skippable": {
-            "description": "Skip a step when movement is blocked",
             "type": "boolean"
           },
           "wait": {
-            "description": "Wait for the route to finish before continuing",
             "type": "boolean"
           }
         },
@@ -2317,28 +1790,16 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "eventId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the event"
+            "type": "number"
           },
           "pageIndex": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Zero-based page index"
+            "type": "number"
           },
           "characterId": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Target character: -1 player, 0 this event, N event id on the map"
+            "type": "number"
           },
           "moveRoute": {
             "type": "object",
@@ -2349,13 +1810,9 @@ export const MZ_MANIFEST = {
                   "type": "object",
                   "properties": {
                     "code": {
-                      "type": "integer",
-                      "minimum": -9007199254740991,
-                      "maximum": 9007199254740991,
-                      "description": "Move-route command code (Game_Character ROUTE_*)"
+                      "type": "number"
                     },
                     "parameters": {
-                      "description": "Command parameters (default [])",
                       "type": "array",
                       "items": {}
                     }
@@ -2363,8 +1820,7 @@ export const MZ_MANIFEST = {
                   "required": [
                     "code"
                   ]
-                },
-                "description": "Move commands; auto-terminated with code 0 if missing"
+                }
               },
               "repeat": {
                 "type": "boolean"
@@ -2378,27 +1834,18 @@ export const MZ_MANIFEST = {
             },
             "required": [
               "list"
-            ],
-            "description": "The move route to force (e.g. from create_move_route)"
+            ]
           },
           "indent": {
-            "description": "Indentation level in the list (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "position": {
-            "description": "Insertion index; defaults to the end of the list",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           }
         },
@@ -2422,21 +1869,15 @@ export const MZ_MANIFEST = {
             "type": "array",
             "items": {
               "type": "string"
-            },
-            "description": "Message lines (one entry per visual line)"
+            }
           },
           "faceName": {
-            "description": "Face image basename (\"\" = none, default)",
             "type": "string"
           },
           "faceIndex": {
-            "description": "Face index 0–7 in the sheet (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "background": {
-            "description": "Window background (default window)",
             "type": "string",
             "enum": [
               "window",
@@ -2445,7 +1886,6 @@ export const MZ_MANIFEST = {
             ]
           },
           "position": {
-            "description": "Window position (default bottom)",
             "type": "string",
             "enum": [
               "top",
@@ -2454,14 +1894,10 @@ export const MZ_MANIFEST = {
             ]
           },
           "speakerName": {
-            "description": "MZ name-box speaker name (default \"\")",
             "type": "string"
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -2480,11 +1916,9 @@ export const MZ_MANIFEST = {
             "type": "array",
             "items": {
               "type": "string"
-            },
-            "description": "The choice labels shown to the player"
+            }
           },
           "branches": {
-            "description": "Commands per choice (same order as choices); omitted/short = empty branches",
             "type": "array",
             "items": {
               "type": "array",
@@ -2492,19 +1926,12 @@ export const MZ_MANIFEST = {
                 "type": "object",
                 "properties": {
                   "code": {
-                    "type": "integer",
-                    "minimum": -9007199254740991,
-                    "maximum": 9007199254740991,
-                    "description": "Event command code"
+                    "type": "number"
                   },
                   "indent": {
-                    "description": "Indentation level (default 0)",
-                    "type": "integer",
-                    "minimum": -9007199254740991,
-                    "maximum": 9007199254740991
+                    "type": "number"
                   },
                   "parameters": {
-                    "description": "Command parameters (default [])",
                     "type": "array",
                     "items": {}
                   }
@@ -2516,25 +1943,17 @@ export const MZ_MANIFEST = {
             }
           },
           "cancelBranch": {
-            "description": "Commands for a \"When Cancel\" branch (adds a 403 block; cancel routes here)",
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "code": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "Event command code"
+                  "type": "number"
                 },
                 "indent": {
-                  "description": "Indentation level (default 0)",
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
+                  "type": "number"
                 },
                 "parameters": {
-                  "description": "Command parameters (default [])",
                   "type": "array",
                   "items": {}
                 }
@@ -2545,19 +1964,12 @@ export const MZ_MANIFEST = {
             }
           },
           "cancelType": {
-            "description": "Without a cancelBranch: 0-based choice index the Cancel button maps to, or -1 Disallow (default -1)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "defaultType": {
-            "description": "0-based default (highlighted) choice, or -1 none (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "position": {
-            "description": "Choice window position (default right)",
             "type": "string",
             "enum": [
               "left",
@@ -2566,7 +1978,6 @@ export const MZ_MANIFEST = {
             ]
           },
           "background": {
-            "description": "Choice window background (default window)",
             "type": "string",
             "enum": [
               "window",
@@ -2575,10 +1986,7 @@ export const MZ_MANIFEST = {
             ]
           },
           "indent": {
-            "description": "Indentation level of the block (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -2605,17 +2013,12 @@ export const MZ_MANIFEST = {
                   "actor_in_party",
                   "gold",
                   "item"
-                ],
-                "description": "Condition type"
+                ]
               },
               "switchId": {
-                "description": "switch: the switch id to test",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               },
               "name": {
-                "description": "self_switch: which self switch",
                 "type": "string",
                 "enum": [
                   "A",
@@ -2625,7 +2028,6 @@ export const MZ_MANIFEST = {
                 ]
               },
               "value": {
-                "description": "switch/self_switch: test for on (default) or off",
                 "type": "string",
                 "enum": [
                   "on",
@@ -2633,13 +2035,9 @@ export const MZ_MANIFEST = {
                 ]
               },
               "variableId": {
-                "description": "variable: the variable id (left side)",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               },
               "comparison": {
-                "description": "variable: comparison operator",
                 "type": "string",
                 "enum": [
                   "==",
@@ -2651,33 +2049,21 @@ export const MZ_MANIFEST = {
                 ]
               },
               "constant": {
-                "description": "variable: compare against this constant (default 0)",
                 "type": "number"
               },
               "variableOperand": {
-                "description": "variable: compare against this variable id (overrides constant)",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               },
               "actorId": {
-                "description": "actor_in_party: the actor id",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               },
               "itemId": {
-                "description": "item: the item id (tests \"party has item\")",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               },
               "gold": {
-                "description": "gold: the amount to compare against",
                 "type": "number"
               },
               "compare": {
-                "description": "gold: comparison operator",
                 "type": "string",
                 "enum": [
                   ">=",
@@ -2688,29 +2074,20 @@ export const MZ_MANIFEST = {
             },
             "required": [
               "type"
-            ],
-            "description": "Conditional branch condition"
+            ]
           },
           "thenBranch": {
-            "description": "Commands to run when the condition is true (default empty)",
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "code": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "Event command code"
+                  "type": "number"
                 },
                 "indent": {
-                  "description": "Indentation level (default 0)",
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
+                  "type": "number"
                 },
                 "parameters": {
-                  "description": "Command parameters (default [])",
                   "type": "array",
                   "items": {}
                 }
@@ -2721,25 +2098,17 @@ export const MZ_MANIFEST = {
             }
           },
           "elseBranch": {
-            "description": "Commands for the Else branch; presence (even empty) adds the 411 Else block",
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "code": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "Event command code"
+                  "type": "number"
                 },
                 "indent": {
-                  "description": "Indentation level (default 0)",
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
+                  "type": "number"
                 },
                 "parameters": {
-                  "description": "Command parameters (default [])",
                   "type": "array",
                   "items": {}
                 }
@@ -2750,10 +2119,7 @@ export const MZ_MANIFEST = {
             }
           },
           "indent": {
-            "description": "Indentation level of the block (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -2775,24 +2141,16 @@ export const MZ_MANIFEST = {
               "exit_event",
               "label",
               "jump_to_label"
-            ],
-            "description": "Which flow command to build"
+            ]
           },
           "frames": {
-            "description": "wait: number of frames (60 = 1 second)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "name": {
-            "description": "label/jump_to_label: the label name",
             "type": "string"
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -2812,23 +2170,15 @@ export const MZ_MANIFEST = {
             "enum": [
               "switch",
               "self_switch"
-            ],
-            "description": "\"switch\" (global, by id/range) or \"self_switch\" (this event, A–D)"
+            ]
           },
           "switchId": {
-            "description": "switch: the switch id (range start)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "endId": {
-            "description": "switch: inclusive range end (default = switchId, a single switch)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "name": {
-            "description": "self_switch: which self switch",
             "type": "string",
             "enum": [
               "A",
@@ -2838,7 +2188,6 @@ export const MZ_MANIFEST = {
             ]
           },
           "value": {
-            "description": "Set on (default) or off",
             "type": "string",
             "enum": [
               "on",
@@ -2846,10 +2195,7 @@ export const MZ_MANIFEST = {
             ]
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -2865,19 +2211,12 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "variableId": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "The target variable id (range start)"
+            "type": "number"
           },
           "endId": {
-            "description": "Inclusive range end (default = variableId, a single variable)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "operation": {
-            "description": "Arithmetic applied to the target (default set)",
             "type": "string",
             "enum": [
               "set",
@@ -2898,56 +2237,36 @@ export const MZ_MANIFEST = {
                   "variable",
                   "random",
                   "game_data"
-                ],
-                "description": "Operand source for the variable value"
+                ]
               },
               "value": {
-                "description": "constant: the value",
                 "type": "number"
               },
               "variableId": {
-                "description": "variable: the source variable id",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               },
               "min": {
-                "description": "random: inclusive minimum",
                 "type": "number"
               },
               "max": {
-                "description": "random: inclusive maximum",
                 "type": "number"
               },
               "dataType": {
-                "description": "game_data: 0 item/1 weapon/2 armor count, 3 actor, 4 enemy, 5 char, 6 party, 7 other, 8 last",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               },
               "param1": {
-                "description": "game_data: first sub-parameter (see corescript)",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               },
               "param2": {
-                "description": "game_data: second sub-parameter (see corescript)",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               }
             },
             "required": [
               "type"
-            ],
-            "description": "The right-hand operand of the Control Variables command"
+            ]
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -2968,8 +2287,7 @@ export const MZ_MANIFEST = {
             "enum": [
               "increase",
               "decrease"
-            ],
-            "description": "Gain or lose gold"
+            ]
           },
           "operand": {
             "type": "object",
@@ -2979,30 +2297,21 @@ export const MZ_MANIFEST = {
                 "enum": [
                   "constant",
                   "variable"
-                ],
-                "description": "constant amount or a variable value"
+                ]
               },
               "value": {
-                "description": "constant: the amount",
                 "type": "number"
               },
               "variableId": {
-                "description": "variable: the variable id to read",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               }
             },
             "required": [
               "type"
-            ],
-            "description": "The amount to gain/lose (constant or variable)"
+            ]
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -3024,22 +2333,17 @@ export const MZ_MANIFEST = {
               "item",
               "weapon",
               "armor"
-            ],
-            "description": "Which inventory to change"
+            ]
           },
           "id": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "The item/weapon/armor id"
+            "type": "number"
           },
           "operation": {
             "type": "string",
             "enum": [
               "increase",
               "decrease"
-            ],
-            "description": "Gain or lose"
+            ]
           },
           "operand": {
             "type": "object",
@@ -3049,34 +2353,24 @@ export const MZ_MANIFEST = {
                 "enum": [
                   "constant",
                   "variable"
-                ],
-                "description": "constant amount or a variable value"
+                ]
               },
               "value": {
-                "description": "constant: the amount",
                 "type": "number"
               },
               "variableId": {
-                "description": "variable: the variable id to read",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               }
             },
             "required": [
               "type"
-            ],
-            "description": "The amount to gain/lose (constant or variable)"
+            ]
           },
           "includeEquip": {
-            "description": "weapon/armor: also count equipped copies (default false)",
             "type": "boolean"
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -3095,28 +2389,20 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "actorId": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "The actor id"
+            "type": "number"
           },
           "operation": {
             "type": "string",
             "enum": [
               "add",
               "remove"
-            ],
-            "description": "Add to or remove from the party"
+            ]
           },
           "initialize": {
-            "description": "add only: reset the actor to their initial state (default false)",
             "type": "boolean"
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -3133,25 +2419,15 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Destination map id (or a variable id if designation=variable)"
+            "type": "number"
           },
           "x": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Destination tile x (or a variable id)"
+            "type": "number"
           },
           "y": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Destination tile y (or a variable id)"
+            "type": "number"
           },
           "direction": {
-            "description": "Facing after transfer (default retain)",
             "type": "string",
             "enum": [
               "retain",
@@ -3162,7 +2438,6 @@ export const MZ_MANIFEST = {
             ]
           },
           "fade": {
-            "description": "Fade style (default black)",
             "type": "string",
             "enum": [
               "black",
@@ -3171,7 +2446,6 @@ export const MZ_MANIFEST = {
             ]
           },
           "designation": {
-            "description": "direct: mapId/x/y are literal; variable: they are variable ids (default direct)",
             "type": "string",
             "enum": [
               "direct",
@@ -3179,10 +2453,7 @@ export const MZ_MANIFEST = {
             ]
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -3206,30 +2477,22 @@ export const MZ_MANIFEST = {
               "bgs",
               "me",
               "se"
-            ],
-            "description": "Which audio channel to play on"
+            ]
           },
           "name": {
-            "type": "string",
-            "description": "Audio basename (from list_assets, extension stripped)"
+            "type": "string"
           },
           "volume": {
-            "description": "Volume 0–100 (default 90)",
             "type": "number"
           },
           "pitch": {
-            "description": "Pitch 50–150 (default 100)",
             "type": "number"
           },
           "pan": {
-            "description": "Pan -100–100 (default 0)",
             "type": "number"
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -3253,39 +2516,28 @@ export const MZ_MANIFEST = {
               "tint",
               "flash",
               "shake"
-            ],
-            "description": "Which screen effect to build"
+            ]
           },
           "color": {
-            "description": "tint: [red,green,blue,gray] (−255…255); flash: [red,green,blue,intensity] (0…255)",
-            "minItems": 4,
-            "maxItems": 4,
             "type": "array",
             "items": {
               "type": "number"
             }
           },
           "power": {
-            "description": "shake: strength 1–9 (default 5)",
             "type": "number"
           },
           "speed": {
-            "description": "shake: speed 1–9 (default 5)",
             "type": "number"
           },
           "duration": {
-            "description": "tint/flash/shake: frames (default 60)",
             "type": "number"
           },
           "wait": {
-            "description": "tint/flash/shake: hold the event until it finishes (default true)",
             "type": "boolean"
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -3305,21 +2557,15 @@ export const MZ_MANIFEST = {
             "enum": [
               "show",
               "erase"
-            ],
-            "description": "Show a picture or erase a slot"
+            ]
           },
           "pictureId": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Picture slot 1–100"
+            "type": "number"
           },
           "name": {
-            "description": "show: picture basename (from list_assets(\"pictures\"))",
             "type": "string"
           },
           "origin": {
-            "description": "show: anchor point (default upper_left)",
             "type": "string",
             "enum": [
               "upper_left",
@@ -3327,27 +2573,21 @@ export const MZ_MANIFEST = {
             ]
           },
           "x": {
-            "description": "show: screen x in pixels (default 0)",
             "type": "number"
           },
           "y": {
-            "description": "show: screen y in pixels (default 0)",
             "type": "number"
           },
           "scaleX": {
-            "description": "show: horizontal scale % (default 100)",
             "type": "number"
           },
           "scaleY": {
-            "description": "show: vertical scale % (default 100)",
             "type": "number"
           },
           "opacity": {
-            "description": "show: opacity 0–255 (default 255)",
             "type": "number"
           },
           "blend": {
-            "description": "show: blend mode (default normal)",
             "type": "string",
             "enum": [
               "normal",
@@ -3357,10 +2597,7 @@ export const MZ_MANIFEST = {
             ]
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -3381,30 +2618,19 @@ export const MZ_MANIFEST = {
             "enum": [
               "animation",
               "balloon"
-            ],
-            "description": "Play an animation or a balloon icon"
+            ]
           },
           "characterId": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Target character: -1 player, 0 this event, N event id on the current map"
+            "type": "number"
           },
           "id": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "animation: the animation id; balloon: the balloon id (1 exclamation, 2 question, …)"
+            "type": "number"
           },
           "wait": {
-            "description": "Hold the event until it finishes (default false)",
             "type": "boolean"
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -3427,28 +2653,19 @@ export const MZ_MANIFEST = {
               "direct",
               "variable",
               "random"
-            ],
-            "description": "How the troop is chosen (default direct)"
+            ]
           },
           "troopId": {
-            "description": "direct: the troop id; variable: the variable id holding it",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "canEscape": {
-            "description": "Allow the party to escape (default false)",
             "type": "boolean"
           },
           "canLose": {
-            "description": "Continue the event if the party loses (default false)",
             "type": "boolean"
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         }
       }
@@ -3471,38 +2688,26 @@ export const MZ_MANIFEST = {
                     "item",
                     "weapon",
                     "armor"
-                  ],
-                  "description": "What is for sale"
+                  ]
                 },
                 "id": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "The item/weapon/armor id"
+                  "type": "number"
                 },
                 "price": {
-                  "description": "Override price (omitted = the database standard price)",
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
+                  "type": "number"
                 }
               },
               "required": [
                 "kind",
                 "id"
               ]
-            },
-            "description": "The goods offered (at least one)"
+            }
           },
           "purchaseOnly": {
-            "description": "Hide the sell tab (default false)",
             "type": "boolean"
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -3518,22 +2723,13 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "actorId": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "The actor whose name is entered"
+            "type": "number"
           },
           "maxLength": {
-            "description": "Max name length (default 8)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -3557,8 +2753,7 @@ export const MZ_MANIFEST = {
               "recover_all",
               "exp",
               "level"
-            ],
-            "description": "Which actor change to build"
+            ]
           },
           "target": {
             "type": "object",
@@ -3568,29 +2763,20 @@ export const MZ_MANIFEST = {
                 "enum": [
                   "fixed",
                   "variable"
-                ],
-                "description": "fixed actor id (0 = whole party) or a variable"
+                ]
               },
               "actorId": {
-                "description": "fixed: the actor id (0 = entire party)",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               },
               "variableId": {
-                "description": "variable: the variable id holding the actor id",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               }
             },
             "required": [
               "type"
-            ],
-            "description": "Which actor(s) the change applies to"
+            ]
           },
           "operation": {
-            "description": "hp/mp/exp/level: gain or lose (default increase)",
             "type": "string",
             "enum": [
               "increase",
@@ -3598,7 +2784,6 @@ export const MZ_MANIFEST = {
             ]
           },
           "operand": {
-            "description": "hp/mp/exp/level: the amount (constant/variable)",
             "type": "object",
             "properties": {
               "type": {
@@ -3606,18 +2791,13 @@ export const MZ_MANIFEST = {
                 "enum": [
                   "constant",
                   "variable"
-                ],
-                "description": "constant amount or a variable value"
+                ]
               },
               "value": {
-                "description": "constant: the amount",
                 "type": "number"
               },
               "variableId": {
-                "description": "variable: the variable id to read",
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
+                "type": "number"
               }
             },
             "required": [
@@ -3625,15 +2805,12 @@ export const MZ_MANIFEST = {
             ]
           },
           "allowKnockout": {
-            "description": "hp: allow the change to reduce HP to 0/death (default false)",
             "type": "boolean"
           },
           "showLevelUp": {
-            "description": "exp/level: show the level-up message (default false)",
             "type": "boolean"
           },
           "stateOperation": {
-            "description": "state: add or remove the state",
             "type": "string",
             "enum": [
               "add",
@@ -3641,16 +2818,10 @@ export const MZ_MANIFEST = {
             ]
           },
           "stateId": {
-            "description": "state: the state id",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "indent": {
-            "description": "Indentation level (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -3667,7 +2838,6 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "target": {
-            "description": "Which command list to insert into (default map_event)",
             "type": "string",
             "enum": [
               "map_event",
@@ -3676,34 +2846,19 @@ export const MZ_MANIFEST = {
             ]
           },
           "mapId": {
-            "description": "target \"map_event\": the map id",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "eventId": {
-            "description": "target \"map_event\": the event id",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "commonEventId": {
-            "description": "target \"common_event\": the common event id",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "troopId": {
-            "description": "target \"troop_page\": the troop id",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "pageIndex": {
-            "description": "target \"map_event\"/\"troop_page\": zero-based page index",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "commands": {
             "type": "array",
@@ -3711,19 +2866,12 @@ export const MZ_MANIFEST = {
               "type": "object",
               "properties": {
                 "code": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "Event command code"
+                  "type": "number"
                 },
                 "indent": {
-                  "description": "Indentation level (default 0)",
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
+                  "type": "number"
                 },
                 "parameters": {
-                  "description": "Command parameters (default [])",
                   "type": "array",
                   "items": {}
                 }
@@ -3731,25 +2879,18 @@ export const MZ_MANIFEST = {
               "required": [
                 "code"
               ]
-            },
-            "description": "The event commands to insert (e.g. the `commands` from a build_* tool)"
+            }
           },
           "position": {
-            "description": "Insertion index; defaults to the end of the list",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           },
           "verbose": {
-            "description": "Echo the full written record instead of the default summary. Off by default: the response reports identity, counts and command-list shape, which is what you would assert on, and omits the parameters/conditions you would only re-read. Read the full record with the matching get_* tool.",
             "type": "boolean"
           }
         },
@@ -3766,35 +2907,21 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "eventId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the event"
+            "type": "number"
           },
           "pageIndex": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Zero-based page index"
+            "type": "number"
           },
           "characterName": {
-            "description": "Sprite sheet basename (from list_assets(\"characters\")); \"\" = no sprite",
             "type": "string"
           },
           "characterIndex": {
-            "description": "Sprite index 0–7 in the sheet",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "direction": {
-            "description": "Facing direction of the sprite",
             "type": "string",
             "enum": [
               "down",
@@ -3804,19 +2931,12 @@ export const MZ_MANIFEST = {
             ]
           },
           "pattern": {
-            "description": "Sprite animation frame 0–2 (1 = idle)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "tileId": {
-            "description": "Use a tile as the graphic instead of a sprite (0 = none)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "trigger": {
-            "description": "What starts the page",
             "type": "string",
             "enum": [
               "action_button",
@@ -3827,7 +2947,6 @@ export const MZ_MANIFEST = {
             ]
           },
           "priority": {
-            "description": "Stacking vs. the player: below/same/above characters (same = solid)",
             "type": "string",
             "enum": [
               "below",
@@ -3836,23 +2955,18 @@ export const MZ_MANIFEST = {
             ]
           },
           "through": {
-            "description": "Let the player/others pass through the event",
             "type": "boolean"
           },
           "walkAnime": {
-            "description": "Animate the walk cycle while moving",
             "type": "boolean"
           },
           "stepAnime": {
-            "description": "Animate in place while stopped",
             "type": "boolean"
           },
           "directionFix": {
-            "description": "Lock the facing direction",
             "type": "boolean"
           },
           "moveType": {
-            "description": "Autonomous movement (custom uses moveRoute)",
             "type": "string",
             "enum": [
               "fixed",
@@ -3862,19 +2976,12 @@ export const MZ_MANIFEST = {
             ]
           },
           "moveSpeed": {
-            "description": "Movement speed 1–6 (4 = normal)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "moveFrequency": {
-            "description": "Movement frequency 1–5 (3 = normal)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "moveRoute": {
-            "description": "Autonomous move route (from create_move_route); pairs with moveType \"custom\"",
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -3882,21 +2989,15 @@ export const MZ_MANIFEST = {
             "additionalProperties": {}
           },
           "indent": {
-            "description": "(unused; page-level tool)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           },
           "verbose": {
-            "description": "Echo the full written record instead of the default summary. Off by default: the response reports identity, counts and command-list shape, which is what you would assert on, and omits the parameters/conditions you would only re-read. Read the full record with the matching get_* tool.",
             "type": "boolean"
           }
         },
@@ -3915,39 +3016,24 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map to place the NPC on"
+            "type": "number"
           },
           "x": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "X tile position"
+            "type": "number"
           },
           "y": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Y tile position"
+            "type": "number"
           },
           "name": {
-            "type": "string",
-            "description": "Event name (editor label)"
+            "type": "string"
           },
           "characterName": {
-            "description": "Sprite sheet basename (from list_assets(\"characters\"))",
             "type": "string"
           },
           "characterIndex": {
-            "description": "Sprite index 0–7 in the sheet",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "direction": {
-            "description": "Facing direction (default down)",
             "type": "string",
             "enum": [
               "down",
@@ -3957,52 +3043,35 @@ export const MZ_MANIFEST = {
             ]
           },
           "pattern": {
-            "description": "Sprite frame 0–2 (default 1 = idle when a sprite is set)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "text": {
-            "description": "Dialogue lines shown when the NPC is triggered (built as Show Text)",
             "type": "array",
             "items": {
               "type": "string"
             }
           },
           "faceName": {
-            "description": "text: face image basename (from list_assets(\"faces\"))",
             "type": "string"
           },
           "faceIndex": {
-            "description": "text: face index 0–7",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "speakerName": {
-            "description": "text: MZ name-box speaker name",
             "type": "string"
           },
           "commands": {
-            "description": "Explicit command list (from the build_* tools); overrides `text` if given",
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "code": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "Event command code"
+                  "type": "number"
                 },
                 "indent": {
-                  "description": "Indentation level (default 0)",
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
+                  "type": "number"
                 },
                 "parameters": {
-                  "description": "Command parameters (default [])",
                   "type": "array",
                   "items": {}
                 }
@@ -4013,7 +3082,6 @@ export const MZ_MANIFEST = {
             }
           },
           "trigger": {
-            "description": "What starts the event (default action_button)",
             "type": "string",
             "enum": [
               "action_button",
@@ -4024,7 +3092,6 @@ export const MZ_MANIFEST = {
             ]
           },
           "priority": {
-            "description": "Stacking vs. the player (default same = solid)",
             "type": "string",
             "enum": [
               "below",
@@ -4033,15 +3100,12 @@ export const MZ_MANIFEST = {
             ]
           },
           "through": {
-            "description": "Let the player pass through (default false)",
             "type": "boolean"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           }
         },
@@ -4061,22 +3125,13 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map to place the chest on"
+            "type": "number"
           },
           "x": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "X tile position"
+            "type": "number"
           },
           "y": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Y tile position"
+            "type": "number"
           },
           "kind": {
             "type": "string",
@@ -4085,37 +3140,24 @@ export const MZ_MANIFEST = {
               "weapon",
               "armor",
               "gold"
-            ],
-            "description": "What the chest gives; item/weapon/armor require `id`"
+            ]
           },
           "id": {
-            "description": "The item/weapon/armor ID to give (omit for kind \"gold\")",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "amount": {
-            "description": "How many (or how much gold) to give; default 1",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "name": {
-            "description": "Event name (editor label); default \"Chest\"",
             "type": "string"
           },
           "characterName": {
-            "description": "Chest sprite basename from list_assets(\"characters\"), e.g. \"!Chest\"",
             "type": "string"
           },
           "characterIndex": {
-            "description": "Which chest in the sheet (0-7); default 0",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "closedDirection": {
-            "description": "Direction row showing the CLOSED chest; default \"down\"",
             "type": "string",
             "enum": [
               "down",
@@ -4125,7 +3167,6 @@ export const MZ_MANIFEST = {
             ]
           },
           "openedDirection": {
-            "description": "Direction row showing the OPENED chest; default \"up\"",
             "type": "string",
             "enum": [
               "down",
@@ -4135,14 +3176,12 @@ export const MZ_MANIFEST = {
             ]
           },
           "text": {
-            "description": "Optional message shown on opening, e.g. [\"Found a Potion!\"]",
             "type": "array",
             "items": {
               "type": "string"
             }
           },
           "selfSwitch": {
-            "description": "Self switch channel marking the chest looted; default \"A\"",
             "type": "string",
             "enum": [
               "A",
@@ -4152,11 +3191,9 @@ export const MZ_MANIFEST = {
             ]
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           }
         },
@@ -4176,43 +3213,24 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map the trigger is placed on"
+            "type": "number"
           },
           "x": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "X tile position of the trigger"
+            "type": "number"
           },
           "y": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Y tile position of the trigger"
+            "type": "number"
           },
           "targetMapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the destination map"
+            "type": "number"
           },
           "targetX": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "X tile the player lands on"
+            "type": "number"
           },
           "targetY": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Y tile the player lands on"
+            "type": "number"
           },
           "idiom": {
-            "description": "action_button = face a solid landmark and press (priority same, default); player_touch = walk onto a doormat (priority below)",
             "type": "string",
             "enum": [
               "action_button",
@@ -4220,11 +3238,9 @@ export const MZ_MANIFEST = {
             ]
           },
           "name": {
-            "description": "Event name (editor label); default \"Transfer\"",
             "type": "string"
           },
           "direction": {
-            "description": "Facing after the transfer; default \"retain\"",
             "type": "string",
             "enum": [
               "retain",
@@ -4235,7 +3251,6 @@ export const MZ_MANIFEST = {
             ]
           },
           "fade": {
-            "description": "Screen fade during the transfer; default \"black\"",
             "type": "string",
             "enum": [
               "black",
@@ -4244,21 +3259,15 @@ export const MZ_MANIFEST = {
             ]
           },
           "characterName": {
-            "description": "Optional sprite basename (a doormat is normally left invisible)",
             "type": "string"
           },
           "characterIndex": {
-            "description": "Sprite index 0-7 in the sheet",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           },
           "force": {
-            "description": "Write even if validation finds structural problems (wrong parameter count, unterminated command list). Off by default: such a write is refused and nothing is written. Advisory warnings never block regardless.",
             "type": "boolean"
           }
         },
@@ -4280,7 +3289,6 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "pluginName": {
-            "description": "Optional: restrict to one plugin (its filename without .js)",
             "type": "string"
           }
         }
@@ -4294,15 +3302,12 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "pluginName": {
-            "type": "string",
-            "description": "Plugin filename without .js (event command parameters[0])"
+            "type": "string"
           },
           "commandName": {
-            "type": "string",
-            "description": "The command key the plugin registered (event command parameters[1])"
+            "type": "string"
           },
           "args": {
-            "description": "Command arguments as { name: value }; values are stored as strings on disk",
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -4310,14 +3315,10 @@ export const MZ_MANIFEST = {
             "additionalProperties": {}
           },
           "label": {
-            "description": "Editor display label (parameters[2]); defaults to the command key",
             "type": "string"
           },
           "indent": {
-            "description": "Indentation level in the target list (default 0)",
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -4334,16 +3335,10 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "tileId": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The raw tile id to decode"
+            "type": "number"
           },
           "tilesetId": {
-            "description": "Tileset id — when given, also report the tile transparency (needs-a-base) flag",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -4359,13 +3354,9 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "tilesetId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Tileset id (from Tilesets.json / the map)"
+            "type": "number"
           },
           "sheet": {
-            "description": "Restrict to one sheet by filename ('World_A2') or role ('A2'). Omit to get a per-sheet summary (counts only) instead of every entry.",
             "type": "string"
           }
         },
@@ -4382,17 +3373,12 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "tilesetId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Tileset id (from Tilesets.json / the map)"
+            "type": "number"
           },
           "query": {
-            "type": "string",
-            "description": "Substring to match, e.g. 'grass' or 'forest' (literal substring, no synonyms)"
+            "type": "string"
           },
           "searchDescriptions": {
-            "description": "Also match project-catalog tile descriptions, not just names (default false — names only)",
             "type": "boolean"
           }
         },
@@ -4410,34 +3396,21 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "tiles": {
-            "minItems": 1,
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "x": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "X tile position"
+                  "type": "number"
                 },
                 "y": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991,
-                  "description": "Y tile position"
+                  "type": "number"
                 },
                 "tileId": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991,
-                  "description": "Tile id to paint (autotile base id from find_tile, or a raw id)"
+                  "type": "number"
                 }
               },
               "required": [
@@ -4445,17 +3418,12 @@ export const MZ_MANIFEST = {
                 "y",
                 "tileId"
               ]
-            },
-            "description": "Cells to paint"
+            }
           },
           "layer": {
-            "description": "Z-layer 0-5 (default 0 = lower ground; 0-3 tiles, 4 shadow, 5 region id)",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 5
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -4473,49 +3441,27 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "x": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Left tile position of the rectangle"
+            "type": "number"
           },
           "y": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Top tile position of the rectangle"
+            "type": "number"
           },
           "width": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Rectangle width in tiles"
+            "type": "number"
           },
           "height": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Rectangle height in tiles"
+            "type": "number"
           },
           "tileId": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Tile id to fill with (autotile base or raw)"
+            "type": "number"
           },
           "layer": {
-            "description": "Z-layer 0-5 (default 0 = lower ground; 5 = region id)",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 5
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -4537,28 +3483,16 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "tilesetId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The tileset id the object belongs to"
+            "type": "number"
           },
           "topLeftId": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Raw flat tile id of the object's top-left cell (from find_tile/get_tile_catalog)"
+            "type": "number"
           },
           "width": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Object width in tiles"
+            "type": "number"
           },
           "height": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Object height in tiles"
+            "type": "number"
           }
         },
         "required": [
@@ -4577,45 +3511,27 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "x": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Left (top-left) tile x of where the object is placed"
+            "type": "number"
           },
           "y": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991,
-            "description": "Top (top-left) tile y of where the object is placed"
+            "type": "number"
           },
           "tiles": {
-            "minItems": 1,
             "type": "array",
             "items": {
-              "minItems": 1,
               "type": "array",
               "items": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
+                "type": "number"
               }
-            },
-            "description": "The object as a rectangular grid of tile ids: rows top→bottom, each row left→right. 0 = a transparent cell (left untouched)."
+            }
           },
           "layer": {
-            "description": "Z-layer 0-3 to stamp onto (default 2 = upper tile layer, drawn over the ground)",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 3
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -4644,16 +3560,10 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "tilesetId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Tileset id (from Tilesets.json / the map)"
+            "type": "number"
           },
           "tileId": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The raw tile id whose flags to decode"
+            "type": "number"
           }
         },
         "required": [
@@ -4670,25 +3580,15 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The map id to inspect"
+            "type": "number"
           },
           "x": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Tile x coordinate"
+            "type": "number"
           },
           "y": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Tile y coordinate"
+            "type": "number"
           },
           "direction": {
-            "description": "Optional: also report a single passable boolean for this direction",
             "type": "string",
             "enum": [
               "down",
@@ -4713,19 +3613,12 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "tilesetId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Tileset id (from Tilesets.json / the map)"
+            "type": "number"
           },
           "tileId": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The raw tile id whose flags to edit"
+            "type": "number"
           },
           "passage": {
-            "description": "Walkability per direction (true = walkable). Only the given directions change.",
             "type": "object",
             "properties": {
               "down": {
@@ -4743,7 +3636,6 @@ export const MZ_MANIFEST = {
             }
           },
           "star": {
-            "description": "[*] overlay: tile drawn above the character.",
             "type": "boolean"
           },
           "ladder": {
@@ -4756,21 +3648,15 @@ export const MZ_MANIFEST = {
             "type": "boolean"
           },
           "damage": {
-            "description": "Damage floor (standing on it hurts).",
             "type": "boolean"
           },
           "terrainTag": {
-            "description": "Terrain tag 0–7 (0 = none).",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 7
+            "type": "number"
           },
           "applyToAutotileKind": {
-            "description": "When the tile is an autotile (A1–A4), apply the change to all 48 shape slots of its kind (default true). Ignored for flat tiles.",
             "type": "boolean"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -4806,17 +3692,12 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "variableId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The 1-based variable ID"
+            "type": "number"
           },
           "name": {
-            "type": "string",
-            "description": "The name to assign"
+            "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -4843,17 +3724,12 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "switchId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The 1-based switch ID"
+            "type": "number"
           },
           "name": {
-            "type": "string",
-            "description": "The name to assign"
+            "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -4880,11 +3756,9 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "title": {
-            "type": "string",
-            "description": "The new game title"
+            "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -4910,31 +3784,24 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "title1Name": {
-            "description": "Background image basename from list_assets(\"titles1\") (the far layer)",
             "type": "string"
           },
           "title2Name": {
-            "description": "Background image basename from list_assets(\"titles2\") (drawn over title1Name)",
             "type": "string"
           },
           "titleBgm": {
-            "description": "BGM that plays while the title screen is shown",
             "type": "object",
             "properties": {
               "name": {
-                "type": "string",
-                "description": "Audio basename from list_assets(\"bgm\")"
+                "type": "string"
               },
               "volume": {
-                "description": "Volume 0–100 (default 90)",
                 "type": "number"
               },
               "pitch": {
-                "description": "Pitch 50–150 (default 100)",
                 "type": "number"
               },
               "pan": {
-                "description": "Pan -100–100 (default 0)",
                 "type": "number"
               }
             },
@@ -4943,11 +3810,9 @@ export const MZ_MANIFEST = {
             ]
           },
           "drawTitle": {
-            "description": "Whether to draw the game title text over the background art (the editor's \"Draw Game Title\" option)",
             "type": "boolean"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         }
@@ -4970,25 +3835,15 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Starting map ID"
+            "type": "number"
           },
           "x": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Starting x tile"
+            "type": "number"
           },
           "y": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Starting y tile"
+            "type": "number"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -5018,14 +3873,10 @@ export const MZ_MANIFEST = {
           "partyMembers": {
             "type": "array",
             "items": {
-              "type": "integer",
-              "exclusiveMinimum": 0,
-              "maximum": 9007199254740991
-            },
-            "description": "Ordered actor ids for the starting party"
+              "type": "number"
+            }
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -5057,19 +3908,15 @@ export const MZ_MANIFEST = {
               "commands",
               "params",
               "messages"
-            ],
-            "description": "Which term group to edit"
+            ]
           },
           "key": {
-            "type": "string",
-            "description": "Index (for basic/commands/params) or message key (for messages)"
+            "type": "string"
           },
           "value": {
-            "type": "string",
-            "description": "The new term text"
+            "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -5095,8 +3942,7 @@ export const MZ_MANIFEST = {
               "weaponTypes",
               "armorTypes",
               "equipTypes"
-            ],
-            "description": "Which type-name array to read"
+            ]
           }
         },
         "required": [
@@ -5119,21 +3965,15 @@ export const MZ_MANIFEST = {
               "weaponTypes",
               "armorTypes",
               "equipTypes"
-            ],
-            "description": "Which type-name array to edit"
+            ]
           },
           "index": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Index within the array (0 = empty slot)"
+            "type": "number"
           },
           "name": {
-            "type": "string",
-            "description": "The new type name"
+            "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -5152,11 +3992,9 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "unit": {
-            "type": "string",
-            "description": "The currency unit string"
+            "type": "string"
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -5192,8 +4030,7 @@ export const MZ_MANIFEST = {
               "bgs",
               "me",
               "se"
-            ],
-            "description": "Asset kind to list. Images: characters, faces, tilesets, pictures, parallaxes, battlebacks1, battlebacks2, enemies, sv_actors, sv_enemies, titles1, titles2, system. Audio: bgm, bgs, me, se."
+            ]
           }
         },
         "required": [
@@ -5223,8 +4060,7 @@ export const MZ_MANIFEST = {
               "common_events",
               "tilesets",
               "maps"
-            ],
-            "description": "Which table to index: actors, classes, items, weapons, armors, skills, enemies, troops, states, common_events, tilesets, or maps."
+            ]
           }
         },
         "required": [
@@ -5252,14 +4088,10 @@ export const MZ_MANIFEST = {
               "troops",
               "states",
               "common_events"
-            ],
-            "description": "Which table to read: actors, classes, items, weapons, armors, skills, enemies, troops, states, or common_events."
+            ]
           },
           "id": {
-            "description": "Return just this record (null if missing); omitted = the whole table",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -5275,16 +4107,10 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "mapId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the map"
+            "type": "number"
           },
           "eventId": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "The ID of the event to validate"
+            "type": "number"
           }
         },
         "required": [
@@ -5333,14 +4159,10 @@ export const MZ_MANIFEST = {
               "switch",
               "variable",
               "common_event"
-            ],
-            "description": "Which id namespace: switch, variable, or common_event. Database rows (actors, items, …) are not here — create_*/batch_create assign those ids, and list_names shows what exists."
+            ]
           },
           "id": {
-            "description": "Report just this id — whether it is allocated, its label, and every place it is referenced. Omitted = the whole namespace.",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "number"
           }
         },
         "required": [
@@ -5361,17 +4183,12 @@ export const MZ_MANIFEST = {
               "switch",
               "variable",
               "common_event"
-            ],
-            "description": "Which id namespace: switch, variable, or common_event. Database rows (actors, items, …) are not here — create_*/batch_create assign those ids, and list_names shows what exists."
+            ]
           },
           "count": {
-            "description": "How many consecutive free ids to return (default 1)",
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 100
+            "type": "number"
           },
           "reuseGaps": {
-            "description": "Fill unallocated holes below the highest id first (default false)",
             "type": "boolean"
           }
         },
@@ -5398,11 +4215,9 @@ export const MZ_MANIFEST = {
               "enemy",
               "state",
               "class"
-            ],
-            "description": "Which database the records are appended to"
+            ]
           },
           "records": {
-            "minItems": 1,
             "type": "array",
             "items": {
               "type": "object",
@@ -5410,11 +4225,9 @@ export const MZ_MANIFEST = {
                 "type": "string"
               },
               "additionalProperties": {}
-            },
-            "description": "The records to create, each shaped like the matching create_* tool's arguments (e.g. for type \"actor\": { name, classId?, ... })"
+            }
           },
           "dryRun": {
-            "description": "Preview only: return a diff of what would change without writing to disk.",
             "type": "boolean"
           }
         },
@@ -5432,11 +4245,9 @@ export const MZ_MANIFEST = {
         "type": "object",
         "properties": {
           "pluginName": {
-            "description": "Optional: restrict to one plugin (its filename without .js)",
             "type": "string"
           },
           "enabledOnly": {
-            "description": "Only report plugins enabled in js/plugins.js (default false)",
             "type": "boolean"
           }
         }

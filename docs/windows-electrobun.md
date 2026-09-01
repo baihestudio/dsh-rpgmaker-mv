@@ -32,20 +32,27 @@ bun run desktop:stage -- \
 
 The output directory must be separate from both source repositories. It
 contains the generic host source at the pinned revision, a generated
-`product.manifest.ts`, the bundled product sidecar, and the prebuilt Windows
-supervisor. The generic host's checked-in `electrobun.config.ts` remains
+`product.manifest.ts`, the bundled product sidecar, the prebuilt Windows
+supervisor, and `adapter-provenance.json`. That single machine-readable
+handoff records the SHA-256 of the adapter source entrypoint and the bundled
+sidecar; pass its exact object through to the native build's canonical
+`desktop-host.json` descriptor as `sidecarProvenance`. The generated
+`product.manifest.ts` remains the generic host manifest and does not duplicate
+this handoff. The generic host's checked-in `electrobun.config.ts` remains
 unchanged. The command refuses a different host revision or one with tracked
 changes, and refuses a non-empty output directory unless it carries the
 adapter's generated-output marker and `--force` is explicit.
 
 Build and run the generated host with the native Windows Bun executable. Do
 not use the WSL Linux Bun to launch a Windows Electrobun application. The
-sidecar defaults to the existing per-user product roots:
-
-```text
-%LOCALAPPDATA%\Programs\BaiheStudio\DSH-RPGMaker-MV
-%LOCALAPPDATA%\BaiheStudio\DSH-RPGMaker-MV
-```
+packaged sidecar derives the replaceable program root from its own staged
+entrypoint location (`<program>\\desktop-host\\Resources\\app\\payload\\sidecar`),
+so a user-selected installation root works without installer-only environment
+variables. It writes bounded, structured startup summaries to the existing
+per-user log root without persisting arbitrary caught error text. Tests may
+inject a packaged entrypoint and test-owned local-state root through the
+sidecar dependency seam; there is no legacy default installation-root fallback
+in the packaged process.
 
 It dynamically loads `src/rpgmaker.ts` from the installed program tree,
 reusing the existing DSH runtime bootstrap, MCP/profile preparation, session
@@ -68,9 +75,20 @@ modify a user's running DSH session.
 
 To package a release, provide the already-built host output as a
 `--desktop-host-root` payload to the product release script. The product gate
-verifies the pinned host revision, Bun version, and canonical `desktop-host.json`
-descriptor before copying it under `desktop-host`. That descriptor must declare
-the exact `sidecarEntrypoint` and `supervisorExecutable` payload files as well
-as the native launch target. `Install.cmd` then targets that host from the
-Start Menu. The host build, clean-machine provisioning, signing, and update
-delivery remain outside this repository and are not performed by the installer.
+verifies the pinned host revision, Bun version, canonical `desktop-host.json`
+descriptor, and its `sidecarProvenance` object before copying it under
+`desktop-host`. The provenance schema is versioned and contains the SHA-256 of
+the current `src/electrobun-sidecar.ts` plus the packaged
+`Resources/app/payload/sidecar/dsh-rpgmaker-sidecar.js`; stale source, missing
+fields, or a tampered sidecar are rejected. The descriptor must also declare
+the exact `sidecarEntrypoint` and `supervisorExecutable` payload files and the
+native launch target. The native build should copy the staged values into a
+descriptor object shaped like:
+
+```json
+{ "schemaVersion": 1, "adapterSourceSha256": "...", "sidecarSha256": "..." }
+```
+
+`Install.cmd` then targets that host from the Start Menu. The host build,
+clean-machine provisioning, signing, and update delivery
+remain outside this repository and are not performed by the installer.

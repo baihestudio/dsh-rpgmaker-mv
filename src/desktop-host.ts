@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { cp, lstat, mkdir, readdir, readFile, stat } from 'node:fs/promises';
 import { dirname, extname, join, resolve } from 'node:path';
 
@@ -21,6 +22,16 @@ export const DESKTOP_HOST_MANIFEST_NAME = 'desktop-host.json';
 export const DESKTOP_HOST_MANIFEST_RELATIVE = `${DESKTOP_HOST_PAYLOAD_RELATIVE}/${DESKTOP_HOST_MANIFEST_NAME}`;
 
 export const DESKTOP_HOST_FORMAT = 1;
+/** Schema for the product adapter/source pairing recorded by native builds. */
+export const DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION = 1;
+
+export interface DesktopHostSidecarProvenance {
+  schemaVersion: number;
+  /** SHA-256 of the current product adapter source entrypoint. */
+  adapterSourceSha256: string;
+  /** SHA-256 of the bundled sidecar entrypoint in the native payload. */
+  sidecarSha256: string;
+}
 
 export interface DesktopHostManifest {
   format?: number;
@@ -41,7 +52,13 @@ export interface DesktopHostManifest {
   sidecarEntrypoint: string;
   /** Required relative path to the staged supervisor executable. */
   supervisorExecutable: string;
-  [key: string]: unknown;
+  /** Exact product adapter/source pairing supplied by the native build. */
+  sidecarProvenance?: DesktopHostSidecarProvenance;
+  executable?: string;
+  entrypoint?: string;
+  bun?: { version?: string };
+  build?: { hostCommit?: string };
+  adapter?: { hostCommit?: string };
 }
 
 export interface DesktopHostVerification {
@@ -57,6 +74,9 @@ export interface DesktopHostVerification {
   productVersion?: string;
   sidecarEntrypoint?: string;
   supervisorExecutable?: string;
+  adapterSourceSha256?: string;
+  sidecarSha256?: string;
+  sidecarProvenance?: DesktopHostSidecarProvenance;
 }
 
 export interface DesktopHostPayloadOptions {
@@ -64,6 +84,8 @@ export interface DesktopHostPayloadOptions {
   desktopHostRoot?: string;
   /** Override the product version required for version-coherent pairing. */
   productVersion?: string;
+  /** Product adapter source file whose digest must match the payload. */
+  adapterSourcePath?: string;
 }
 
 export interface DesktopHostCopyResult extends DesktopHostVerification {
@@ -99,6 +121,16 @@ function normalizePath(value: string): string {
   return value.replaceAll('\\', '/');
 }
 
+async function sha256File(path: string): Promise<string | undefined> {
+  try {
+    return createHash('sha256').update(await readFile(path)).digest('hex');
+  } catch {
+    return undefined;
+  }
+}
+
+const DESKTOP_HOST_PROVENANCE_FIELDS = new Set(['schemaVersion', 'adapterSourceSha256', 'sidecarSha256']);
+
 function pathInside(parent: string, child: string): boolean {
   const parentKey = normalizePath(resolve(parent)).replace(/\/$/, '').toLowerCase();
   const childKey = normalizePath(resolve(child)).replace(/\/$/, '').toLowerCase();
@@ -127,7 +159,7 @@ async function findManifest(payloadRoot: string): Promise<{ path: string; value:
   if (!(await regularFile(path))) return undefined;
   try {
     const value = object(JSON.parse(await readFile(path, 'utf8')));
-    if (value) return { path, value: value as DesktopHostManifest };
+    if (value) return { path, value: value as unknown as DesktopHostManifest };
   } catch {
     // The caller receives a useful invalid descriptor diagnostic.
   }
@@ -237,6 +269,59 @@ export async function verifyDesktopHostPayload(
   if (sidecarPath && (!(await pathInside(payloadRoot, sidecarPath)) || !(await regularFile(sidecarPath)))) {
     errors.push(`desktop host sidecarEntrypoint is missing or outside the payload: ${sidecarPath}`);
   }
+
+  const provenanceValue = manifest?.sidecarProvenance;
+  const provenanceObject = object(provenanceValue);
+  let provenance: DesktopHostSidecarProvenance | undefined;
+  let adapterSourceSha256: string | undefined;
+  let sidecarSha256: string | undefined;
+  if (provenanceValue === undefined) {
+    errors.push('desktop host sidecar provenance is missing');
+  } else if (!provenanceObject) {
+    errors.push('desktop host sidecar provenance must be an object');
+  } else {
+    const unsupportedFields = Object.keys(provenanceObject).filter((field) => !DESKTOP_HOST_PROVENANCE_FIELDS.has(field));
+    if (unsupportedFields.length > 0) {
+      errors.push(`desktop host sidecar provenance contains unsupported fields: ${unsupportedFields.join(', ')}`);
+    }
+    const declaredSchemaVersion = provenanceObject.schemaVersion;
+    if (declaredSchemaVersion !== DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION) {
+      errors.push(`desktop host sidecar provenance schemaVersion is ${String(declaredSchemaVersion ?? 'missing')}, expected ${DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION}`);
+    }
+    const declaredSource = provenanceObject.adapterSourceSha256;
+    if (typeof declaredSource !== 'string' || !/^[a-f0-9]{64}$/.test(declaredSource)) {
+      errors.push('desktop host sidecar provenance adapterSourceSha256 must be a lowercase SHA-256 digest');
+    } else {
+      adapterSourceSha256 = declaredSource;
+    }
+    const declaredSidecar = provenanceObject.sidecarSha256;
+    if (typeof declaredSidecar !== 'string' || !/^[a-f0-9]{64}$/.test(declaredSidecar)) {
+      errors.push('desktop host sidecar provenance sidecarSha256 must be a lowercase SHA-256 digest');
+    } else {
+      sidecarSha256 = declaredSidecar;
+    }
+    provenance = provenanceObject as unknown as DesktopHostSidecarProvenance;
+  }
+  if (sidecarPath && await regularFile(sidecarPath)) {
+    const actualSidecarSha256 = await sha256File(sidecarPath);
+    if (actualSidecarSha256) {
+      if (sidecarSha256 && sidecarSha256 !== actualSidecarSha256) {
+        errors.push(`desktop host sidecar provenance sidecarSha256 does not match the packaged sidecar (${actualSidecarSha256})`);
+      }
+      sidecarSha256 = actualSidecarSha256;
+    }
+  }
+  if (options.adapterSourcePath) {
+    const actualAdapterSourceSha256 = await sha256File(resolve(options.adapterSourcePath));
+    if (!actualAdapterSourceSha256) {
+      errors.push(`desktop host adapter source is missing or unreadable: ${resolve(options.adapterSourcePath)}`);
+    } else {
+      if (adapterSourceSha256 && adapterSourceSha256 !== actualAdapterSourceSha256) {
+        errors.push(`desktop host sidecar provenance adapterSourceSha256 does not match the current adapter source (${actualAdapterSourceSha256})`);
+      }
+      adapterSourceSha256 = actualAdapterSourceSha256;
+    }
+  }
   const supervisorTarget = relativePayloadPath(manifest?.supervisorExecutable, 'desktop host supervisorExecutable', errors);
   if (supervisorTarget && supervisorTarget !== DESKTOP_HOST_SUPERVISOR_RELATIVE) {
     errors.push(`desktop host supervisorExecutable is ${supervisorTarget}, expected ${DESKTOP_HOST_SUPERVISOR_RELATIVE}`);
@@ -258,7 +343,10 @@ export async function verifyDesktopHostPayload(
     bunVersion: typeof bunVersion === 'string' ? bunVersion : undefined,
     productVersion: typeof declaredProductVersion === 'string' ? declaredProductVersion : undefined,
     sidecarEntrypoint: sidecarTarget,
-    supervisorExecutable: supervisorTarget
+    supervisorExecutable: supervisorTarget,
+    ...(adapterSourceSha256 ? { adapterSourceSha256 } : {}),
+    ...(sidecarSha256 ? { sidecarSha256 } : {}),
+    ...(provenance ? { sidecarProvenance: provenance } : {})
   };
 }
 

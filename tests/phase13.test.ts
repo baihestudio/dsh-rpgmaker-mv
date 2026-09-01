@@ -35,6 +35,7 @@ describe('Electrobun RPG Maker adapter', () => {
 
     const running = runRpgMakerSidecar(env, {
       platform: 'win32',
+      entrypointPath: join(programRoot, 'desktop-host', 'Resources', 'app', 'payload', 'sidecar', 'dsh-rpgmaker-sidecar.js'),
       loadProductLauncher: async (actualProgramRoot) => {
         expect(actualProgramRoot).toBe(programRoot);
         return {
@@ -47,6 +48,7 @@ describe('Electrobun RPG Maker adapter', () => {
           },
         };
       },
+      writeStartupDiagnostic: async () => undefined,
     });
 
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -89,12 +91,14 @@ describe('Electrobun RPG Maker adapter', () => {
 
     const running = runRpgMakerSidecar({ DSH_RPGMAKER_INSTALLATION_ROOT: '/tmp/already-exited-installation' }, {
       platform: 'win32',
+      entrypointPath: join('/tmp/already-exited-installation', 'program', 'desktop-host', 'Resources', 'app', 'payload', 'sidecar', 'dsh-rpgmaker-sidecar.js'),
       loadProductLauncher: async () => ({
         launchRpgmakerProject: async () => ({
           child,
           releaseSession: async () => { releaseCount += 1; },
         }),
       }),
+      writeStartupDiagnostic: async () => undefined,
     });
     const result = await Promise.race([
       running,
@@ -117,12 +121,14 @@ describe('Electrobun RPG Maker adapter', () => {
 
     const running = runRpgMakerSidecar({ DSH_RPGMAKER_INSTALLATION_ROOT: '/tmp/race-installation' }, {
       platform: 'win32',
+      entrypointPath: join('/tmp/race-installation', 'program', 'desktop-host', 'Resources', 'app', 'payload', 'sidecar', 'dsh-rpgmaker-sidecar.js'),
       loadProductLauncher: async () => ({
         launchRpgmakerProject: async () => ({
           child,
           releaseSession: async () => undefined,
         }),
       }),
+      writeStartupDiagnostic: async () => undefined,
     });
     const result = await Promise.race([
       running,

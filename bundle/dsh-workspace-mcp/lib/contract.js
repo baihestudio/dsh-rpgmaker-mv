@@ -15,7 +15,7 @@ export const MZ_PACKAGE = 'rpgmaker-mz-mcp'
 export const MZ_VERSION = '1.3.0'
 /** Content digests over JSON.stringify of each generated manifest. */
 export const XEROLO_MANIFEST_SHA256 = '09313bebb48af8274c8ce7b3c7c0dff1e2b769a51ae5f7928f4e6f26a3a5be79'
-export const MZ_MANIFEST_SHA256 = 'd3409ee3f4181875042020b593a488a6b5f102e9e6c50f3ef4f05b4299e83658'
+export const MZ_MANIFEST_SHA256 = 'd1f44e5d8b19c2d12f1629d80e053882c86f666017b4ad5925089d53a2caed67'
 
 export const ENGINE_CONTRACTS = Object.freeze({
   mv: Object.freeze({ id: 'mv', label: 'MV', package: XEROLO_PACKAGE, version: XEROLO_VERSION, manifest: XEROLO_MANIFEST, digest: XEROLO_MANIFEST_SHA256 }),

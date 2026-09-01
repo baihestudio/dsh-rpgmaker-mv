@@ -14,6 +14,11 @@
    - ImageMagick 7 (`ImageMagick.ImageMagick`; installed system-wide and exposed as `magick` on Windows PATH)
 5. The installer verifies the packaged, prebuilt desktop host, executable paths, and prerequisite versions. The Release ZIP carries the four release-owned npm manifests and `package-lock.json` files under `runtime-manifests/`; target setup copies those inputs into staging and runs only `npm ci` (it never creates a lock from the registry). It stages the source-pinned DSH runtime with Node/npm from an exact lock, verifies native modules with Node, materializes one exact app-managed `web` profile with four direct managed dependencies (the external `@guionai/dsh-web` and `@lamplitisles/dsh-imagegen` packages at the exact versions defined in [`src/managed-web-profile.ts`](../src/managed-web-profile.ts), the release-owned `@baihestudio/dsh-rpgmaker-brand` bundle, and the app-owned `@baihestudio/dsh-workspace-mcp` bundle) plus the six ordered DSH bundle layers beginning with `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`, installs both source-pinned RPG Maker editing MCPs (declared in [`src/rpgmaker.ts`](../src/rpgmaker.ts)), then creates a per-user Start Menu shortcut named **RPG Maker Agent** targeting the staged native host executable. Normal launch additionally prepares the app-owned exact pnpm runtime only for the managed Web profile, the MCP runtimes, default preset, and neutral composition as needed.
 
+The installable Release also carries the freshly compiled `installer.exe` and
+`installer-build.json`. A successful fresh install, upgrade, or repair copies
+both generated maintenance artifacts into the selected program tree before
+committing its installation receipt; an incomplete Release fails closed.
+
 `Install.cmd` is a thin wrapper around `installer.exe`. It asks its own Windows process-tree helper whether the batch file was launched by Explorer and pauses only in that case; terminal and redirected invocations return immediately without relying on a caller-set environment variable.
 
 The four direct package dependencies and six bundle layers belong to one DSH-managed profile state. DSH's `web` template layers (`@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`) remain in-box template bundles rather than profile dependencies. If a package command or final verification fails after initializing that state, the installer reports the materialization failure and restores the prior working profile (and its app-owned workspace bundle); rerun `Install.cmd` to complete the profile setup. Credentials, recent workspaces, presets, caches, logs, and other mutable state remain outside this rollback boundary.
@@ -225,7 +230,9 @@ The probe creates a uniquely named, self-cleaning directory under that workspace
 
 ## Uninstall
 
-Double-click `Uninstall.cmd` in the installed program root. Default uninstall validates the harness ownership marker and install metadata before removing program files, app-owned runtimes, cache, and the BaiheStudio Start Menu shortcut. It preserves rollback/recovery trees, DSH state, credentials, logs, and all projects (projects are never discovered or deleted by the uninstaller). Unowned or malformed program trees are refused.
+Double-click `Uninstall.cmd` in the installed program root. Default uninstall validates the harness ownership marker and install metadata before removing program files, app-owned runtimes, cache, the BaiheStudio Start Menu shortcut, and the installation-location receipt. It preserves rollback/recovery trees, DSH state, credentials, logs, and all projects (projects are never discovered or deleted by the uninstaller). With the receipt removed, the next `Install.cmd` run is a first installation and opens the folder picker again. Unowned or malformed program trees are refused.
+
+If an incomplete older installation reports that its installed `installer.exe` is missing, extract a current Release ZIP and run that Release's `Uninstall.cmd`. Its maintenance executable follows the owned installation-location receipt to the old program tree, applies the same ownership checks, and preserves the same local state.
 
 To explicitly delete local DSH state and credential metadata as well:
 

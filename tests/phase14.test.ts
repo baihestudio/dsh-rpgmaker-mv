@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
@@ -7,6 +8,7 @@ import { tmpdir } from 'node:os';
 import {
   DESKTOP_HOST_MANIFEST_NAME,
   DESKTOP_HOST_MANIFEST_RELATIVE,
+  DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION,
   DESKTOP_HOST_SIDECAR_RELATIVE,
   DESKTOP_HOST_SUPERVISOR_RELATIVE,
   ELECTROBUN_BUN_VERSION,
@@ -26,6 +28,7 @@ import {
 } from '../src/install-lifecycle';
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME } from '../src/config';
 import { DSH_RUNTIME_PEER_DEPENDENCIES } from '../src/bootstrap';
+import { releaseFixture } from './fixtures/release-fixture';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -53,9 +56,12 @@ async function makeHost(root: string, overrides: Record<string, unknown> = {}): 
   await mkdir(join(payload, 'app'), { recursive: true });
   await mkdir(dirname(join(payload, DESKTOP_HOST_SIDECAR_RELATIVE)), { recursive: true });
   await mkdir(dirname(join(payload, DESKTOP_HOST_SUPERVISOR_RELATIVE)), { recursive: true });
+  const sidecarText = 'sidecar fixture';
   await writeFile(join(payload, launchTarget), 'native host fixture');
-  await writeFile(join(payload, DESKTOP_HOST_SIDECAR_RELATIVE), 'sidecar fixture');
+  await writeFile(join(payload, DESKTOP_HOST_SIDECAR_RELATIVE), sidecarText);
   await writeFile(join(payload, DESKTOP_HOST_SUPERVISOR_RELATIVE), 'supervisor fixture');
+  const adapterSource = await readFile(join(process.cwd(), 'src', 'electrobun-sidecar.ts'), 'utf8');
+  const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
   await writeFile(join(payload, DESKTOP_HOST_MANIFEST_NAME), JSON.stringify({
     format: 1,
     owner: PROGRAM_OWNER,
@@ -67,6 +73,11 @@ async function makeHost(root: string, overrides: Record<string, unknown> = {}): 
     launchTarget,
     sidecarEntrypoint: DESKTOP_HOST_SIDECAR_RELATIVE,
     supervisorExecutable: DESKTOP_HOST_SUPERVISOR_RELATIVE,
+    sidecarProvenance: {
+      schemaVersion: DESKTOP_HOST_PROVENANCE_SCHEMA_VERSION,
+      adapterSourceSha256: digest(adapterSource),
+      sidecarSha256: digest(sidecarText),
+    },
     ...overrides,
   }, null, 2));
   return payload;
@@ -153,10 +164,12 @@ describe('desktop host release payload', () => {
         supervisorExecutable: DESKTOP_HOST_SUPERVISOR_RELATIVE,
       };
       await writeFile(join(payload, DESKTOP_HOST_MANIFEST_NAME), JSON.stringify(genericManifest));
-      expect((await verifyDesktopHostPayload(payload)).valid).toBe(true);
+      const preProvenance = await verifyDesktopHostPayload(payload);
+      expect(preProvenance.valid).toBe(false);
+      expect(preProvenance.errors.join(' ')).toMatch(/provenance is missing/i);
 
       const escaped = await verifyDesktopHostPayload(payload, { productVersion: ELECTROBUN_PRODUCT_VERSION });
-      expect(escaped.valid).toBe(true);
+      expect(escaped.valid).toBe(false);
       await writeFile(join(payload, DESKTOP_HOST_MANIFEST_NAME), JSON.stringify({
         format: 1,
         hostCommit: ELECTROBUN_HOST_COMMIT,
@@ -264,6 +277,7 @@ describe('desktop host release payload', () => {
   test('installs a fresh payload with the native executable as the Start Menu target', async () => {
     const root = await temp('phase14-host-install');
     try {
+      const releaseRoot = await releaseFixture(root);
       const payload = await makeHost(root);
       const bin = join(root, 'bin');
       await mkdir(bin, { recursive: true });
@@ -296,7 +310,7 @@ describe('desktop host release payload', () => {
       const result = await installWindowsRelease({
         platform: 'win32',
         env,
-        releaseRoot: process.cwd(),
+        releaseRoot,
         desktopHostRoot: payload,
         requireDesktopHost: true,
         installationRoot,
@@ -338,7 +352,7 @@ describe('desktop host release payload', () => {
       const upgraded = await installWindowsRelease({
         platform: 'win32',
         env,
-        releaseRoot: process.cwd(),
+        releaseRoot,
         desktopHostRoot: payload,
         requireDesktopHost: true,
         installationRoot,
@@ -374,7 +388,7 @@ describe('desktop host release payload', () => {
       await expect(installWindowsRelease({
         platform: 'win32',
         env,
-        releaseRoot: process.cwd(),
+        releaseRoot,
         desktopHostRoot: payload,
         requireDesktopHost: true,
         installationRoot,
@@ -477,6 +491,7 @@ describe('owned upgrade lifecycle', () => {
   test('declining an active owned upgrade happens before prerequisite or tree mutation', async () => {
     const root = await temp('phase14-owned-upgrade-noop');
     try {
+      const releaseRoot = await releaseFixture(root);
       const installationRoot = join(root, 'installation');
       const program = join(installationRoot, 'program');
       const mutable = join(root, 'mutable');
@@ -489,7 +504,7 @@ describe('owned upgrade lifecycle', () => {
 
       await expect(installWindowsRelease({
         platform: 'win32',
-        releaseRoot: join(process.cwd()),
+        releaseRoot,
         installationRoot,
         mutableRoot: mutable,
         dshHome: state,
