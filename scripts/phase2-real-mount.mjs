@@ -39,6 +39,12 @@ function stableNames(schemas) {
   return schemas.filter((schema) => typeof schema?.name === 'string' && schema.name.startsWith('rpgmaker_')).map((schema) => schema.name).sort()
 }
 
+// The current product ships one RPG Maker preset.  Playtest guidance is a
+// skill inside that preset (the former standalone playtest-debug preset was
+// intentionally retired), so a fresh installation must not require a stale
+// second preset id.
+const REQUIRED_PRESET_IDS = ['rpgmaker']
+
 async function runDualMount() {
   const mvProject = process.env.PROJECT_PATH_MV
   const mzProject = process.env.PROJECT_PATH_MZ
@@ -66,7 +72,7 @@ async function runDualMount() {
     const presets = mounted.ctx.get('agentPresets')
     if (!presets) throw new Error('official DSH agent preset service did not mount')
     const presetIds = (await presets.list()).map((entry) => entry.id)
-    for (const id of ['rpgmaker', 'playtest-debug']) if (!presetIds.includes(id)) throw new Error(`shipped preset ${id} was not available in the neutral Host`)
+    for (const id of REQUIRED_PRESET_IDS) if (!presetIds.includes(id)) throw new Error(`shipped preset ${id} was not available in the neutral Host`)
     const systemPrompt = mounted.ctx.get('systemPrompt')
     const agentLoop = mounted.ctx.get('agentLoop')
     const tools = mounted.ctx.get('tools')
@@ -175,7 +181,7 @@ if (process.env.PROJECT_PATH_MV && process.env.PROJECT_PATH_MZ) {
     const presets = mounted.ctx.get('agentPresets')
     if (!presets) throw new Error('official DSH agent preset service did not mount')
     const presetIds = (await presets.list()).map((entry) => entry.id)
-    for (const id of ['rpgmaker', 'playtest-debug']) {
+    for (const id of REQUIRED_PRESET_IDS) {
       if (!presetIds.includes(id)) throw new Error(`shipped preset ${id} was not available in the neutral Host`)
     }
 

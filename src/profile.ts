@@ -1,12 +1,14 @@
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 
-import { environmentPath, pathDelimiter, resolveHarnessPaths, withEnvironmentPath, type HarnessPaths, type PathOptions } from './config';
+import { environmentPath, pathDelimiter, withEnvironmentPath, type HarnessPaths, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
 import { commandFailure, runCommand, withoutCredentials, type CommandRunner } from './process';
 
 export const PNPM_VERSION = '10.15.1';
+export const PNPM_NPM_INTEGRITY = 'sha512-NOU4wym1VTAUyo6PRTWZf5YYCh0PYUM5NXRJk1NQ2STiL4YUaCGRJk7DPRRirCFWGv+X9rsYBlNRwWLH6PbeZw==';
 export const PNPM_RUNTIME_RELATIVE = join('runtime', 'pnpm');
+export const PNPM_MANIFEST_RELATIVE = join('runtime-manifests', 'pnpm');
 const PNPM_PACKAGE = 'pnpm';
 
 export interface ProfilePackageOptions extends PathOptions {
@@ -14,15 +16,23 @@ export interface ProfilePackageOptions extends PathOptions {
   pnpmExecutable?: string;
   pnpmRuntimeDir?: string;
   useAppOwnedPnpm?: boolean;
+  /** Release-owned package.json/package-lock.json used for npm ci. */
+  manifestRoot?: string;
   npmExecutable?: string;
   nodeExecutable?: string;
-  bunExecutable?: string;
   commandRunner?: CommandRunner;
 }
 
 export interface PnpmRuntime {
   executable: string;
   env: Record<string, string | undefined>;
+}
+
+export interface PnpmRuntimeDoctorVerification {
+  valid: boolean;
+  version?: string;
+  executable?: string;
+  error?: string;
 }
 
 interface JsonObject {
@@ -55,9 +65,7 @@ export function profileDirFor(paths: HarnessPaths, profile: string): string {
 }
 
 export function pluginEnvironment(env: Record<string, string | undefined>): Record<string, string | undefined> {
-  const safe = withoutCredentials(env);
-  for (const key of ['NPM_TOKEN', 'NODE_AUTH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'npm_config__auth', 'npm_config_//registry.npmjs.org/:_authToken']) delete safe[key];
-  return safe;
+  return withoutCredentials(env);
 }
 
 function prependPath(env: Record<string, string | undefined>, directory: string, platform: string): Record<string, string | undefined> {
@@ -80,6 +88,16 @@ async function findPnpmPackage(runtimeDir: string, platform: string): Promise<st
 }
 
 async function verifyPnpmRuntime(runtimeDir: string, platform: string): Promise<string | undefined> {
+  const lock = await readJson(join(runtimeDir, 'package-lock.json'));
+  const root = lock?.packages && typeof lock.packages === 'object' && !Array.isArray(lock.packages)
+    ? (lock.packages as JsonObject)[''] as JsonObject | undefined
+    : undefined;
+  const locked = lock && (lock.packages as JsonObject | undefined)?.[`node_modules/${PNPM_PACKAGE}`] as JsonObject | undefined;
+  const rootDependencies = root?.dependencies && typeof root.dependencies === 'object' && !Array.isArray(root.dependencies)
+    ? root.dependencies as JsonObject
+    : undefined;
+  if (rootDependencies?.[PNPM_PACKAGE] !== PNPM_VERSION
+    || !locked || locked.version !== PNPM_VERSION || locked.integrity !== PNPM_NPM_INTEGRITY) return undefined;
   const executable = await findPnpmPackage(runtimeDir, platform);
   if (!executable) return undefined;
   const packageRoot = resolve(runtimeDir, 'node_modules', PNPM_PACKAGE);
@@ -94,12 +112,18 @@ async function verifyPnpmRuntime(runtimeDir: string, platform: string): Promise<
   return executable;
 }
 
+export async function verifyPnpmRuntimeForDoctor(programRoot: string, platform: string = process.platform): Promise<PnpmRuntimeDoctorVerification> {
+  const runtimeDir = resolve(programRoot, PNPM_RUNTIME_RELATIVE);
+  const executable = await verifyPnpmRuntime(runtimeDir, platform);
+  if (!executable) return { valid: false, error: `App-owned pnpm ${PNPM_VERSION} is missing, has an invalid npm lock, or is outside the selected installation root.` };
+  return { valid: true, version: PNPM_VERSION, executable };
+}
+
 export async function resolveDshInvocation(dsh: string, options: ProfilePackageOptions, env: Record<string, string | undefined>): Promise<{ command: string; prefix: string[] }> {
   const platform = options.platform ?? process.platform;
-  if (platform === 'win32' || !['.js', '.mjs', '.cjs'].includes(extname(dsh).toLowerCase())) return { command: dsh, prefix: [] };
-  const runner = options.nodeExecutable ?? env.NODE_EXECUTABLE ?? await resolveExecutable('node', { platform, env })
-    ?? options.bunExecutable ?? env.BUN_EXECUTABLE ?? await resolveExecutable('bun', { platform, env });
-  if (!runner) throw new Error(`DSH resolves to JavaScript entry ${dsh}, but neither Bun nor Node could be resolved to run it.`);
+  if (!['.js', '.mjs', '.cjs'].includes(extname(dsh).toLowerCase())) return { command: dsh, prefix: [] };
+  const runner = options.nodeExecutable ?? env.NODE_EXECUTABLE ?? await resolveExecutable('node', { platform, env });
+  if (!runner) throw new Error(`DSH resolves to JavaScript entry ${dsh}, but Node.js could not be resolved to run it.`);
   return { command: runner, prefix: [dsh] };
 }
 
@@ -124,9 +148,14 @@ export async function preparePnpmRuntime(options: ProfilePackageOptions, paths: 
     const staging = await mkdtemp(join(parent, `.${basename(runtimeDir)}.staging-`));
     let owned = true;
     try {
-      await writeFile(join(staging, 'package.json'), `${JSON.stringify({ name: 'dsh-rpgmaker-pnpm-runtime', private: true }, null, 2)}\n`);
+      const manifestRoot = resolve(options.manifestRoot ?? join(paths.programRoot, PNPM_MANIFEST_RELATIVE));
+      for (const filename of ['package.json', 'package-lock.json']) {
+        const source = join(manifestRoot, filename);
+        if (!(await exists(source))) throw new Error(`Release-owned pnpm runtime ${filename} is missing at ${source}; refusing to resolve a target lock from the registry.`);
+        await cp(source, join(staging, filename), { force: false, errorOnExist: true });
+      }
       const runner = options.commandRunner ?? runCommand;
-      const args = ['install', '--prefix', staging, '--ignore-scripts', '--no-package-lock', '--no-audit', '--no-fund', '--save-exact', `${PNPM_PACKAGE}@${PNPM_VERSION}`];
+      const args = ['ci', '--legacy-peer-deps', '--no-audit', '--no-fund'];
       const result = await runner(npm, args, { cwd: staging, env, platform, timeoutMs: 15 * 60_000 });
       if (result.exitCode !== 0) throw new Error(commandFailure(npm, args, result, env).message);
       executable = await verifyPnpmRuntime(staging, platform);

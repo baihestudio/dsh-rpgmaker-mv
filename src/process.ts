@@ -219,11 +219,18 @@ const SENSITIVE_ENVIRONMENT_KEYS = new Set([
   'DEEPSEEK_API_KEY',
   'DSH_API_KEY',
   'DSH_FORGEJO_ACCESS_TOKEN',
-  'FORGEJO_ACCESS_TOKEN'
+  'FORGEJO_ACCESS_TOKEN',
+  'NPM_TOKEN',
+  'NODE_AUTH_TOKEN',
+  'GITHUB_TOKEN',
+  'GITLAB_TOKEN',
+  'NPM_CONFIG__AUTH'
 ]);
 
 function sensitiveEnvironmentKey(key: string): boolean {
-  return SENSITIVE_ENVIRONMENT_KEYS.has(key.toUpperCase());
+  const normalized = key.toUpperCase();
+  return SENSITIVE_ENVIRONMENT_KEYS.has(normalized)
+    || /^NPM_CONFIG_.+:_AUTH(?:_?TOKEN)?$/.test(normalized);
 }
 
 export function withoutCredentials(env: Record<string, string | undefined>): Record<string, string | undefined> {
@@ -241,7 +248,7 @@ export function redactSensitive(text: string, env: Record<string, string | undef
     if (sensitiveEnvironmentKey(key) && value) secrets.push(value);
   }
   for (const secret of new Set(secrets)) redacted = redacted.split(secret).join('[redacted]');
-  return redacted.replace(/((?:DEEPSEEK_API_KEY|DSH_API_KEY|DSH_FORGEJO_ACCESS_TOKEN|FORGEJO_ACCESS_TOKEN)\s*[:=]\s*)[^\s,;}]+/gi, '$1[redacted]');
+  return redacted.replace(/((?:DEEPSEEK_API_KEY|DSH_API_KEY|DSH_FORGEJO_ACCESS_TOKEN|FORGEJO_ACCESS_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|GITHUB_TOKEN|GITLAB_TOKEN|NPM_CONFIG__AUTH|NPM_CONFIG_[^\s=]*:_AUTH(?:_?TOKEN)?)\s*[:=]\s*)[^\s,;}]+/gi, '$1[redacted]');
 }
 
 export function commandFailure(command: string, args: string[], result: CommandResult, env?: Record<string, string | undefined>): Error {
@@ -251,8 +258,30 @@ export function commandFailure(command: string, args: string[], result: CommandR
 
 export function childExitCode(child: unknown): Promise<number> {
   if (!child || typeof (child as { once?: unknown }).once !== 'function') return Promise.resolve(0);
+  const lifecycle = child as ChildProcess;
+  if (typeof lifecycle.exitCode === 'number') return Promise.resolve(lifecycle.exitCode);
+  if (lifecycle.signalCode !== null && lifecycle.signalCode !== undefined) return Promise.resolve(1);
   return new Promise((resolve) => {
-    (child as ChildProcess).once('error', () => resolve(1));
-    (child as ChildProcess).once('exit', (code) => resolve(code ?? 1));
+    let settled = false;
+    const listeners: Array<[string, (...args: unknown[]) => void]> = [];
+    const cleanup = (): void => {
+      if (typeof lifecycle.removeListener !== 'function') return;
+      for (const [event, listener] of listeners) lifecycle.removeListener(event, listener);
+    };
+    const finish = (code: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(typeof code === 'number' ? code : 1);
+    };
+    const register = (event: string, listener: (...args: unknown[]) => void): void => {
+      listeners.push([event, listener]);
+      lifecycle.once(event, listener);
+    };
+    register('error', () => finish(1));
+    register('exit', (code) => finish(code));
+    register('close', (code) => finish(code));
+    if (typeof lifecycle.exitCode === 'number') finish(lifecycle.exitCode);
+    else if (lifecycle.signalCode !== null && lifecycle.signalCode !== undefined) finish(1);
   });
 }

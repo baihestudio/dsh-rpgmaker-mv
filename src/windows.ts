@@ -4,9 +4,10 @@ import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'no
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, resolveHarnessPaths, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type HarnessPaths, type PathOptions } from './config';
+import { PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type HarnessPaths, type PathOptions } from './config';
 import { resolveWindowsPwsh } from './executable';
 import { redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
+import { resolveReceiptBackedHarnessPaths } from './installation-root';
 
 export interface HarnessLayout {
   paths: HarnessPaths;
@@ -16,11 +17,12 @@ export interface HarnessLayout {
 }
 
 export async function ensureHarnessLayout(options: PathOptions = {}): Promise<HarnessLayout> {
-  const paths = resolveHarnessPaths(options);
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   await mkdir(paths.mutableRoot, { recursive: true });
   await mkdir(paths.dshHome, { recursive: true });
   await mkdir(paths.logsDir, { recursive: true });
-  await mkdir(paths.cacheDir, { recursive: true });
+  await mkdir(paths.installationRoot, { recursive: true });
+  await mkdir(paths.installationCacheDir, { recursive: true });
   return { paths, stateDir: paths.dshHome, logsDir: paths.logsDir, cacheDir: paths.cacheDir };
 }
 
@@ -127,16 +129,70 @@ export interface ShortcutCreationOptions extends PathOptions {
 export async function createStartMenuShortcut(options: ShortcutCreationOptions): Promise<string> {
   const platform = options.platform ?? process.platform;
   if (platform !== 'win32') throw new Error('Start Menu shortcuts are supported on Windows only.');
-  const paths = resolveHarnessPaths(options);
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   const env = options.env ?? process.env;
   const helperScript = options.helperScript ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'create-shortcut.ps1');
   const pwsh = options.pwshExecutable ?? env.PWSH_EXECUTABLE ?? await resolveWindowsPwsh({ platform, env }) ?? 'pwsh.exe';
   const runner = options.commandRunner ?? runCommand;
-  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', helperScript, '-TargetPath', options.targetPath, '-ShortcutPath', paths.startMenuShortcutPath, '-WorkingDirectory', options.workingDirectory];
+  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helperScript, '-TargetPath', options.targetPath, '-ShortcutPath', paths.startMenuShortcutPath, '-WorkingDirectory', options.workingDirectory];
   if (options.iconPath) args.push('-IconPath', options.iconPath);
   const result = await runner(pwsh, args, { env: withoutCredentials(env), platform, timeoutMs: 30_000 });
   if (result.exitCode !== 0) throw new Error(`Start Menu shortcut could not be created at ${paths.startMenuShortcutPath}.`);
   return paths.startMenuShortcutPath;
+}
+
+export interface InstallationRootPickerOptions {
+  defaultPath: string;
+  platform?: string;
+  env?: Record<string, string | undefined>;
+  powershellExecutable?: string;
+  commandRunner?: CommandRunner;
+  /** Called only when the native dialog cannot be started or completed. */
+  onUnavailable?: () => void;
+}
+
+/**
+ * Native Windows folder chooser used before any network work.  Windows
+ * PowerShell 5.1 is intentionally the adapter here: it is present before the
+ * Node prerequisite and can host FolderBrowserDialog in STA mode.  An empty
+ * line means the user cancelled; callers may fall back to a terminal prompt.
+ */
+export async function pickInstallationRoot(options: InstallationRootPickerOptions): Promise<string | undefined> {
+  const platform = options.platform ?? process.platform;
+  if (platform !== 'win32') return undefined;
+  const env = options.env ?? process.env;
+  const runner = options.commandRunner ?? runCommand;
+  const powershell = options.powershellExecutable ?? env.POWERSHELL_EXECUTABLE ?? await import('./executable').then(({ resolveExecutable }) => resolveExecutable('powershell.exe', { platform, env }));
+  if (!powershell) {
+    options.onUnavailable?.();
+    return undefined;
+  }
+  const script = [
+    '$ErrorActionPreference = "Stop"',
+    '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)',
+    'Add-Type -AssemblyName System.Windows.Forms',
+    '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
+    `$dialog.SelectedPath = ${JSON.stringify(options.defaultPath)}`,
+    '$dialog.Description = "Choose the RPG Maker Agent installation folder"',
+    '$dialog.ShowNewFolderButton = $true',
+    'if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::WriteLine($dialog.SelectedPath) }'
+  ].join('; ');
+  try {
+    const result = await runner(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-Command', script], {
+      env: withoutCredentials(env),
+      platform: 'win32',
+      timeoutMs: 120_000
+    });
+    if (result.exitCode !== 0) {
+      options.onUnavailable?.();
+      return undefined;
+    }
+    const selected = result.stdout.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
+    return selected || undefined;
+  } catch {
+    options.onUnavailable?.();
+    return undefined;
+  }
 }
 
 export class UninstallSafetyError extends Error {
@@ -165,7 +221,7 @@ function sameWindowsPath(left: unknown, right: string, platform: string): boolea
 
 export async function validateHarnessOwnership(options: PathOptions = {}): Promise<void> {
   const platform = options.platform ?? process.platform;
-  const paths = resolveHarnessPaths(options);
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   if (!(await fileIsDirectory(paths.programRoot))) throw new UninstallSafetyError(`Harness program root does not exist: ${paths.programRoot}`);
   const markerPath = join(paths.programRoot, PROGRAM_OWNERSHIP_FILE);
   const marker = await readObject(markerPath);
@@ -177,10 +233,12 @@ export async function validateHarnessOwnership(options: PathOptions = {}): Promi
   if (metadata?.owner !== PROGRAM_OWNER
     || metadata.product !== PRODUCT_NAME
     || metadata.format !== 1
+    || !sameWindowsPath(metadata.installationRoot, paths.installationRoot, platform)
     || !sameWindowsPath(metadata.programRoot, paths.programRoot, platform)
     || !sameWindowsPath(metadata.mutableRoot, paths.mutableRoot, platform)
     || !sameWindowsPath(metadata.dshHome, paths.dshHome, platform)
-    || !sameWindowsPath(metadata.runtimeDir, paths.runtimeDir, platform)) {
+    || !sameWindowsPath(metadata.runtimeDir, paths.runtimeDir, platform)
+    || !sameWindowsPath(metadata.installationCacheDir, paths.installationCacheDir, platform)) {
     throw new UninstallSafetyError(`Refusing to remove ${paths.programRoot}: install.json is missing, invalid, or does not belong to this harness layout.`);
   }
 }
@@ -246,14 +304,14 @@ export interface UninstallResult {
 export async function uninstallHarness(options: UninstallOptions = {}): Promise<UninstallResult> {
   const platform = options.platform ?? process.platform;
   if (platform !== 'win32') throw new Error('The Windows harness uninstaller can only run on Windows.');
-  const paths = resolveHarnessPaths(options);
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   const removed: string[] = [];
   const preserved = await recoveryEntries(dirname(paths.programRoot), basename(paths.programRoot));
   const programStat = await lstat(paths.programRoot).catch(() => undefined);
   if (programStat?.isSymbolicLink()) throw new UninstallSafetyError(`Refusing to remove ${paths.programRoot}: the harness program root is a symbolic link.`);
   if (programStat && !programStat.isDirectory()) throw new UninstallSafetyError(`Refusing to remove ${paths.programRoot}: the harness program root is not a directory.`);
   const programExists = programStat?.isDirectory() ?? false;
-  if (programExists) await validateHarnessOwnership(options);
+  if (programExists) await validateHarnessOwnership({ ...options, installationRoot: paths.installationRoot, mutableRoot: paths.mutableRoot, localStateRoot: paths.localStateRoot, dshHome: paths.dshHome, runtimeDir: paths.runtimeDir });
 
   // A missing active tree is already uninstalled. Never remove a shortcut or
   // recovery tree in that case: neither can be proven to be ours here.
@@ -267,6 +325,10 @@ export async function uninstallHarness(options: UninstallOptions = {}): Promise<
   }
   await rm(paths.cacheDir, { recursive: true, force: true });
   removed.push(paths.cacheDir);
+  if (paths.installationCacheDir !== paths.cacheDir) {
+    await rm(paths.installationCacheDir, { recursive: true, force: true });
+    removed.push(paths.installationCacheDir);
+  }
   if (options.purge) {
     await rm(paths.mutableRoot, { recursive: true, force: true });
     removed.push(paths.mutableRoot);

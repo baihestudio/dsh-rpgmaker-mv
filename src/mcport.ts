@@ -1,20 +1,25 @@
-import { mkdir, readFile, realpath, rename as fsRename, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, realpath, rename as fsRename, rm } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
-import { resolveHarnessPaths, type HarnessPaths, type PathOptions } from './config';
+import { type HarnessPaths, type PathOptions } from './config';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 import { pathExists } from './project';
 import { withHarnessOperationLock } from './lock';
+import { resolveReceiptBackedHarnessPaths } from './installation-root';
 
 /** Exact-pinned app-owned MCPorter runtime (Host MCP client pool). */
 export const MCPORTER_PACKAGE = 'mcporter';
 export const MCPORTER_VERSION = '0.12.3';
 export const MCPORTER_NPM_INTEGRITY = 'sha512-FD6nV4AzrsJSYtIqkLE0emNNiVl0p9W2bJosORAhmI5HCfcz2fc0WjmaY26bfFRW+2aCNL3aCssoFRjcYcQjgQ==';
 export const MCPORTER_RUNTIME_RELATIVE = join('runtime', 'mcporter');
+export const MCPORTER_MANIFEST_RELATIVE = join('runtime-manifests', 'mcporter');
 export const MCPORTER_ENTRYPOINT = join('dist', 'index.js');
 
 export interface McporterRuntimeOptions extends PathOptions {
-  bunExecutable?: string;
+  nodeExecutable?: string;
+  npmExecutable?: string;
+  /** Release-owned package.json/package-lock.json used for npm ci. */
+  manifestRoot?: string;
   commandRunner?: CommandRunner;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
@@ -42,14 +47,10 @@ async function readJson(path: string): Promise<JsonObject | undefined> {
   }
 }
 
-async function readBunLock(path: string): Promise<JsonObject | undefined> {
+async function readNpmLock(path: string): Promise<JsonObject | undefined> {
   try {
     const content = await readFile(path, 'utf8');
-    try {
-      return asObject(JSON.parse(content));
-    } catch {
-      return asObject(JSON.parse(content.replace(/,\s*([}\]])/g, '$1')));
-    }
+    return asObject(JSON.parse(content));
   } catch {
     return undefined;
   }
@@ -80,7 +81,7 @@ async function findMcporterEntry(runtimeDir: string): Promise<string | undefined
   return candidate;
 }
 
-/** Verify the exact-pinned mcporter install and its bun.lock integrity. */
+/** Verify the exact-pinned mcporter install and its npm lock integrity. */
 export async function verifyMcporterRuntime(
   runtimeDirInput: string,
   platform: string = process.platform
@@ -92,16 +93,15 @@ export async function verifyMcporterRuntime(
   if (dependencies?.[MCPORTER_PACKAGE] !== MCPORTER_VERSION) {
     errors.push(`MCPorter dependency ${MCPORTER_PACKAGE}@${MCPORTER_VERSION} is not pinned`);
   }
-  const lock = await readBunLock(join(runtimeDir, 'bun.lock'));
-  const workspace = asObject(asObject(lock?.workspaces)?.['']);
-  const lockedDependencies = asObject(workspace?.dependencies);
-  const lockedPackage = asObject(lock?.packages)?.[MCPORTER_PACKAGE];
-  if (!lock) errors.push('MCPorter bun.lock is missing or invalid');
-  else if (lockedDependencies?.[MCPORTER_PACKAGE] !== MCPORTER_VERSION
-    || !Array.isArray(lockedPackage)
-    || lockedPackage[0] !== `${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`
-    || lockedPackage[3] !== MCPORTER_NPM_INTEGRITY) {
-    errors.push('MCPorter bun.lock does not match the pinned package version and npm integrity');
+  const lock = await readNpmLock(join(runtimeDir, 'package-lock.json'));
+  const lockRoot = asObject(asObject(lock?.packages)?.['']);
+  const lockedPackage = asObject(asObject(lock?.packages)?.[`node_modules/${MCPORTER_PACKAGE}`]);
+  const lockedDependency = asObject(lockRoot?.dependencies)?.[MCPORTER_PACKAGE];
+  if (!lock) errors.push('MCPorter package-lock.json is missing or invalid');
+  else if (lockedDependency !== MCPORTER_VERSION
+    || lockedPackage?.version !== MCPORTER_VERSION
+    || lockedPackage?.integrity !== MCPORTER_NPM_INTEGRITY) {
+    errors.push('MCPorter package-lock.json does not match the pinned package version and npm integrity');
   }
   const packageManifest = await readJson(join(packageDirectory(runtimeDir), 'package.json'));
   const packageVersion = typeof packageManifest?.version === 'string' ? packageManifest.version : undefined;
@@ -142,7 +142,7 @@ export async function prepareMcporterRuntime(
   runtimeDirInput: string
 ): Promise<McporterRuntimeVerification> {
   const runtimeDir = resolve(runtimeDirInput);
-  const paths = resolveHarnessPaths(options);
+  const { paths } = await resolveReceiptBackedHarnessPaths(options);
   return withHarnessOperationLock(paths.lockDir, paths.sessionLeaseDir, () => prepareMcporterRuntimeUnlocked(options, runtimeDir), {
     timeoutMs: options.lockTimeoutMs,
     retryMs: options.lockRetryMs
@@ -153,7 +153,8 @@ async function prepareMcporterRuntimeUnlocked(options: McporterRuntimeOptions, r
   const platform = options.platform ?? process.platform;
   const env = withoutCredentials(options.env ?? process.env);
   const runner = options.commandRunner ?? runCommand;
-  const bun = options.bunExecutable ?? (options.env ?? process.env).BUN_EXECUTABLE ?? 'bun';
+  const npm = options.npmExecutable ?? (options.env ?? process.env).NPM_EXECUTABLE ?? 'npm';
+  const manifestRoot = resolve(options.manifestRoot ?? join(dirname(dirname(runtimeDir)), MCPORTER_MANIFEST_RELATIVE));
   const current = await verifyMcporterRuntime(runtimeDir, platform);
   if (current.valid) return current;
 
@@ -161,13 +162,13 @@ async function prepareMcporterRuntimeUnlocked(options: McporterRuntimeOptions, r
   await mkdir(parent, { recursive: true });
   const staging = join(parent, `.${basename(runtimeDir)}.staging-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   await mkdir(staging, { recursive: true });
-  await writeFile(join(staging, 'package.json'), `${JSON.stringify({
-    name: 'dsh-rpgmaker-mcporter-runtime',
-    private: true,
-    dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION }
-  }, null, 2)}\n`);
   try {
-    await runRequired(runner, bun, ['add', '--exact', '--ignore-scripts', `${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`], staging, env, 'MCPorter installation');
+    for (const filename of ['package.json', 'package-lock.json']) {
+      const source = join(manifestRoot, filename);
+      if (!(await pathExists(source))) throw new Error(`Release-owned MCPorter runtime ${filename} is missing at ${source}; refusing to resolve a target lock from the registry.`);
+      await cp(source, join(staging, filename), { force: false, errorOnExist: true });
+    }
+    await runRequired(runner, npm, ['ci', '--legacy-peer-deps', '--no-audit', '--no-fund'], staging, env, 'MCPorter installation');
     const staged = await verifyMcporterRuntime(staging, platform);
     if (!staged.valid) throw new Error(`MCPorter verification failed: ${staged.errors.join('; ')}`);
     if (await pathExists(runtimeDir)) {

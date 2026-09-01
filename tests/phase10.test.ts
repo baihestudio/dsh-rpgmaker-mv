@@ -20,14 +20,24 @@ describe('credential environment scrubbing', () => {
       forgejo_access_token: 'synthetic-forgejo-secret',
       DsH_FoRgEjO_AcCeSs_ToKeN: 'synthetic-dsh-forgejo-secret',
       dsh_api_key: 'synthetic-dsh-secret',
+      npm_token: 'synthetic-npm-secret',
+      NoDe_AuTh_ToKeN: 'synthetic-node-auth-secret',
+      github_token: 'synthetic-github-secret',
+      GITLAB_TOKEN: 'synthetic-gitlab-secret',
+      npm_config__auth: 'synthetic-npm-config-secret',
+      'npm_config_//registry.npmjs.org/:_authToken': 'synthetic-registry-secret',
       SAFE_VALUE: 'safe'
     };
     expect(withoutCredentials(env)).toEqual({ SAFE_VALUE: 'safe' });
-    const redacted = redactSensitive('forgejo_access_token=synthetic-forgejo-secret DSH_API_KEY: synthetic-dsh-secret', env);
+    const redacted = redactSensitive('forgejo_access_token=synthetic-forgejo-secret DSH_API_KEY: synthetic-dsh-secret NPM_TOKEN=synthetic-npm-secret npm_config_//registry.npmjs.org/:_authToken=synthetic-registry-secret', env);
     expect(redacted).not.toContain('synthetic-forgejo-secret');
     expect(redacted).not.toContain('synthetic-dsh-secret');
+    expect(redacted).not.toContain('synthetic-npm-secret');
+    expect(redacted).not.toContain('synthetic-registry-secret');
     expect(redacted).toContain('forgejo_access_token=[redacted]');
     expect(redacted).toContain('DSH_API_KEY: [redacted]');
+    expect(redacted).toContain('NPM_TOKEN=[redacted]');
+    expect(redacted).toContain('npm_config_//registry.npmjs.org/:_authToken=[redacted]');
   });
 });
 
@@ -72,7 +82,7 @@ const RPGMAKER_MV_PACKAGE_DIR = join('node_modules', RPGMAKER_MV_MCP_PACKAGE);
 
 /**
  * Install the test-owned fake MCPorter runtime in the exact pinned shape
- * (package.json + bun.lock integrity + app-owned entry), so the fixture is
+ * (package.json + package-lock.json integrity + app-owned entry), so the fixture is
  * indistinguishable from a verified install and no external package is ever
  * downloaded by an ordinary test.
  */
@@ -80,10 +90,12 @@ async function writeFixtureMcporterRuntime(runtimeDir: string): Promise<void> {
   const packageDir = join(runtimeDir, 'node_modules', MCPORTER_PACKAGE);
   await mkdir(join(packageDir, 'dist'), { recursive: true });
   await writeFile(join(runtimeDir, 'package.json'), JSON.stringify({ private: true, dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } }));
-  await writeFile(join(runtimeDir, 'bun.lock'), JSON.stringify({
-    lockfileVersion: 1,
-    workspaces: { '': { dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } } },
-    packages: { [MCPORTER_PACKAGE]: [`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`, '', {}, MCPORTER_NPM_INTEGRITY] }
+  await writeFile(join(runtimeDir, 'package-lock.json'), JSON.stringify({
+    lockfileVersion: 3,
+    packages: {
+      '': { dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } },
+      [`node_modules/${MCPORTER_PACKAGE}`]: { version: MCPORTER_VERSION, integrity: MCPORTER_NPM_INTEGRITY }
+    }
   }));
   await writeFile(join(packageDir, 'package.json'), JSON.stringify({ version: MCPORTER_VERSION, main: 'dist/index.js' }));
   await writeFile(join(packageDir, 'dist', 'index.js'), await readFile(FAKE_MCPORTER, 'utf8'));
@@ -193,10 +205,12 @@ describe('app-owned MCPorter runtime verification', () => {
       const runtime = join(root, 'runtime');
       await mkdir(join(runtime, 'node_modules', 'mcporter', 'dist'), { recursive: true });
       await writeFile(join(runtime, 'package.json'), JSON.stringify({ private: true, dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } }));
-      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({
-        lockfileVersion: 1,
-        workspaces: { '': { dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } } },
-        packages: { [MCPORTER_PACKAGE]: [`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`, '', {}, MCPORTER_NPM_INTEGRITY] }
+      await writeFile(join(runtime, 'package-lock.json'), JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          '': { dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } },
+          [`node_modules/${MCPORTER_PACKAGE}`]: { version: MCPORTER_VERSION, integrity: MCPORTER_NPM_INTEGRITY }
+        }
       }));
       await writeFile(join(runtime, 'node_modules', 'mcporter', 'package.json'), JSON.stringify({ version: MCPORTER_VERSION }));
       await writeFile(join(runtime, 'node_modules', 'mcporter', 'dist', 'index.js'), 'export {}');
@@ -207,7 +221,7 @@ describe('app-owned MCPorter runtime verification', () => {
       expect(valid.packageDir).toBe(join(runtime, 'node_modules', 'mcporter'));
       expect(valid.entrypoint).toBe(join(runtime, 'node_modules', 'mcporter', 'dist', 'index.js'));
 
-      const lockPath = join(runtime, 'bun.lock');
+      const lockPath = join(runtime, 'package-lock.json');
       const lock = await readFile(lockPath, 'utf8');
       await writeFile(lockPath, lock.replace(MCPORTER_NPM_INTEGRITY, 'sha512-tampered'));
       const tampered = await verifyMcporterRuntime(runtime, 'win32');
@@ -217,7 +231,7 @@ describe('app-owned MCPorter runtime verification', () => {
       await rm(lockPath);
       const missing = await verifyMcporterRuntime(runtime, 'win32');
       expect(missing.valid).toBe(false);
-      expect(missing.errors.join(' ')).toContain('bun.lock');
+      expect(missing.errors.join(' ')).toContain('package-lock.json');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -229,10 +243,12 @@ describe('app-owned MCPorter runtime verification', () => {
       const runtime = join(root, 'runtime');
       await mkdir(join(runtime, 'node_modules', 'mcporter'), { recursive: true });
       await writeFile(join(runtime, 'package.json'), JSON.stringify({ private: true, dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } }));
-      await writeFile(join(runtime, 'bun.lock'), JSON.stringify({
-        lockfileVersion: 1,
-        workspaces: { '': { dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } } },
-        packages: { [MCPORTER_PACKAGE]: [`${MCPORTER_PACKAGE}@${MCPORTER_VERSION}`, '', {}, MCPORTER_NPM_INTEGRITY] }
+      await writeFile(join(runtime, 'package-lock.json'), JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          '': { dependencies: { [MCPORTER_PACKAGE]: MCPORTER_VERSION } },
+          [`node_modules/${MCPORTER_PACKAGE}`]: { version: MCPORTER_VERSION, integrity: MCPORTER_NPM_INTEGRITY }
+        }
       }));
       const escape = join(root, 'escape', 'index.js');
       await mkdir(dirnameOf(escape), { recursive: true });

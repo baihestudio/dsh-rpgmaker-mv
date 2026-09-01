@@ -1,0 +1,8 @@
+{
+  "name": "dsh-rpgmaker-mcp-runtime",
+  "private": true,
+  "dependencies": {
+    "@xerolo44/rpgmaker-mv-mcp": "0.1.0",
+    "rpgmaker-mz-mcp": "1.3.0"
+  }
+}

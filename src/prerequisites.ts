@@ -4,7 +4,7 @@ import { withEnvironmentPath } from './config';
 import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 
-export const WINDOWS_PREREQUISITE_IDS = ['node', 'python', 'bun', 'powershell', 'git', 'coreutils', 'imagemagick'] as const;
+export const WINDOWS_PREREQUISITE_IDS = ['node', 'python', 'powershell', 'git', 'coreutils', 'imagemagick'] as const;
 export type WindowsPrerequisiteId = (typeof WINDOWS_PREREQUISITE_IDS)[number];
 
 export interface WindowsPrerequisiteCheck {
@@ -23,7 +23,6 @@ export interface WindowsPrerequisiteExecutablePaths {
   node?: string;
   npm?: string;
   python?: string;
-  bun?: string;
   powershell?: string;
   git?: string;
   coreutilsManager?: string;
@@ -48,7 +47,6 @@ export interface WindowsPrerequisiteOptions {
   nodeExecutable?: string;
   npmExecutable?: string;
   pythonExecutable?: string;
-  bunExecutable?: string;
   pwshExecutable?: string;
   gitExecutable?: string;
   coreutilsExecutable?: string;
@@ -199,7 +197,6 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
     ? await resolveExecutable(join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe'), { platform: 'win32', env })
     : undefined;
   const python = await resolved('python', options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? wingetPython, env);
-  const bun = await resolved('bun', options.bunExecutable ?? env.BUN_EXECUTABLE, env);
   const pwsh = options.pwshExecutable ?? await resolveWindowsPwsh({ platform: 'win32', env });
   const git = await resolved('git', options.gitExecutable ?? env.GIT_EXECUTABLE, env);
   const manager = await resolved('coreutils-manager', options.coreutilsExecutable ?? env.COREUTILS_MANAGER, env)
@@ -215,7 +212,6 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const nodeLts = await commandVersion(runner, node, env, ['-p', 'process.release.lts']);
   const npmVersion = await commandVersion(runner, npm, env);
   const pythonVersion = await commandVersion(runner, python, env);
-  const bunVersion = await commandVersion(runner, bun, env);
   const pwshVersion = await commandVersion(runner, pwsh, env);
   const gitVersion = await commandVersion(runner, git, env);
   const managerHelp = await commandVersion(runner, manager, env, ['--help']);
@@ -231,10 +227,9 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const nodeIdentity = /(?:^|\r?\n)\s*v\d+\.\d+\.\d+/i.test(nodeVersion.output);
   const npmIdentity = /(?:^|\r?\n)\s*v?\d+\.\d+\.\d+/i.test(npmVersion.output);
   const pythonIdentity = /(?:^|\r?\n)\s*Python\s+\d+\.\d+/i.test(pythonVersion.output);
-  const bunIdentity = /(?:^|\r?\n)\s*\d+\.\d+\.\d+/i.test(bunVersion.output);
   const powershellIdentity = /PowerShell\s+\d+\.\d+/i.test(pwshVersion.output);
   const gitIdentity = /(?:^|\r?\n)\s*git version\s+\d+\.\d+\.\d+/i.test(gitVersion.output);
-  const nodeOk = nodeVersion.ok && nodeIdentity && atLeast(nodeParsed, [18, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && npmIdentity && Boolean(versionNumbers(npmVersion.output));
+  const nodeOk = nodeVersion.ok && nodeIdentity && atLeast(nodeParsed, [22, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && npmIdentity && Boolean(versionNumbers(npmVersion.output));
   const powershellOk = pwshVersion.ok && powershellIdentity && atLeast(pwshParsed, [7, 4, 0]);
   const coreutilsContractOk = managerHelp.ok && managerStatus.ok && managerContract(managerHelp.output, managerStatus.output);
   const coreutilsOk = coreutilsContractOk
@@ -249,7 +244,7 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
       nodeOk,
       nodeOk
         ? `Node.js LTS ${nodeParsed?.join('.')} (${nodeLtsName}) and npm ${versionNumbers(npmVersion.output)?.join('.')} are available at ${node}`
-        : 'Node.js LTS (18+) and npm were not both verified; install OpenJS.NodeJS.LTS with WinGet',
+        : 'Node.js LTS (22+) and npm were not both verified; install OpenJS.NodeJS.LTS with WinGet',
       node,
       nodeParsed?.join('.'),
       nodeParsed && versionNumbers(npmVersion.output) && nodeLtsName ? { node: nodeParsed.join('.'), npm: versionNumbers(npmVersion.output)!.join('.'), lts: nodeLtsName } : undefined
@@ -264,15 +259,6 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
         : 'Python 3.11+ was not verified; install Python.Python.3.13 with WinGet',
       python,
       pythonParsed?.join('.')
-    ),
-    check(
-      'bun',
-      'Bun',
-      'Oven-sh.Bun',
-      bunVersion.ok && bunIdentity && Boolean(versionNumbers(bunVersion.output)),
-      bunVersion.ok && bunIdentity ? `Bun is available at ${bun}` : 'Bun was not verified; install Oven-sh.Bun with WinGet',
-      bun,
-      versionNumbers(bunVersion.output)?.join('.')
     ),
     check(
       'powershell',
@@ -325,7 +311,6 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
       node,
       npm,
       python,
-      bun,
       powershell: pwsh,
       git,
       coreutilsManager: manager,
@@ -354,7 +339,8 @@ async function refreshWindowsEnvironment(runner: CommandRunner, env: Record<stri
       // Verification still uses the original environment if registry refresh is unavailable.
     }
   }
-  return withEnvironmentPath(env, [...new Set(paths.filter(Boolean).flatMap((value) => value.split(';')))].join(';'), 'win32');
+  const refreshedPath = [...new Set(paths.filter(Boolean).flatMap((value) => value.split(';')).filter(Boolean))].join(';');
+  return withEnvironmentPath(env, refreshedPath, 'win32');
 }
 
 /**

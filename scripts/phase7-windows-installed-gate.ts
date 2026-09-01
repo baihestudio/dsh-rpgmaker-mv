@@ -1,21 +1,23 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { strict as assert } from 'node:assert';
 import { fileURLToPath } from 'node:url';
 
-import { DSH_VERSION, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, withEnvironmentPath } from '../src/config';
+import { DSH_VERSION, PRODUCT_VERSION, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, withEnvironmentPath } from '../src/config';
 import { verifyRuntime } from '../src/bootstrap';
 import { prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, type CommandRunner, withoutCredentials } from '../src/process';
 import { verifyRpgMakerMcpRuntime } from '../src/rpgmaker';
 import { validateRpgMakerWorkspace } from '../src/project';
 import { verifyManagedWebProfile } from '../src/managed-web-profile';
 import { verifyMcporterRuntime } from '../src/mcport';
-import { PNPM_VERSION } from '../src/profile';
+import { PNPM_VERSION, verifyPnpmRuntimeForDoctor } from '../src/profile';
 import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
-import { atLeast } from '../src/prerequisites';
-import { WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
+import { atLeast, verifyWindowsPrerequisites } from '../src/prerequisites';
+import { buildReleaseZip, inspectReleaseZip, INSTALLER_EXECUTABLE_NAME, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
+import { INSTALLATION_CAPACITY_FORMULA, INSTALLATION_STAGING_HEADROOM_BYTES, readInstallationReceipt } from '../src/installation-root';
+import { verifyDesktopHostPayload, DESKTOP_HOST_PAYLOAD_RELATIVE } from '../src/desktop-host';
 import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
@@ -58,6 +60,10 @@ function errorMessage(error: unknown): string {
 }
 
 const WINDOWS_GATE_CLEANUP_RETRY_DELAYS_MS = [100, 200, 400, 800] as const;
+// A fresh gate contains several hundred thousand npm/pnpm files.  Native
+// PowerShell can need a few minutes to remove that disposable tree even after
+// all child processes have exited; keep the timeout bounded but realistic.
+const WINDOWS_GATE_CLEANUP_TIMEOUT_MS = 5 * 60_000;
 const WINDOWS_TRANSIENT_NATIVE_CLEANUP_PATTERNS = [
   /ERROR_(?:SHARING|LOCK)_VIOLATION/i,
   /sharing violation/i,
@@ -167,12 +173,12 @@ export async function cleanupInstalledGateWorkspace(root: string, options: GateW
 
   const existsPath = options.existsPath ?? gateRootExists;
   const wait = options.delay ?? delay;
-  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', WINDOWS_GATE_CLEANUP_HELPER, '-LiteralPath', resolvedRoot];
+  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', WINDOWS_GATE_CLEANUP_HELPER, '-LiteralPath', resolvedRoot];
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= WINDOWS_GATE_CLEANUP_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
-      const result = await runner(pwsh, args, { cwd: parent, env: cleanupEnv, platform: 'win32', timeoutMs: 30_000 });
+      const result = await runner(pwsh, args, { cwd: parent, env: cleanupEnv, platform: 'win32', timeoutMs: WINDOWS_GATE_CLEANUP_TIMEOUT_MS });
       if (result.exitCode !== 0) throw nativeCleanupFailure(resolvedRoot, result, sourceEnv);
       if (await existsPath(resolvedRoot)) throw new Error(`native PowerShell cleanup resolved but gate root ${diagnostic(resolvedRoot, sourceEnv)} still exists`);
       return;
@@ -227,24 +233,18 @@ function json(value: unknown): string {
   return `${JSON.stringify(value)}\n`;
 }
 
-async function verifyInstalledRuntimes(installedRoot: string, bunExecutable: string): Promise<void> {
-  const dshRuntime = await verifyRuntime(join(installedRoot, 'runtime', 'dsh'), { platform: 'win32', bunExecutable, env: { BUN_EXECUTABLE: bunExecutable } });
-  const mcporterRuntime = await verifyMcporterRuntime(join(installedRoot, 'runtime', 'mcporter'), 'win32');
-  const mcpRuntime = await verifyRpgMakerMcpRuntime(join(installedRoot, 'runtime', 'mcp'), 'win32');
-  let pnpmVersion: string | undefined;
-  try {
-    pnpmVersion = (JSON.parse(await readFile(join(installedRoot, 'runtime', 'pnpm', 'node_modules', 'pnpm', 'package.json'), 'utf8')) as { version?: string }).version;
-  } catch {
-    pnpmVersion = undefined;
-  }
-  const pnpmShim = await exists(join(installedRoot, 'runtime', 'pnpm', 'node_modules', '.bin', 'pnpm.cmd'));
+async function verifyInstalledRuntimes(programRoot: string, nodeExecutable: string, npmExecutable?: string): Promise<void> {
+  const dshRuntime = await verifyRuntime(join(programRoot, 'runtime', 'dsh'), { platform: 'win32', nodeExecutable, npmExecutable, env: { NODE_EXECUTABLE: nodeExecutable, ...(npmExecutable ? { NPM_EXECUTABLE: npmExecutable } : {}) } });
+  const mcporterRuntime = await verifyMcporterRuntime(join(programRoot, 'runtime', 'mcporter'), 'win32');
+  const mcpRuntime = await verifyRpgMakerMcpRuntime(join(programRoot, 'runtime', 'mcp'), 'win32');
+  const pnpm = await verifyPnpmRuntimeForDoctor(programRoot, 'win32');
   const errors = [
     ...(dshRuntime.valid ? [] : dshRuntime.errors),
     ...(mcporterRuntime.valid ? [] : mcporterRuntime.errors),
     ...(mcpRuntime.valid ? [] : mcpRuntime.errors),
-    ...(pnpmVersion === PNPM_VERSION && pnpmShim ? [] : [`installed pnpm ${PNPM_VERSION} runtime is incomplete`])
+    ...(pnpm.valid ? [] : [pnpm.error ?? `installed pnpm ${PNPM_VERSION} runtime is incomplete`])
   ];
-  if (errors.length > 0) throw new Error(`installed app-owned runtimes are not ready for the offline installed-release gate: ${errors.join('; ')}`);
+  if (errors.length > 0) throw new Error(`installed app-owned runtimes are not ready for the disposable installed-release gate: ${errors.join('; ')}`);
 }
 
 async function makeWorkspace(root: string): Promise<string> {
@@ -262,7 +262,7 @@ async function makeWorkspace(root: string): Promise<string> {
   return workspace;
 }
 
-function cleanEnvironment(root: string, bunExecutable: string): Record<string, string> {
+function cleanEnvironment(root: string, nodeExecutable?: string): Record<string, string> {
   const safe: Record<string, string> = {};
   for (const key of ENVIRONMENT_KEYS) {
     const value = process.env[key];
@@ -276,8 +276,15 @@ function cleanEnvironment(root: string, bunExecutable: string): Record<string, s
   safe.USERPROFILE = join(root, 'UserProfile');
   safe.TEMP = join(root, 'Temp');
   safe.TMP = safe.TEMP;
-  safe.BUN_EXECUTABLE = bunExecutable;
-  return withEnvironmentPath(safe, [dirname(bunExecutable), safe.PATH ?? ''].filter(Boolean).join(';'), 'win32') as Record<string, string>;
+  delete safe.BUN_INSTALL;
+  const nodeDir = nodeExecutable ? dirname(nodeExecutable).replaceAll('/', '\\').toLowerCase() : undefined;
+  const path = (safe.PATH ?? '').split(';').filter((entry) => {
+    const normalized = entry.replaceAll('/', '\\').replace(/[\\]+$/, '').toLowerCase();
+    return !/\\bbun(?:\\.exe)?\\b/i.test(normalized) && (!nodeDir || normalized !== nodeDir);
+  }).join(';');
+  safe.NPM_CONFIG_CACHE = join(root, 'NpmCache');
+  safe.npm_config_cache = safe.NPM_CONFIG_CACHE;
+  return withEnvironmentPath(safe, path, 'win32') as Record<string, string>;
 }
 
 function startInstalledLaunch(launchCmd: string, installedRoot: string, env: Record<string, string>): StartedProcess {
@@ -434,7 +441,8 @@ export async function runInstalledMount(
     MV_ENTRY: engine === 'mv' ? executable : undefined,
     MZ_ENTRY: engine === 'mz' ? executable : undefined,
     RPGMAKER_ENGINE: engine,
-    [JS_RUNNER_ENV]: env.BUN_EXECUTABLE,
+    [JS_RUNNER_ENV]: nodeExecutable,
+    NODE_EXECUTABLE: nodeExecutable,
     WORKSPACE_HOST_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'index.js'),
     WORKSPACE_AGENT_BUNDLE_ENTRY: join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp', 'lib', 'agent.js')
   };
@@ -452,127 +460,180 @@ export async function runInstalledMount(
   return JSON.parse(line) as Record<string, unknown>;
 }
 
-async function main(): Promise<void> {
-  if (process.platform !== 'win32') throw new Error('The installed-release gate is a Windows-only native acceptance.');
+async function extractRelease(zipPath: string, destination: string, env: Record<string, string | undefined>): Promise<void> {
+  const tar = await resolveExecutable('tar.exe', { platform: 'win32', env });
+  if (!tar) throw new Error('The native Windows tar.exe extractor was not found for the disposable release gate.');
+  await mkdir(destination, { recursive: true });
+  const result = await runCommand(tar, ['-xf', zipPath, '-C', destination], { env: withoutCredentials(env), platform: 'win32', timeoutMs: 120_000 });
+  if (result.exitCode !== 0) throw new Error(`Release extraction failed: ${diagnostic(result.stderr || result.stdout, env)}`);
+}
 
-  const installedRoot = resolve(requiredOption(process.argv.slice(2), 'installed-root'));
-  if (!(await exists(join(installedRoot, 'Launch.cmd')))) throw new Error(`Supported installed Launch.cmd was not found under ${installedRoot}.`);
-  const requestedBun = optionalOption(process.argv.slice(2), 'bun-executable');
-  const bunExecutable = requestedBun
-    ? resolve(requestedBun)
-    : await resolveExecutable('bun.exe', { platform: 'win32', env: process.env });
-  if (!bunExecutable || basename(bunExecutable).toLowerCase() !== 'bun.exe') throw new Error(`The installed-release gate requires a direct bun.exe runner, got ${bunExecutable ?? 'not found'}.`);
-  const nodeExecutable = await resolveInstalledNode(process.env);
-  const pwshExecutable = await resolveWindowsPwsh({ platform: 'win32', env: process.env });
-  if (!pwshExecutable || basename(pwshExecutable).toLowerCase() !== 'pwsh.exe' || /[\\/]WindowsApps[\\/]pwsh\.exe$/i.test(pwshExecutable)) {
-    throw new Error(`The installed-release gate requires the repository-resolved native PowerShell 7 executable; got ${pwshExecutable ?? 'not found'}.`);
+async function runInstaller(installer: string, args: string[], cwd: string, env: Record<string, string>): Promise<{ stdout: string; stderr: string }> {
+  const result = await runCommand(installer, args, { cwd, env, platform: 'win32', timeoutMs: 45 * 60_000 });
+  if (result.exitCode !== 0) throw new Error(`installer.exe exited with ${result.exitCode}: ${diagnostic(result.stderr || result.stdout, env)}`);
+  return { stdout: result.stdout, stderr: result.stderr };
+}
+
+async function main(): Promise<void> {
+  if (process.platform !== 'win32') throw new Error('The disposable fresh-install gate is a Windows-only native acceptance.');
+  const argv = process.argv.slice(2);
+  console.log('PREFLIGHT: expected duration 5-8 minutes on the disposable native Windows host.');
+  console.log('PREFLIGHT: disposable artifacts/roots include a temporary Release ZIP, extracted Release tree, installation/program tree, local-state/logs, shortcut, and npm cache; all are removed during gate cleanup.');
+  console.log('PREFLIGHT: external services are the npm registry for release-owned npm ci and local loopback DSH Web/MCP probes; no WinGet or system-prerequisite mutation is performed.');
+  const sourceRoot = resolve(requiredOption(argv, 'source-root'));
+  const desktopHostRoot = resolve(requiredOption(argv, 'desktop-host-root'));
+  const requestedBun = optionalOption(argv, 'bun-executable');
+  const bunExecutable = requestedBun ? resolve(requestedBun) : process.execPath;
+  const sourceEnv = process.env;
+  const prerequisites = await verifyWindowsPrerequisites({ platform: 'win32', env: sourceEnv });
+  if (!prerequisites.ok) {
+    throw new Error(`Disposable gate requires already-installed external prerequisites (${prerequisites.missing.join(', ')}); no WinGet installation is attempted.`);
   }
-  await verifyInstalledRuntimes(installedRoot, bunExecutable);
+  const nodeExecutable = prerequisites.executablePaths.node ?? await resolveInstalledNode(sourceEnv);
+  const npmExecutable = prerequisites.executablePaths.npm;
+  const pwshExecutable = await resolveWindowsPwsh({ platform: 'win32', env: sourceEnv });
+  if (!pwshExecutable || basename(pwshExecutable).toLowerCase() !== 'pwsh.exe' || /[\\/]WindowsApps[\\/]pwsh\.exe$/i.test(pwshExecutable)) {
+    throw new Error(`The disposable gate requires the repository-resolved native PowerShell 7 executable; got ${pwshExecutable ?? 'not found'}.`);
+  }
   const root = await mkdtemp(join(tmpdir(), 'dsh-rpgmaker-phase7-installed-'));
-  const env = cleanEnvironment(root, bunExecutable);
-  const mutableRoot = join(env.LOCALAPPDATA, 'BaiheStudio', 'DSH-RPGMaker-MV');
-  const dshHome = join(mutableRoot, 'state');
-  const neutralLanding = join(installedRoot, 'neutral');
-  const workspace = await makeWorkspace(root);
-  const launchCmd = join(installedRoot, 'Launch.cmd');
-  const active: StartedProcess[] = [];
+  const targetEnv = cleanEnvironment(root, nodeExecutable);
+  const installationRoot = join(root, 'installation');
+  const localStateRoot = join(root, 'local-state');
+  const shortcutPath = join(root, 'shortcut', 'RPG Maker Agent.lnk');
+  const releaseArchive = join(root, 'release.zip');
+  const extractedRelease = join(root, 'release');
+  const programRoot = join(installationRoot, 'program');
+  const dshHome = join(localStateRoot, 'state');
   const startedAt = Date.now();
   let primaryFailure: unknown;
-  let primaryFailed = false;
   let cleanupFailure: Error | undefined;
 
   try {
-    await mkdir(neutralLanding, { recursive: true });
-    const firstStarted = startInstalledLaunch(launchCmd, installedRoot, env);
-    active.push(firstStarted);
-    const firstLaunch = await waitForLaunchReady(firstStarted, installedRoot, neutralLanding, env);
-    const firstProfile = await verifyManagedWebProfile({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
-    assert.equal(firstProfile.valid, true, 'first installed workspace MCP bundle verification failed');
-    const firstPortClosed = await stopInstalledLaunch(firstStarted, env);
-    assert.equal(firstPortClosed, true, 'first installed Launch.cmd teardown did not terminate its process tree and close the fixed web port');
-    active.splice(active.indexOf(firstStarted), 1);
+    const archive = await buildReleaseZip({
+      sourceRoot,
+      outputZip: releaseArchive,
+      platform: 'win32',
+      env: sourceEnv,
+      desktopHostRoot,
+      requireDesktopHost: true,
+      bunExecutable
+    });
+    const inspection = await inspectReleaseZip({ zipPath: archive, platform: 'win32', env: sourceEnv, requireDesktopHost: true });
+    assert.equal(inspection.valid, true, `fresh Release inspection failed: ${inspection.missing.join(', ')}`);
+    await extractRelease(archive, extractedRelease, sourceEnv);
+    const installerBuildEvidence = JSON.parse(await (await import('node:fs/promises')).readFile(join(extractedRelease, 'installer-build.json'), 'utf8')) as { capacity?: { formula?: string; reserveBytes?: number; measuredPayloadBytes?: number; nativeInstallerBytes?: number } };
+    assert.equal(installerBuildEvidence.capacity?.formula, INSTALLATION_CAPACITY_FORMULA);
+    assert.equal(installerBuildEvidence.capacity?.reserveBytes, INSTALLATION_STAGING_HEADROOM_BYTES);
+    assert.ok((installerBuildEvidence.capacity?.measuredPayloadBytes ?? 0) > 0);
+    assert.ok((installerBuildEvidence.capacity?.nativeInstallerBytes ?? 0) > 0);
+    const installer = join(extractedRelease, INSTALLER_EXECUTABLE_NAME);
+    assert.equal(await exists(installer), true, 'fresh Release did not contain installer.exe');
+    const host = await verifyDesktopHostPayload(join(extractedRelease, DESKTOP_HOST_PAYLOAD_RELATIVE));
+    assert.equal(host.valid, true, `fresh Release desktop host verification failed: ${host.errors.join('; ')}`);
+    const help = await runCommand(installer, ['--help'], { cwd: extractedRelease, env: targetEnv, platform: 'win32', timeoutMs: 60_000 });
+    assert.equal(help.exitCode, 0, `standalone installer help failed: ${diagnostic(help.stderr || help.stdout, targetEnv)}`);
+    assert.equal(/Bun was not found|Node was not found/i.test(`${help.stdout}\n${help.stderr}`), false, 'standalone help reported a runtime prerequisite failure');
 
-    const profilePackage = join(dshHome, 'profiles', 'web', 'node_modules', '@baihestudio', 'dsh-workspace-mcp');
-    await rm(profilePackage, { recursive: true, force: true });
-    const brokenProfile = await verifyManagedWebProfile({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
-    assert.equal(brokenProfile.valid, false, 'deliberate workspace MCP bundle break was not detected');
+    // The batch wrapper must classify its launch context itself.  Exercise the
+    // helper's deterministic seam for both Explorer and terminal parents, then
+    // invoke Install.cmd through a redirected terminal-style child.  A
+    // successful terminal invocation must return without an unconditional
+    // pause; an Explorer launch is the only context that preserves the screen.
+    const windowsPowerShell51 = join(sourceEnv.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const contextHelper = join(extractedRelease, 'scripts', 'detect-explorer-launch.ps1');
+    const explorerContext = await runCommand(windowsPowerShell51, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', contextHelper, '-ParentProcessName', 'explorer.exe'], { cwd: extractedRelease, env: targetEnv, platform: 'win32', timeoutMs: 30_000 });
+    const terminalContext = await runCommand(windowsPowerShell51, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', contextHelper, '-ParentProcessName', 'cmd.exe'], { cwd: extractedRelease, env: targetEnv, platform: 'win32', timeoutMs: 30_000 });
+    assert.equal(explorerContext.exitCode, 0, 'Explorer launch context was not recognized');
+    assert.equal(terminalContext.exitCode, 1, 'terminal launch context was incorrectly classified as Explorer');
+    const wrapperHelp = await runCommand(join(extractedRelease, 'Install.cmd'), ['--help'], { cwd: extractedRelease, env: targetEnv, platform: 'win32', timeoutMs: 60_000 });
+    assert.equal(wrapperHelp.exitCode, 0, `terminal Install.cmd help failed or paused: ${diagnostic(wrapperHelp.stderr || wrapperHelp.stdout, targetEnv)}`);
 
-    const repairStarted = startInstalledLaunch(launchCmd, installedRoot, env);
-    active.push(repairStarted);
-    const repairLaunch = await waitForLaunchReady(repairStarted, installedRoot, neutralLanding, env);
-    const repairedProfile = await verifyManagedWebProfile({ platform: 'win32', env, dshHome, programRoot: installedRoot, mutableRoot, runtimeDir: join(installedRoot, 'runtime', 'dsh') });
-    assert.equal(repairedProfile.valid, true, 'repaired installed workspace MCP bundle verification failed');
-    const repairPortClosed = await stopInstalledLaunch(repairStarted, env);
-    assert.equal(repairPortClosed, true, 'repair installed Launch.cmd teardown did not terminate its process tree and close the fixed web port');
-    active.splice(active.indexOf(repairStarted), 1);
+    const install = await runInstaller(installer, [
+      'install', '--release-root', extractedRelease,
+      '--installation-root', installationRoot,
+      '--local-state-root', localStateRoot,
+      '--start-menu-shortcut', shortcutPath,
+      '--node-executable', nodeExecutable,
+      ...(npmExecutable ? ['--npm-executable', npmExecutable] : []),
+      ...(pwshExecutable ? ['--pwsh-executable', pwshExecutable] : []),
+      '--plain', '--non-interactive'
+    ], extractedRelease, targetEnv);
+    assert.match(install.stdout, /INSTALL .*succeeded/);
+    const firstReceipt = await readInstallationReceipt(localStateRoot);
+    assert.ok(firstReceipt, 'fresh install did not commit an installation receipt');
+    assert.equal(firstReceipt.installationRoot.toLowerCase(), installationRoot.toLowerCase());
+    await verifyInstalledRuntimes(programRoot, nodeExecutable, npmExecutable);
+    const firstProfile = await verifyManagedWebProfile({ platform: 'win32', env: targetEnv, dshHome, installationRoot, mutableRoot: localStateRoot, runtimeDir: join(programRoot, 'runtime', 'dsh') });
+    assert.equal(firstProfile.valid, true, `fresh installed Web profile failed: ${firstProfile.errors.join('; ')}`);
+    const firstHost = await verifyDesktopHostPayload(join(programRoot, DESKTOP_HOST_PAYLOAD_RELATIVE));
+    assert.equal(firstHost.valid, true, `installed desktop host failed: ${firstHost.errors.join('; ')}`);
+    assert.equal(await exists(shortcutPath), true, 'fresh install did not create the owned shortcut');
 
-    const agentEvidence = await runInstalledMount(installedRoot, dshHome, neutralLanding, workspace, env, nodeExecutable);
-    const directCalls = agentEvidence.directAgentToolCalls as Array<{ isError?: boolean; valueObserved?: boolean }> | undefined;
-    const processEvidence = agentEvidence.processEvidence as { children?: unknown[]; shellProcesses?: unknown[] } | undefined;
-    assert.equal(agentEvidence.ok, true, 'installed Agent probe reported failure');
-    assert.equal(agentEvidence.stableTools, 41, 'installed Agent probe exposed an unexpected stable tool count');
-    assert.equal(directCalls?.length, 2, 'installed Agent probe did not record both direct tool calls');
-    assert.equal(directCalls?.some((call) => call.isError !== false || call.valueObserved !== true), false, 'installed Agent direct tool calls did not both succeed and observe values');
-    assert.equal(processEvidence?.children?.length, 1, 'installed Agent probe did not observe exactly one RPG Maker child');
-    assert.equal(processEvidence?.shellProcesses?.length, 0, 'installed Agent probe observed an unexpected shell process');
+    // Delete only the gate-owned replaceable tree.  The receipt remains in
+    // local state, so the next invocation must classify itself as repair and
+    // reuse the recorded root without relocation.
+    await rm(programRoot, { recursive: true, force: true });
+    const repair = await runInstaller(installer, [
+      'install', '--release-root', extractedRelease,
+      '--local-state-root', localStateRoot,
+      '--start-menu-shortcut', shortcutPath,
+      '--node-executable', nodeExecutable,
+      ...(npmExecutable ? ['--npm-executable', npmExecutable] : []),
+      ...(pwshExecutable ? ['--pwsh-executable', pwshExecutable] : []),
+      '--plain', '--non-interactive'
+    ], extractedRelease, targetEnv);
+    assert.match(repair.stdout, /INSTALL .*succeeded/);
+    const secondReceipt = await readInstallationReceipt(localStateRoot);
+    assert.ok(secondReceipt, 'repair did not preserve the installation receipt');
+    assert.equal(secondReceipt.installationRoot.toLowerCase(), firstReceipt.installationRoot.toLowerCase());
+    await verifyInstalledRuntimes(programRoot, nodeExecutable, npmExecutable);
+    const repairedProfile = await verifyManagedWebProfile({ platform: 'win32', env: targetEnv, dshHome, installationRoot, mutableRoot: localStateRoot, runtimeDir: join(programRoot, 'runtime', 'dsh') });
+    assert.equal(repairedProfile.valid, true, `receipt-driven repair Web profile failed: ${repairedProfile.errors.join('; ')}`);
+
+    const evidenceDir = join(localStateRoot, 'logs', 'install-runs');
+    const evidenceEntries = await readdir(evidenceDir);
+    const timingFiles = evidenceEntries.filter((entry) => entry.endsWith('.json'));
+    const logFiles = evidenceEntries.filter((entry) => entry.endsWith('.log'));
+    assert.equal(timingFiles.length, 2, 'fresh install and repair did not leave exactly two timing records');
+    assert.equal(logFiles.length, 2, 'fresh install and repair did not leave exactly two diagnostic logs');
+    const timings = await Promise.all(timingFiles.map(async (entry) => JSON.parse(await (await import('node:fs/promises')).readFile(join(evidenceDir, entry), 'utf8')) as { operation?: string; finalStatus?: string; installationRoot?: string; phases?: unknown[]; productVersion?: string; runtimeVersion?: string; capacity?: { formula?: string; headroomBytes?: number; requiredBytes?: number; availableBytes?: number } }));
+    assert.equal(timings.every((item) => item.finalStatus === 'succeeded' && item.installationRoot?.toLowerCase() === installationRoot.toLowerCase() && (item.phases?.length ?? 0) >= 8), true, 'timing records did not capture all successful phases and the selected root');
+    assert.equal(timings.every((item) => item.productVersion === PRODUCT_VERSION && item.runtimeVersion === DSH_VERSION), true, 'timing records did not keep product and runtime versions distinct');
+    assert.equal(timings.every((item) => item.capacity?.formula === INSTALLATION_CAPACITY_FORMULA && item.capacity.headroomBytes === INSTALLATION_STAGING_HEADROOM_BYTES && (item.capacity.requiredBytes ?? 0) > 0), true, 'timing records did not capture installation capacity evidence');
+    assert.equal(timings.some((item) => item.operation === 'repair'), true, 'second timing record was not classified as repair');
+    assert.equal(await exists(join(programRoot, 'runtime', 'bun')), false, 'stale Bun runtime directory was installed');
+    assert.equal(await exists(join(programRoot, 'runtime', 'bun.lock')), false, 'stale Bun lock was installed');
+    const workspace = await makeWorkspace(root);
+    await mkdir(join(programRoot, 'neutral'), { recursive: true });
+    const agentEvidence = await runInstalledMount(programRoot, dshHome, join(programRoot, 'neutral'), workspace, targetEnv, nodeExecutable);
+    assert.equal(agentEvidence.ok, true, 'installed Node-based Agent probe reported failure');
 
     console.log(diagnostic(JSON.stringify({
       ok: true,
       gate: 'phase7-windows-installed',
       dsh: DSH_VERSION,
-      provisioned: {
-        installedRoot,
-        dshHome,
-        workspace,
-        neutralLanding,
-        fixedWeb: `${WINDOWS_DSH_HOST}:${WINDOWS_DSH_PORT}`
-      },
-      firstLaunch: {
-        command: 'Launch.cmd',
-        durationMs: firstLaunch.durationMs,
-        port: firstLaunch.port,
-        launcher: firstLaunch.launcher,
-        profile: { valid: firstProfile.valid, bundleOccurrences: firstProfile.bundles.filter((name) => name === WORKSPACE_MCP_PACKAGE).length }
-      },
-      repair: {
-        linkBroken: !brokenProfile.valid,
-        brokenProfileErrors: brokenProfile.errors.length,
-        command: 'Launch.cmd',
-        durationMs: repairLaunch.durationMs,
-        port: repairLaunch.port,
-        launcher: repairLaunch.launcher,
-        profile: { valid: repairedProfile.valid, bundleOccurrences: repairedProfile.bundles.filter((name) => name === WORKSPACE_MCP_PACKAGE).length }
-      },
+      externalPrerequisites: prerequisites.checks.map((check) => ({ id: check.id, version: check.version, executable: check.executable })),
+      provisioned: { sourceRoot, releaseArchive, extractedRelease, installationRoot, programRoot, localStateRoot, dshHome, shortcutPath, npmCache: targetEnv.NPM_CONFIG_CACHE },
+      standalone: { installer, helpExitCode: help.exitCode, wrapperHelpExitCode: wrapperHelp.exitCode, explorerContextExitCode: explorerContext.exitCode, terminalContextExitCode: terminalContext.exitCode, nodeOnTargetPath: false, bunOnTargetPath: false },
+      install: { terminalEvent: install.stdout.split(/\r?\n/).find((line) => line.startsWith('INSTALL ')), receipt: firstReceipt },
+      repair: { terminalEvent: repair.stdout.split(/\r?\n/).find((line) => line.startsWith('INSTALL ')), receipt: secondReceipt },
+      runtimes: { dsh: true, mcporter: true, rpgmakerMcp: true, pnpm: true, profile: repairedProfile.valid, host: firstHost.valid, shortcut: true },
+      timing: { files: timingFiles, logs: logFiles },
       agentEvidence,
-      shutdown: { firstPortClosed, repairPortClosed },
-      durationMs: Date.now() - startedAt
+      durationMs: Date.now() - startedAt,
+      cleanMachinePrerequisiteInstall: 'not run; requires a separate disposable Windows VM'
     })));
   } catch (error) {
     primaryFailure = error;
-    primaryFailed = true;
   } finally {
-    const cleanupErrors: string[] = [];
-    for (const process of [...active].reverse()) {
-      try {
-        const portClosed = await stopInstalledLaunch(process, env);
-        if (!portClosed) throw new Error('fixed web port remained open after Launch.cmd process-tree termination');
-      } catch (error) {
-        cleanupErrors.push(`Launch.cmd cleanup for PID ${process.child.pid ?? 'unknown'} failed: ${errorMessage(error)}`);
-      }
-    }
     try {
       await cleanupInstalledGateWorkspace(root, { pwshExecutable });
     } catch (error) {
-      cleanupErrors.push(errorMessage(error));
-    }
-    if (cleanupErrors.length > 0) {
-      const message = diagnostic(`installed gate cleanup failed: ${cleanupErrors.join('; ')}`);
-      console.error(message);
-      if (!primaryFailed) cleanupFailure = new Error(message);
+      cleanupFailure = new Error(diagnostic(`disposable gate cleanup failed: ${errorMessage(error)}`));
     }
   }
 
-  if (primaryFailed) throw primaryFailure;
+  if (primaryFailure) throw primaryFailure;
   if (cleanupFailure) throw cleanupFailure;
 }
 

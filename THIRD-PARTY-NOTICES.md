@@ -1,5 +1,10 @@
 # Third-party notices
 
+## `@clack/prompts@1.7.0`
+
+The standalone installer uses Clack's MIT-licensed terminal spinner and prompt
+renderer. Source and license: https://github.com/bombshell-dev/clack.
+
 ## `@deepseek-ai/dsh-tools@0.1.1-rc.2`
 
 The workspace Agent uses the official DeepSeek Harness TypeScript SDK renderer

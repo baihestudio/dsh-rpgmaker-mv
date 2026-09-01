@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
@@ -55,7 +55,8 @@ async function makeMZFixture(root: string): Promise<string> {
 
 const root = await mkdtemp(join(tmpdir(), 'dsh-rpgmaker-phase2-real-'));
 const dshHome = join(root, 'state');
-const programRoot = join(root, 'program');
+const installationRoot = join(root, 'installation');
+const programRoot = join(installationRoot, 'program');
 const runtimeDir = join(programRoot, 'runtime', 'dsh');
 const mcporterRuntimeDir = join(programRoot, 'runtime', 'mcporter');
 const rpgmakerRuntimeDir = join(programRoot, 'runtime', 'mcp');
@@ -68,9 +69,10 @@ for (const key of ['PATH', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TE
 safeEnv.DSH_HOME = dshHome;
 
 try {
+  await cp(join(process.cwd(), 'runtime-manifests'), join(programRoot, 'runtime-manifests'), { recursive: true });
   const project = await makeFixture(root);
   const mzProject = await makeMZFixture(root);
-  const boot = await bootstrapRuntime({ platform: 'win32', env: safeEnv, dshHome, programRoot, mutableRoot: root, runtimeDir });
+  const boot = await bootstrapRuntime({ platform: 'win32', env: safeEnv, dshHome, installationRoot, mutableRoot: root, runtimeDir });
   assert.equal(boot.verification.dshPackageVersion, DSH_VERSION);
   const dshExecutable = await findDshExecutable(runtimeDir, 'win32');
   if (!dshExecutable) throw new Error('Pinned DSH executable was not found after bootstrap.');
@@ -82,7 +84,7 @@ try {
     platform: 'win32',
     env: safeEnv,
     dshHome,
-    programRoot,
+    installationRoot,
     mutableRoot: root,
     runtimeDir,
     mcporterRuntimeDir,
@@ -108,7 +110,7 @@ try {
     platform: 'win32',
     env: safeEnv,
     dshHome,
-    programRoot,
+    installationRoot,
     mutableRoot: root,
     runtimeDir,
     mcporterRuntimeDir,

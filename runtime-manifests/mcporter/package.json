@@ -1,0 +1,7 @@
+{
+  "name": "dsh-rpgmaker-mcporter-runtime",
+  "private": true,
+  "dependencies": {
+    "mcporter": "0.12.3"
+  }
+}

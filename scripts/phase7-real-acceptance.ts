@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { strict as assert } from 'node:assert';
@@ -18,9 +18,11 @@ for (const key of ['PATH', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TE
 }
 const dshHome = join(root, 'state');
 safeEnv.DSH_HOME = dshHome;
+const installationRoot = join(root, 'installation');
+const programRoot = join(installationRoot, 'program');
 const project = join(root, '选择 project with spaces');
-const runtime = join(root, 'program', 'runtime', 'dsh');
-const mcpRuntime = join(root, 'program', 'runtime', 'mcp');
+const runtime = join(programRoot, 'runtime', 'dsh');
+const mcpRuntime = join(programRoot, 'runtime', 'mcp');
 
 function json(value: unknown): string {
   return `${JSON.stringify(value)}\n`;
@@ -53,8 +55,9 @@ async function mount(compositionPath: string, preset: string, dshLib: string, en
 }
 
 try {
+  await cp(join(process.cwd(), 'runtime-manifests'), join(programRoot, 'runtime-manifests'), { recursive: true });
   await makeFixture();
-  const boot = await bootstrapRuntime({ platform: 'win32', dshHome, runtimeDir: runtime, programRoot: join(root, 'program'), mutableRoot: root, env: safeEnv });
+  const boot = await bootstrapRuntime({ platform: 'win32', dshHome, installationRoot, runtimeDir: runtime, mutableRoot: root, env: safeEnv });
   assert.equal(boot.verification.dshPackageVersion, DSH_VERSION);
   const dsh = await findDshExecutable(runtime, 'win32');
   assert.ok(dsh, 'real DSH executable not found after pinned install');

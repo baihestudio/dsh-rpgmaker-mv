@@ -11,7 +11,8 @@ import { pathToFileURL } from 'node:url';
 
 function windowsProgramRoot(env: Record<string, string | undefined>): string {
   const localAppData = env.LOCALAPPDATA ?? join(env.USERPROFILE ?? process.cwd(), 'AppData', 'Local');
-  return resolve(env.DSH_RPGMAKER_PROGRAM_ROOT ?? join(localAppData, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV'));
+  const installationRoot = env.DSH_RPGMAKER_INSTALLATION_ROOT ?? join(localAppData, 'Programs', 'BaiheStudio', 'DSH-RPGMaker-MV');
+  return resolve(join(installationRoot, 'program'));
 }
 
 export interface ProductLauncherResult {

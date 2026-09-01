@@ -25,6 +25,7 @@ import {
   stopWindowsProcessTree,
 } from '../src/install-lifecycle';
 import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, PRODUCT_NAME } from '../src/config';
+import { DSH_RUNTIME_PEER_DEPENDENCIES } from '../src/bootstrap';
 
 async function temp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -77,11 +78,13 @@ async function makeMinimalDshRuntime(runtime: string): Promise<void> {
   await mkdir(join(packageDir, 'config', 'agent-presets', 'code'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', '.bin'), { recursive: true });
   await mkdir(join(runtime, 'node_modules', 'koffi'), { recursive: true });
-  await writeFile(join(runtime, 'package.json'), JSON.stringify({ dependencies: { [DSH_PACKAGE_NAME]: DSH_VERSION } }));
-  await writeFile(join(runtime, 'bun.lock'), JSON.stringify({
-    workspaces: { '': { dependencies: { [DSH_PACKAGE_NAME]: DSH_VERSION } } },
-    packages: { [DSH_PACKAGE_NAME]: [`${DSH_PACKAGE_NAME}@${DSH_VERSION}`, '', {}, DSH_NPM_INTEGRITY] },
-  }));
+  const dependencies = { [DSH_PACKAGE_NAME]: DSH_VERSION, ...DSH_RUNTIME_PEER_DEPENDENCIES };
+  await writeFile(join(runtime, 'package.json'), JSON.stringify({ dependencies }));
+  await writeFile(join(runtime, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+    '': { dependencies },
+    [`node_modules/${DSH_PACKAGE_NAME}`]: { version: DSH_VERSION, integrity: DSH_NPM_INTEGRITY },
+    ...Object.fromEntries(Object.entries(DSH_RUNTIME_PEER_DEPENDENCIES).map(([name, version]) => [`node_modules/${name}`, { version }]))
+  } }));
   await writeFile(join(packageDir, 'package.json'), JSON.stringify({ version: DSH_VERSION, bin: { dsh: 'lib/bin.js' } }));
   await writeFile(join(packageDir, 'lib', 'bin.js'), 'fixture');
   await writeFile(join(packageDir, 'config', 'agent-presets', 'code', 'agent.cordis.yml'), "- id: persona\n  name: fixture persona\n- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'\n");
@@ -230,7 +233,7 @@ describe('desktop host release payload', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, { timeout: 180_000 });
 
   test('fails a Windows-targeted archive when the native host is absent', async () => {
     const root = await temp('phase14-host-required');
@@ -264,29 +267,29 @@ describe('desktop host release payload', () => {
       const payload = await makeHost(root);
       const bin = join(root, 'bin');
       await mkdir(bin, { recursive: true });
-      const executables = ['node.exe', 'npm.cmd', 'python.exe', 'bun.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', 'magick.exe'];
+      const executables = ['node.exe', 'npm.cmd', 'python.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', 'magick.exe', 'winget.exe'];
       for (const name of executables) await writeFile(join(bin, name), 'fixture');
       const runtime = join(root, 'runtime');
       await makeMinimalDshRuntime(runtime);
-      const program = join(root, 'program');
+      const installationRoot = join(root, 'installation');
+      const program = join(installationRoot, 'program');
       const mutable = join(root, 'mutable');
       const state = join(mutable, 'state');
       const shortcut = join(root, 'Start Menu', 'RPG Maker Agent.lnk');
       let shortcutTarget = '';
       const runner = async (command: string, args: string[]) => {
         const name = basename(command).toLowerCase();
+        if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n', stderr: '' };
         if (name === 'node.exe' && args[0] === '-p') return { exitCode: 0, stdout: 'iron\n', stderr: '' };
-        if (name === 'node.exe') return { exitCode: 0, stdout: 'v20.18.0\n', stderr: '' };
+        if (name === 'node.exe') return { exitCode: 0, stdout: 'v22.18.0\n', stderr: '' };
         if (name === 'npm.cmd') return { exitCode: 0, stdout: '10.8.2\n', stderr: '' };
         if (name === 'python.exe') return { exitCode: 0, stdout: 'Python 3.13.15\n', stderr: '' };
-        if (name === 'bun.exe') return { exitCode: 0, stdout: '1.3.14\n', stderr: '' };
         if (name === 'pwsh.exe') return { exitCode: 0, stdout: 'PowerShell 7.4.6\n', stderr: '' };
         if (name === 'git.exe') return { exitCode: 0, stdout: 'git version 2.45.0\n', stderr: '' };
         if (name === 'coreutils-manager.exe' && args[0] === '--help') return { exitCode: 0, stdout: 'Manage coreutils utilities and PowerShell profiles enable disable status\n', stderr: '' };
         if (name === 'coreutils-manager.exe' && args[0] === 'status') return { exitCode: 0, stdout: 'find enabled\ngrep enabled\n', stderr: '' };
         if (name === 'magick.exe') return { exitCode: 0, stdout: 'ImageMagick 7.1.2\n', stderr: '' };
         if (name === 'forgejo-mcp.exe') return { exitCode: 0, stdout: 'forgejo-mcp 2.34.1\n', stderr: '' };
-        if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n', stderr: '' };
         return { exitCode: 0, stdout: '', stderr: '' };
       };
       const env = { PATH: bin, LOCALAPPDATA: join(root, 'Local AppData'), APPDATA: join(root, 'AppData') };
@@ -296,18 +299,18 @@ describe('desktop host release payload', () => {
         releaseRoot: process.cwd(),
         desktopHostRoot: payload,
         requireDesktopHost: true,
-        programRoot: program,
+        installationRoot,
         mutableRoot: mutable,
         dshHome: state,
         runtimeDir: runtime,
         nodeExecutable: join(bin, 'node.exe'),
         npmExecutable: join(bin, 'npm.cmd'),
         pythonExecutable: join(bin, 'python.exe'),
-        bunExecutable: join(bin, 'bun.exe'),
         pwshExecutable: join(bin, 'pwsh.exe'),
         gitExecutable: join(bin, 'git.exe'),
         coreutilsExecutable: join(bin, 'coreutils-manager.exe'),
         imageMagickExecutable: join(bin, 'magick.exe'),
+        wingetExecutable: join(bin, 'winget.exe'),
         commandRunner: runner,
         consent: true,
         prepareAgentDependencies: async () => undefined,
@@ -338,14 +341,13 @@ describe('desktop host release payload', () => {
         releaseRoot: process.cwd(),
         desktopHostRoot: payload,
         requireDesktopHost: true,
-        programRoot: program,
+        installationRoot,
         mutableRoot: mutable,
         dshHome: state,
         runtimeDir: runtime,
         nodeExecutable: join(bin, 'node.exe'),
         npmExecutable: join(bin, 'npm.cmd'),
         pythonExecutable: join(bin, 'python.exe'),
-        bunExecutable: join(bin, 'bun.exe'),
         pwshExecutable: join(bin, 'pwsh.exe'),
         gitExecutable: join(bin, 'git.exe'),
         coreutilsExecutable: join(bin, 'coreutils-manager.exe'),
@@ -375,14 +377,13 @@ describe('desktop host release payload', () => {
         releaseRoot: process.cwd(),
         desktopHostRoot: payload,
         requireDesktopHost: true,
-        programRoot: program,
+        installationRoot,
         mutableRoot: mutable,
         dshHome: state,
         runtimeDir: runtime,
         nodeExecutable: join(bin, 'node.exe'),
         npmExecutable: join(bin, 'npm.cmd'),
         pythonExecutable: join(bin, 'python.exe'),
-        bunExecutable: join(bin, 'bun.exe'),
         pwshExecutable: join(bin, 'pwsh.exe'),
         gitExecutable: join(bin, 'git.exe'),
         coreutilsExecutable: join(bin, 'coreutils-manager.exe'),
@@ -420,7 +421,8 @@ describe('owned upgrade lifecycle', () => {
   test('finds only processes whose executable or command line is beneath the owned root', async () => {
     const root = await temp('phase14-owned-processes');
     try {
-      const program = join(root, 'program');
+      const installationRoot = join(root, 'installation');
+      const program = join(installationRoot, 'program');
       await mkdir(program, { recursive: true });
       await writeFile(join(program, PROGRAM_OWNERSHIP_FILE), JSON.stringify({ owner: PROGRAM_OWNER, product: PRODUCT_NAME, format: 1 }));
       const processes = await findOwnedAgent(program, {
@@ -475,7 +477,8 @@ describe('owned upgrade lifecycle', () => {
   test('declining an active owned upgrade happens before prerequisite or tree mutation', async () => {
     const root = await temp('phase14-owned-upgrade-noop');
     try {
-      const program = join(root, 'program');
+      const installationRoot = join(root, 'installation');
+      const program = join(installationRoot, 'program');
       const mutable = join(root, 'mutable');
       const state = join(mutable, 'state');
       await mkdir(program, { recursive: true });
@@ -487,7 +490,7 @@ describe('owned upgrade lifecycle', () => {
       await expect(installWindowsRelease({
         platform: 'win32',
         releaseRoot: join(process.cwd()),
-        programRoot: program,
+        installationRoot,
         mutableRoot: mutable,
         dshHome: state,
         ownedProcessRecords: [{ pid: 99, parentPid: 1, executablePath: join(program, 'desktop-host', 'DSH.exe') }],

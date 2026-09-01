@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$bun = Get-Command bun.exe -ErrorAction SilentlyContinue
-if (-not $bun) { throw 'Bun was not found. Run Install.cmd or install Bun, then retry.' }
-& $bun.Source run (Join-Path $root 'src\cli.ts') bootstrap @RemainingArgs
+$installer = Join-Path $root 'installer.exe'
+if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'installer.exe was not found. Repair the Release installation first.' }
+& $installer bootstrap @RemainingArgs
 exit $LASTEXITCODE

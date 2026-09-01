@@ -1,0 +1,7 @@
+{
+  "name": "dsh-rpgmaker-pnpm-runtime",
+  "private": true,
+  "dependencies": {
+    "pnpm": "10.15.1"
+  }
+}

@@ -1,10 +1,9 @@
 @echo off
 setlocal DisableDelayedExpansion
 set "ROOT=%~dp0"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%uninstall.ps1" %*
-set "CODE=%ERRORLEVEL%"
-if not "%CODE%"=="0" (
-  echo Uninstall failed with exit code %CODE%.
-  pause
+if not exist "%ROOT%installer.exe" (
+  echo installer.exe is missing from this installation.
+  exit /b 2
 )
-exit /b %CODE%
+"%ROOT%installer.exe" uninstall %*
+exit /b %ERRORLEVEL%
