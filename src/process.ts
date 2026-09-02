@@ -57,6 +57,14 @@ function quoteWindowsCommandArgument(value: string): string {
   return `"${escaped}"`;
 }
 
+function windowsCommandInterpreter(env: Record<string, string | undefined>): string {
+  return env.ComSpec ?? env.COMSPEC ?? process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe';
+}
+
+function windowsCommandLine(command: string, args: readonly string[]): string {
+  return [quoteWindowsCommandArgument(command), ...args.map(quoteWindowsCommandArgument)].join(' ');
+}
+
 export function prepareProcessInvocation(
   command: string,
   args: string[],
@@ -64,9 +72,10 @@ export function prepareProcessInvocation(
   env: Record<string, string | undefined> = process.env
 ): ProcessInvocation {
   if (platform !== 'win32' || !/\.(?:cmd|bat)$/i.test(command)) return { command, args };
-  const comspec = env.ComSpec ?? env.COMSPEC ?? process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe';
-  const commandLine = [quoteWindowsCommandArgument(command), ...args.map(quoteWindowsCommandArgument)].join(' ');
-  return { command: comspec, args: ['/d', '/v:off', '/s', '/c', `"${commandLine}"`] };
+  return {
+    command: windowsCommandInterpreter(env),
+    args: ['/d', '/v:off', '/s', '/c', `"${windowsCommandLine(command, args)}"`]
+  };
 }
 
 export function prepareConsoleProcessInvocation(
@@ -77,14 +86,12 @@ export function prepareConsoleProcessInvocation(
 ): ProcessInvocation {
   if (platform !== 'win32') return prepareProcessInvocation(command, args, platform, env);
   const invocation = prepareProcessInvocation(command, args, platform, env);
-  const comspec = env.ComSpec ?? env.COMSPEC ?? process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe';
-  const commandLine = [quoteWindowsCommandArgument(invocation.command), ...invocation.args.map(quoteWindowsCommandArgument)].join(' ');
   return {
-    command: comspec,
+    command: windowsCommandInterpreter(env),
     // `start` is the supported cmd boundary that requests a distinct console
     // for a console application. `/wait` keeps lifecycle ownership with the
     // sidecar until the DSH process exits.
-    args: ['/d', '/v:off', '/s', '/c', `"start "DSH launch token" /wait ${commandLine}"`]
+    args: ['/d', '/v:off', '/s', '/c', `"start "DSH launch token" /wait ${windowsCommandLine(invocation.command, invocation.args)}"`]
   };
 }
 
