@@ -11,7 +11,7 @@ import { dirname, extname, join, resolve } from 'node:path';
 export const ELECTROBUN_HOST_COMMIT = '92427e72ae6b49e4d6046fa92a4d034f41b03f2f';
 export const ELECTROBUN_BUN_VERSION = '1.3.14';
 export const ELECTROBUN_PRODUCT_IDENTIFIER = 'dev.baihestudio.dsh-rpgmaker-mv';
-export const ELECTROBUN_PRODUCT_VERSION = '0.2.1';
+export const ELECTROBUN_PRODUCT_VERSION = '0.3.0';
 
 /** Relative directory used inside a Release ZIP and the installed program. */
 export const DESKTOP_HOST_PAYLOAD_RELATIVE = 'desktop-host';
