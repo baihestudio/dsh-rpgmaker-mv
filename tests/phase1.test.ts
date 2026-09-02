@@ -10,7 +10,7 @@ import { launchProject } from '../src/launcher';
 import { acquireHarnessLock } from '../src/lock';
 import { runCli } from '../src/cli';
 import { installerArguments } from '../src/installer';
-import { childExitCode, executeCommand, prepareProcessInvocation, ProcessTerminationError } from '../src/process';
+import { childExitCode, executeCommand, prepareConsoleProcessInvocation, prepareProcessInvocation, ProcessTerminationError } from '../src/process';
 import { validateMvProject } from '../src/project';
 
 async function disposableDirectory(prefix: string): Promise<string> {
@@ -619,7 +619,7 @@ describe('doctor and launcher seams', () => {
     try {
       const dsh = join(root, 'dsh.exe');
       await writeFile(dsh, '');
-      let launched: { command: string; args: string[]; cwd?: string; env?: Record<string, string | undefined> } | undefined;
+      let launched: { command: string; args: string[]; cwd?: string; env?: Record<string, string | undefined>; newConsole?: boolean } | undefined;
       const child = makeTrackedChild();
       const result = await launchProject({
         platform: 'win32',
@@ -627,14 +627,15 @@ describe('doctor and launcher seams', () => {
         dshExecutable: dsh,
         env: {},
         dshArgs: ['--test'],
+        newConsole: true,
         spawnInteractive: (command, args, options) => {
-          launched = { command, args, cwd: options.cwd, env: options.env };
+          launched = { command, args, cwd: options.cwd, env: options.env, newConsole: options.newConsole };
           return child;
         }
       });
       const neutral = join(root, 'program', 'neutral');
       expect(result.cwd).toBe(neutral);
-      expect(launched).toMatchObject({ command: dsh, args: ['--test'], cwd: neutral });
+      expect(launched).toMatchObject({ command: dsh, args: ['--test'], cwd: neutral, newConsole: true });
       expect(launched!.env?.DSH_HOME).toBe(join(root, 'dsh-home'));
       expect(result.onboardingMessage).toBeDefined();
       child.exitCode = 0;
@@ -773,5 +774,21 @@ describe('doctor and launcher seams', () => {
     expect(invocation.args.slice(0, 4)).toEqual(['/d', '/v:off', '/s', '/c']);
     expect(invocation.args[4]).toContain('100^%\\!important!\\选择 project');
     expect(invocation.args[4]).not.toContain('call ');
+  });
+
+  test('Windows token console launch uses a waiting start wrapper', () => {
+    const command = String.raw`C:\Program Files\nodejs\node.exe`;
+    const entrypoint = String.raw`C:\RPG Maker Agent\program\runtime\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js`;
+    const invocation = prepareConsoleProcessInvocation(
+      command,
+      [entrypoint, '--web', '--host', '127.0.0.1'],
+      'win32',
+      { ComSpec: String.raw`C:\Windows\System32\cmd.exe` }
+    );
+    expect(invocation.command).toBe(String.raw`C:\Windows\System32\cmd.exe`);
+    expect(invocation.args.slice(0, 4)).toEqual(['/d', '/v:off', '/s', '/c']);
+    expect(invocation.args[4]).toContain('start "DSH launch token" /wait');
+    expect(invocation.args[4]).toContain(`"${command}"`);
+    expect(invocation.args[4]).toContain(`"${entrypoint}"`);
   });
 });

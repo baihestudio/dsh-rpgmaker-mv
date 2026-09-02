@@ -8,7 +8,7 @@ import { dirname, extname, join, resolve } from 'node:path';
  * Keep these facts in one place so packaging and installation cannot silently
  * pair a host from a different contract.
  */
-export const ELECTROBUN_HOST_COMMIT = '03543ce0deeaa8c322dfbe2b5e45c03fd7c1da33';
+export const ELECTROBUN_HOST_COMMIT = '92427e72ae6b49e4d6046fa92a4d034f41b03f2f';
 export const ELECTROBUN_BUN_VERSION = '1.3.14';
 export const ELECTROBUN_PRODUCT_IDENTIFIER = 'dev.baihestudio.dsh-rpgmaker-mv';
 export const ELECTROBUN_PRODUCT_VERSION = '0.2.1';

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -68,6 +68,7 @@ describe('Electrobun RPG Maker adapter', () => {
       bindWeb: true,
       webHost: '127.0.0.1',
       webPort: 3081,
+      newConsole: true,
     });
     // The product launcher turns this explicit sidecar setting into DSH's
     // `--no-open` argument; the native WebView remains the sole UI opener.
@@ -160,8 +161,32 @@ describe('Electrobun RPG Maker adapter', () => {
       sidecar: { entrypoint: ELECTROBUN_SIDECAR, args: [] },
       readiness: { url: 'http://127.0.0.1:3081/' },
       navigation: { url: 'http://127.0.0.1:3081/' },
+      authentication: { tokenExchangeUrl: 'http://127.0.0.1:3081/' },
       supervisor: { executable: ELECTROBUN_SUPERVISOR },
     });
+  });
+
+  test('pins the complete DSH runtime closure to alpha.3', async () => {
+    const runtimeRoot = join(import.meta.dir, '..', 'runtime-manifests', 'dsh');
+    const manifest = JSON.parse(await readFile(join(runtimeRoot, 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>;
+    };
+    const lock = JSON.parse(await readFile(join(runtimeRoot, 'package-lock.json'), 'utf8')) as {
+      packages: Record<string, { version?: string }>;
+    };
+    const packages = Object.keys(manifest.dependencies).filter((name) => name.startsWith('@deepseek-ai/dsh'));
+    expect(packages.length).toBeGreaterThan(100);
+    for (const name of packages) {
+      expect(manifest.dependencies[name]).toBe('0.1.2-alpha.3');
+      expect(lock.packages[`node_modules/${name}`]?.version).toBe('0.1.2-alpha.3');
+    }
+    const lockedDshPackages = Object.entries(lock.packages).filter(([path]) =>
+      /(?:^|\/)node_modules\/@deepseek-ai\/dsh(?:-[^/]+)?$/.test(path)
+    );
+    expect(lockedDshPackages.length).toBeGreaterThanOrEqual(packages.length);
+    for (const [, entry] of lockedDshPackages) {
+      expect(entry.version).toBe('0.1.2-alpha.3');
+    }
   });
 
   test('refuses generated output nested in either source checkout', () => {

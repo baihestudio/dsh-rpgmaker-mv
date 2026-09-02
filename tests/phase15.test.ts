@@ -53,7 +53,7 @@ describe('windows install recovery contracts', () => {
         installationRoot: join(root, 'selected-root'),
         operation: 'install',
         productVersion: '0.1.0',
-        runtimeVersion: '0.1.1-rc.2',
+        runtimeVersion: '0.1.2-alpha.3',
         runId: 'phase15-run',
         now: () => new Date('2026-09-01T00:00:00.000Z'),
         env: { DEEPSEEK_API_KEY: secret },

@@ -57,6 +57,7 @@ export interface LaunchOptions extends PathOptions {
   dshArgs?: string[];
   commandRunner?: CommandRunner;
   spawnInteractive?: InteractiveSpawner;
+  newConsole?: boolean;
   notify?: (message: string) => void;
   extraEnv?: Record<string, string | undefined>;
   bindWeb?: boolean;
@@ -300,7 +301,8 @@ async function launchProjectUnlocked(
   const child = (options.spawnInteractive ?? spawnInteractive)(childCommand, childArgs, {
     cwd: paths.neutralLandingDir,
     env: childEnv,
-    platform
+    platform,
+    newConsole: options.newConsole
   });
   await openStartedWebSession(options, platform, env, child);
 
