@@ -186,7 +186,7 @@ describe('managed Web profile materialization', () => {
       dependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
     };
-    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-tools']).toBe('0.1.1-rc.2');
+    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-tools']).toBe('0.1.2-alpha.3');
     expect(manifest.dependencies?.['@deepseek-ai/dsh-tools']).toBeUndefined();
   });
 
