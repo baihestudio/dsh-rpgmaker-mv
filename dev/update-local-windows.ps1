@@ -5,7 +5,6 @@
 param(
   [Parameter(Mandatory = $true)]
   [string] $ReleaseZip,
-  [switch] $Yes,
   [switch] $StopRunningDsh,
   [switch] $KeepExtractedRelease
 )
@@ -18,9 +17,6 @@ function Resolve-FullPath {
   return [System.IO.Path]::GetFullPath($Path)
 }
 
-if (-not $Yes) {
-  throw 'Pass -Yes to confirm this local installation update.'
-}
 if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
   throw 'LOCALAPPDATA is not set; refusing to guess local Windows installation paths.'
 }
@@ -69,7 +65,7 @@ try {
 
   Push-Location $extractRoot
   try {
-    & $installer -RemainingArgs @('--yes', '--plain', '--non-interactive')
+    & $installer -NonInteractive
   } finally {
     Pop-Location
   }

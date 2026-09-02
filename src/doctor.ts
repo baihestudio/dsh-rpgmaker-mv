@@ -40,6 +40,7 @@ export interface DoctorOptions extends PathOptions {
   coreutilsExecutable?: string;
   gitExecutable?: string;
   nodeExecutable?: string;
+  bunExecutable?: string;
   npmExecutable?: string;
   pythonExecutable?: string;
   imageMagickExecutable?: string;
@@ -103,6 +104,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     env,
     commandRunner: runner,
     nodeExecutable: options.nodeExecutable,
+    bunExecutable: options.bunExecutable,
     npmExecutable: options.npmExecutable,
     pythonExecutable: options.pythonExecutable,
     pwshExecutable: options.pwshExecutable,

@@ -13,6 +13,7 @@ import {
   assertSeparateAdapterOutput,
   prepareAdapterOutput,
 } from '../scripts/stage-electrobun-adapter';
+import { ELECTROBUN_PRODUCT_VERSION } from '../src/desktop-host';
 import { runRpgMakerSidecar } from '../src/electrobun-sidecar';
 import { acquireHarnessLock } from '../src/lock';
 
@@ -60,10 +61,9 @@ describe('Electrobun RPG Maker adapter', () => {
     expect(launchOptions).toMatchObject({
       platform: 'win32',
       env,
-      programRoot,
+      installationRoot,
+      localStateRoot: join(env.LOCALAPPDATA, 'BaiheStudio', 'DSH-RPGMaker-MV'),
       sourceRoot: join(programRoot, 'presets', 'rpgmaker'),
-      bunExecutable: process.execPath,
-      jsExecutable: process.execPath,
       openWebBrowser: false,
       bindWeb: true,
       webHost: '127.0.0.1',
@@ -74,7 +74,7 @@ describe('Electrobun RPG Maker adapter', () => {
     expect(launchOptions?.openWebBrowser).toBe(false);
     expect(launchOptions).not.toHaveProperty('mutableRoot');
     expect(launchOptions).not.toHaveProperty('dshHome');
-    expect(launchOptions).not.toHaveProperty('runtimeDir');
+    expect(launchOptions?.runtimeDir).toBe(join(programRoot, 'runtime', 'dsh'));
     const openExistingSession = launchOptions?.openExistingSession as (() => Promise<unknown>) | undefined;
     expect(openExistingSession).toBeDefined();
     await expect(openExistingSession?.()).resolves.toBeUndefined();
@@ -154,7 +154,7 @@ describe('Electrobun RPG Maker adapter', () => {
       app: {
         name: 'RPG Maker Agent',
         identifier: 'dev.baihestudio.dsh-rpgmaker-mv',
-        version: '0.1.0',
+        version: ELECTROBUN_PRODUCT_VERSION,
       },
       bun: { version: ELECTROBUN_BUN_VERSION, packageId: 'Oven-sh.Bun' },
       sidecar: { entrypoint: ELECTROBUN_SIDECAR, args: [] },

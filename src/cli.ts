@@ -5,11 +5,9 @@ import { launchRpgmakerProject } from './rpgmaker';
 import { childExitCode, redactSensitive, runCommand, type CommandRunner, type InteractiveSpawner } from './process';
 import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT } from './config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, uninstallWindowsRelease } from './release-gate';
-import type { PrerequisiteConsent, WindowsPrerequisiteCheck } from './prerequisites';
 import { pickInstallationRoot, type PortConflictAction, type ExistingSessionOpener, type PortProbe } from './windows';
-import { resolveExecutable } from './executable';
 import { createInstallationRenderer } from './install-renderer';
-import { rendererMode, type InstallationEventListener, type InstallationRendererMode } from './install-events';
+import { rendererMode, type InstallationEventListener } from './install-events';
 import { defaultLocalStateRoot } from './installation-root';
 import { createInterface } from 'node:readline/promises';
 import { stdin as processStdin, stdout as processStdout } from 'node:process';
@@ -25,7 +23,6 @@ export interface CliDependencies {
   io?: CliIO;
   commandRunner?: CommandRunner;
   spawnInteractive?: InteractiveSpawner;
-  prerequisiteConsent?: PrerequisiteConsent;
   portProbe?: PortProbe;
   onPortConflict?: (url: string) => Promise<PortConflictAction> | PortConflictAction;
   openExistingSession?: ExistingSessionOpener;
@@ -102,14 +99,12 @@ function helpText(): string {
     '  --require-desktop-host    Require a verified native desktop host payload',
     '  --pwsh-executable <path>  Use an explicit PowerShell executable',
     '  --node-executable <path>  Use an explicit Node.js executable',
-    '  --plain                   Use append-only plain installation events',
-    '  --ndjson                  Use machine-readable NDJSON installation events',
-    '  --non-interactive         Disable dialogs and keypress waits',
+    '  --bun-executable <path>   Use an explicit Bun executable',
+    '  --non-interactive         Skip the first-install destination picker (automation)',
     '  --npm-executable <path>   Use an explicit npm executable',
     '  --winget-executable <path> Use an explicit WinGet executable',
     '  --git-executable <path>   Use an explicit Git executable',
     '  --coreutils-executable <path> Use an explicit Coreutils manager',
-    '  --yes                     Consent to prerequisite installation',
     '  --purge                   Explicitly delete mutable state/credentials (uninstall)',
     '  --json                    Render doctor output as JSON',
     '  --help                    Show this help'
@@ -142,19 +137,6 @@ function requiredOption(parsed: ParsedArgs, name: string): string {
   return value;
 }
 
-async function promptPrerequisiteConsent(missing: WindowsPrerequisiteCheck[], io: CliIO): Promise<boolean> {
-  io.stdout.write('RPG Maker Agent may use WinGet to install or repair these prerequisites:\n');
-  for (const item of missing) io.stdout.write(`  - ${item.label}\n`);
-  if (!processStdin.isTTY || !processStdout.isTTY) return false;
-  const readline = createInterface({ input: processStdin, output: processStdout });
-  try {
-    const answer = (await readline.question('Allow WinGet to install or repair the listed prerequisites? [Y/N] ')).trim();
-    return /^(?:y|yes)$/i.test(answer);
-  } finally {
-    readline.close();
-  }
-}
-
 function validateCliFixedBinding(argv: string[]): void {
   const [first, ...rest] = argv;
   const command = first && !first.startsWith('-') ? first : 'launch';
@@ -182,6 +164,10 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
   const io = dependencies.io ?? { stdout: process.stdout, stderr: process.stderr };
   let parsed: ParsedArgs;
   try {
+    const removedInstallOptions = argv.filter((argument) => /^--(?:yes|plain|ndjson)(?:=|$)/i.test(argument));
+    if (removedInstallOptions.length > 0) {
+      throw new Error(`Unsupported option ${removedInstallOptions[0]}; installation always uses append-only plain output and automatically repairs prerequisites.`);
+    }
     parsed = parseArgs(argv);
   } catch (error) {
     io.stderr.write(`${redactSensitive(error instanceof Error ? error.message : String(error), env)}\n`);
@@ -214,9 +200,11 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
     if (parsed.command === 'install' || parsed.command === 'repair') {
       const localStateRoot = option(parsed.values, 'local-state-root') ?? option(parsed.values, 'mutable-root') ?? defaultLocalStateRoot(dependencies.env ?? process.env);
       let installationRoot = option(parsed.values, 'installation-root');
-      const mode: InstallationRendererMode = parsed.flags.has('ndjson') ? 'ndjson' : parsed.flags.has('plain') || parsed.flags.has('non-interactive') ? 'plain' : rendererMode({ stdoutIsTTY: io.stdout.isTTY === true });
+      const mode = rendererMode();
       const eventListener = dependencies.installEventListener ?? createInstallationRenderer(mode, io);
-      const nonInteractive = parsed.flags.has('non-interactive') || mode !== 'interactive';
+      // This flag only suppresses the first-install destination picker.  It
+      // never changes the renderer or prerequisite policy.
+      const nonInteractive = parsed.flags.has('non-interactive');
       const installationRootPicker = !installationRoot && !nonInteractive
         ? (dependencies.installationPicker ?? (async (defaultPath: string): Promise<string | undefined> => {
           let nativeDialogUnavailable = false;
@@ -239,8 +227,6 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
           }
         }))
         : undefined;
-      const prerequisiteConsent: PrerequisiteConsent = dependencies.prerequisiteConsent
-        ?? (parsed.flags.has('yes') ? true : mode === 'interactive' ? (missing) => promptPrerequisiteConsent(missing, io) : false);
       const result = await installWindowsRelease({
         platform: dependencies.platform,
         env: dependencies.env,
@@ -255,19 +241,18 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         startMenuShortcutPath: option(parsed.values, 'start-menu-shortcut'),
         pwshExecutable: option(parsed.values, 'pwsh-executable'),
         nodeExecutable: option(parsed.values, 'node-executable'),
+        bunExecutable: option(parsed.values, 'bun-executable'),
         npmExecutable: option(parsed.values, 'npm-executable'),
         gitExecutable: option(parsed.values, 'git-executable'),
         coreutilsExecutable: option(parsed.values, 'coreutils-executable'),
         wingetExecutable: option(parsed.values, 'winget-executable'),
         desktopHostRoot: option(parsed.values, 'desktop-host-root'),
         requireDesktopHost: parsed.flags.has('require-desktop-host') ? true : undefined,
-        consent: prerequisiteConsent,
         renderer: mode,
         onEvent: eventListener,
         nonInteractive,
         commandRunner: dependencies.commandRunner
       });
-      if (mode === 'ndjson') return 0;
       io.stdout.write(`Installed RPG Maker Agent under ${result.paths.programRoot}\n`);
       io.stdout.write(`Mutable state: ${result.paths.mutableRoot}; DSH_HOME: ${result.paths.dshHome}\n`);
       io.stdout.write(`Start Menu shortcut: ${result.shortcutPath}\n`);
@@ -313,6 +298,7 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         sandboxProbe: parsed.flags.has('sandbox-probe'),
         pwshExecutable: option(parsed.values, 'pwsh-executable'),
         nodeExecutable: option(parsed.values, 'node-executable'),
+        bunExecutable: option(parsed.values, 'bun-executable'),
         npmExecutable: option(parsed.values, 'npm-executable'),
         gitExecutable: option(parsed.values, 'git-executable'),
         coreutilsExecutable: option(parsed.values, 'coreutils-executable')

@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { defaultLocalStateRoot } from './installation-root';
 import { redactSensitive } from './process';
+import { resolveWindowsNode } from './executable';
 
 /**
  * Product-side entrypoint for the reusable dsh-electronbun host.
@@ -52,10 +53,12 @@ function sidecarProgramRoot(
 function sidecarLocalStateRoot(env: Record<string, string | undefined>, dependencies: SidecarDependencies): string {
   return resolve(
     dependencies.localStateRoot
-      ?? env.DSH_RPGMAKER_LOCAL_STATE_ROOT
-      ?? env.DSH_RPGMAKER_DATA_ROOT
       ?? defaultLocalStateRoot(env),
   );
+}
+
+async function sidecarNodeExecutable(env: Record<string, string | undefined>): Promise<string | undefined> {
+  return resolveWindowsNode({ platform: 'win32', env });
 }
 
 function boundedStderrDiagnostic(error: unknown, env: Record<string, string | undefined>): string {
@@ -91,6 +94,8 @@ export interface SidecarStartupDiagnostic {
   operation: SidecarStartupDiagnosticOperation;
   category: SidecarStartupDiagnosticCategory;
   summary: string;
+  /** Bounded, redacted lead describing the caught cause for support logs. */
+  cause?: string;
   modulePath?: string;
   exitCode?: number;
 }
@@ -151,6 +156,17 @@ function startupDiagnosticDetails(
   error: unknown,
   env: Record<string, string | undefined>,
 ): Omit<SidecarStartupDiagnostic, 'at' | 'event'> {
+  const cause = (() => {
+    const name = error instanceof Error && error.name ? error.name : 'UnknownError';
+    const message = boundedStderrDiagnostic(error, env);
+    // Keep the operation's useful lead while dropping arbitrary child output
+    // (which can contain secrets, tokens, or megabytes of diagnostics). Error
+    // messages in the product use a colon to append child output, so retain
+    // only the text before that separator. A Windows drive colon is not
+    // followed by whitespace and is therefore preserved.
+    const lead = message.split(/[;\r\n]/, 1)[0]?.split(/:\s+/, 1)[0]?.trim();
+    return safeDiagnosticSummary(`${name}${lead ? `: ${lead}` : ''}`, env);
+  })();
   if (operation === 'load-installed-launcher') {
     const modulePath = programRoot ? installedProductLauncherPath(programRoot) : undefined;
     if (error instanceof InstalledProductLauncherMissingError) {
@@ -158,6 +174,7 @@ function startupDiagnosticDetails(
         operation,
         category: 'installed-launcher-missing',
         summary: safeDiagnosticSummary(`Installed product launcher is missing: ${modulePath ?? error.modulePath}`, env),
+        cause,
         modulePath: modulePath ?? error.modulePath,
       };
     }
@@ -165,6 +182,7 @@ function startupDiagnosticDetails(
       operation,
       category: 'installed-launcher-load-failed',
       summary: safeDiagnosticSummary('Installed product launcher could not be loaded.', env),
+      cause,
       ...(modulePath ? { modulePath } : {}),
     };
   }
@@ -173,12 +191,14 @@ function startupDiagnosticDetails(
       operation,
       category: 'product-launch-failed',
       summary: safeDiagnosticSummary('Product launcher failed before readiness.', env),
+      cause,
     };
   }
   return {
     operation,
     category: 'product-child-status-failed',
     summary: safeDiagnosticSummary('Product launcher child status could not be observed.', env),
+    cause,
   };
 }
 
@@ -301,18 +321,22 @@ export async function runRpgMakerSidecar(
   let programRoot: string | undefined;
   try {
     programRoot = sidecarProgramRoot(dependencies);
+    const installationRoot = dirname(programRoot);
+    const localStateRoot = sidecarLocalStateRoot(env, dependencies);
+    const nodeExecutable = await sidecarNodeExecutable(env);
     const loadProductLauncher = dependencies.loadProductLauncher ?? loadInstalledProductLauncher;
     const product = await loadProductLauncher(programRoot);
     operation = 'launch-product';
     result = await product.launchRpgmakerProject({
       platform,
       env,
-      // The installed launcher owns mutable/state/runtime resolution; the
-      // adapter only needs the program tree to load it and its shipped preset.
-      programRoot,
+      installationRoot,
+      localStateRoot,
+      // Runtime is another receipt-backed program child; make it explicit so
+      // a stale DSH_RPGMAKER_RUNTIME cannot relocate production startup.
+      runtimeDir: join(programRoot, 'runtime', 'dsh'),
       sourceRoot: join(programRoot, 'presets', 'rpgmaker'),
-      bunExecutable: process.execPath,
-      jsExecutable: process.execPath,
+      ...(nodeExecutable ? { jsExecutable: nodeExecutable } : {}),
       openWebBrowser: false,
       bindWeb: true,
       webHost: '127.0.0.1',

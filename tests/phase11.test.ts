@@ -209,6 +209,12 @@ describe('managed Web profile materialization', () => {
       expect(Object.keys(first.dependencies).sort()).toEqual([...MANAGED_WEB_PROFILE_PACKAGE_NAMES].sort());
       expect(first.bundles).toEqual(expectedBundles);
       expect(calls.filter((call) => call.includes(' ci ' ) && call.includes('.pnpm.staging-'))).toHaveLength(1);
+      const managedBrandBundle = join(roots.dshHome, 'rpgmaker-mv', 'bundle', 'dsh-rpgmaker-brand');
+      expect(calls.some((call) => call.includes(`file:${managedBrandBundle}`))).toBe(true);
+      expect(JSON.parse(await readFile(join(managedBrandBundle, 'package.json'), 'utf8'))).toMatchObject({
+        name: DSH_BRAND_PACKAGE,
+        version: DSH_BRAND_VERSION
+      });
       expect(await rollbackSnapshotNames(roots.dshHome)).toEqual([]);
 
       const profileManifestPath = join(roots.dshHome, 'profiles', 'web', 'package.json');

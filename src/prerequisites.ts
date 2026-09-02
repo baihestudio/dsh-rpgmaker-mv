@@ -1,10 +1,14 @@
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
-import { withEnvironmentPath } from './config';
-import { resolveExecutable, resolveWindowsPwsh } from './executable';
+import { environmentPath, withEnvironmentPath } from './config';
+import { resolveExecutable, resolveWindowsDirectExecutable, resolveWindowsPwsh } from './executable';
 import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
 
-export const WINDOWS_PREREQUISITE_IDS = ['node', 'python', 'powershell', 'git', 'coreutils', 'imagemagick'] as const;
+/** Exact Bun version used by the packaged desktop host. */
+export const WINDOWS_BUN_VERSION = '1.3.14';
+export const WINDOWS_BUN_WINGET_ID = 'Oven-sh.Bun';
+
+export const WINDOWS_PREREQUISITE_IDS = ['node', 'bun', 'python', 'powershell', 'git', 'coreutils', 'imagemagick'] as const;
 export type WindowsPrerequisiteId = (typeof WINDOWS_PREREQUISITE_IDS)[number];
 
 export interface WindowsPrerequisiteCheck {
@@ -22,6 +26,7 @@ export interface WindowsPrerequisiteCheck {
 export interface WindowsPrerequisiteExecutablePaths {
   node?: string;
   npm?: string;
+  bun?: string;
   python?: string;
   powershell?: string;
   git?: string;
@@ -38,14 +43,13 @@ export interface WindowsPrerequisiteReport {
   executablePaths: WindowsPrerequisiteExecutablePaths;
 }
 
-export type PrerequisiteConsent = boolean | ((missing: WindowsPrerequisiteCheck[]) => Promise<boolean> | boolean);
-
 export interface WindowsPrerequisiteOptions {
   platform?: string;
   env?: Record<string, string | undefined>;
   commandRunner?: CommandRunner;
   nodeExecutable?: string;
   npmExecutable?: string;
+  bunExecutable?: string;
   pythonExecutable?: string;
   pwshExecutable?: string;
   gitExecutable?: string;
@@ -55,17 +59,6 @@ export interface WindowsPrerequisiteOptions {
 }
 
 export interface InstallWindowsPrerequisitesOptions extends WindowsPrerequisiteOptions {
-  consent?: PrerequisiteConsent;
-}
-
-export class PrerequisiteConsentError extends Error {
-  readonly report: WindowsPrerequisiteReport;
-
-  constructor(report: WindowsPrerequisiteReport) {
-    super(`The following Windows prerequisites are missing: ${report.missing.join(', ')}. Re-run Install.cmd and consent to the listed WinGet installations.`);
-    this.name = 'PrerequisiteConsentError';
-    this.report = report;
-  }
 }
 
 function versionNumbers(text: string): [number, number, number] | undefined {
@@ -185,19 +178,45 @@ async function resolved(name: string, explicit: string | undefined, env: Record<
   return explicit ?? await resolveExecutable(name, { platform: 'win32', env });
 }
 
+function bunVersionMatches(output: string): boolean {
+  return new RegExp(`(?:^|\\s)Bun\\s+v?${WINDOWS_BUN_VERSION.replaceAll('.', '\\.')}(?:\\s|$)`, 'i').test(output)
+    || new RegExp(`(?:^|\\s)v?${WINDOWS_BUN_VERSION.replaceAll('.', '\\.')}(?:\\s|$)`, 'i').test(output);
+}
+
+function directWindowsExecutable(value: string | undefined, name: 'node' | 'bun'): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.replaceAll('\\', '/').toLowerCase();
+  if (!normalized.endsWith(`/${name}.exe`) && normalized !== `${name}.exe`) return undefined;
+  if (normalized.includes('/windowsapps/')) return undefined;
+  return value;
+}
+
+function noUpdateApplicable(exitCode: number): boolean {
+  // WinGet reports "update not applicable/already installed" as the signed
+  // value below. Some runners expose the same HRESULT as an unsigned number.
+  return exitCode === -1978335189 || exitCode === 0x8A15002B;
+}
+
 export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOptions = {}): Promise<WindowsPrerequisiteReport> {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   if (platform !== 'win32') throw new Error('Windows prerequisite verification can only run on Windows.');
 
   const runner = options.commandRunner ?? runCommand;
-  const node = await resolved('node', options.nodeExecutable ?? env.NODE_EXECUTABLE, env);
+  const node = options.nodeExecutable
+    ? directWindowsExecutable(options.nodeExecutable, 'node')
+    : await resolveWindowsDirectExecutable('node', { platform: 'win32', env });
   const npm = await resolved('npm', options.npmExecutable ?? env.NPM_EXECUTABLE, env);
+  const bun = options.bunExecutable
+    ? directWindowsExecutable(options.bunExecutable, 'bun')
+    : await resolveWindowsDirectExecutable('bun', { platform: 'win32', env });
   const wingetPython = env.LOCALAPPDATA
     ? await resolveExecutable(join(env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe'), { platform: 'win32', env })
     : undefined;
   const python = await resolved('python', options.pythonExecutable ?? env.PYTHON_EXECUTABLE ?? wingetPython, env);
-  const pwsh = options.pwshExecutable ?? await resolveWindowsPwsh({ platform: 'win32', env });
+  const pwsh = options.pwshExecutable
+    ? (basename(options.pwshExecutable.replaceAll('\\', '/')).toLowerCase() === 'pwsh.exe' && !/[\\/]WindowsApps[\\/]pwsh\.exe$/i.test(options.pwshExecutable) ? options.pwshExecutable : undefined)
+    : await resolveWindowsPwsh({ platform: 'win32', env });
   const git = await resolved('git', options.gitExecutable ?? env.GIT_EXECUTABLE, env);
   const manager = await resolved('coreutils-manager', options.coreutilsExecutable ?? env.COREUTILS_MANAGER, env)
     ?? await resolved('coreutils', undefined, env);
@@ -211,6 +230,7 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const nodeVersion = await commandVersion(runner, node, env);
   const nodeLts = await commandVersion(runner, node, env, ['-p', 'process.release.lts']);
   const npmVersion = await commandVersion(runner, npm, env);
+  const bunVersion = await commandVersion(runner, bun, env);
   const pythonVersion = await commandVersion(runner, python, env);
   const pwshVersion = await commandVersion(runner, pwsh, env);
   const gitVersion = await commandVersion(runner, git, env);
@@ -221,15 +241,18 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
   const imageMagickVersion = await commandVersion(runner, imageMagick, env);
   const managerRoot = coreutilsRoot(manager);
   const nodeParsed = versionNumbers(nodeVersion.output);
+  const bunParsed = versionNumbers(bunVersion.output);
   const nodeLtsName = nodeLts.output.trim().split(/\r?\n/).find(Boolean);
   const pythonParsed = versionNumbers(pythonVersion.output);
   const pwshParsed = versionNumbers(pwshVersion.output);
   const nodeIdentity = /(?:^|\r?\n)\s*v\d+\.\d+\.\d+/i.test(nodeVersion.output);
+  const bunIdentity = bunVersion.ok && bunVersionMatches(bunVersion.output);
   const npmIdentity = /(?:^|\r?\n)\s*v?\d+\.\d+\.\d+/i.test(npmVersion.output);
   const pythonIdentity = /(?:^|\r?\n)\s*Python\s+\d+\.\d+/i.test(pythonVersion.output);
   const powershellIdentity = /PowerShell\s+\d+\.\d+/i.test(pwshVersion.output);
   const gitIdentity = /(?:^|\r?\n)\s*git version\s+\d+\.\d+\.\d+/i.test(gitVersion.output);
   const nodeOk = nodeVersion.ok && nodeIdentity && atLeast(nodeParsed, [22, 0, 0]) && nodeLts.ok && Boolean(nodeLtsName) && !/^false$/i.test(nodeLtsName ?? '') && npmVersion.ok && npmIdentity && Boolean(versionNumbers(npmVersion.output));
+  const bunOk = bunIdentity && bunParsed?.[0] === 1 && bunParsed[1] === 3 && bunParsed[2] === 14;
   const powershellOk = pwshVersion.ok && powershellIdentity && atLeast(pwshParsed, [7, 4, 0]);
   const coreutilsContractOk = managerHelp.ok && managerStatus.ok && managerContract(managerHelp.output, managerStatus.output);
   const coreutilsOk = coreutilsContractOk
@@ -248,6 +271,17 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
       node,
       nodeParsed?.join('.'),
       nodeParsed && versionNumbers(npmVersion.output) && nodeLtsName ? { node: nodeParsed.join('.'), npm: versionNumbers(npmVersion.output)!.join('.'), lts: nodeLtsName } : undefined
+    ),
+    check(
+      'bun',
+      `Bun ${WINDOWS_BUN_VERSION}`,
+      WINDOWS_BUN_WINGET_ID,
+      bunOk,
+      bunOk
+        ? `Bun ${WINDOWS_BUN_VERSION} is available at ${bun}`
+        : `Bun ${WINDOWS_BUN_VERSION} was not verified; install ${WINDOWS_BUN_WINGET_ID} with WinGet`,
+      bun,
+      bunParsed?.join('.')
     ),
     check(
       'python',
@@ -310,6 +344,7 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
     executablePaths: {
       node,
       npm,
+      bun,
       python,
       powershell: pwsh,
       git,
@@ -322,7 +357,9 @@ export async function verifyWindowsPrerequisites(options: WindowsPrerequisiteOpt
 }
 
 async function refreshWindowsEnvironment(runner: CommandRunner, env: Record<string, string | undefined>): Promise<Record<string, string | undefined>> {
-  const paths = [env.PATH ?? ''];
+  // Windows environment keys are case-insensitive; preserve whichever PATH
+  // spelling the caller supplied before appending registry-provided entries.
+  const paths = [environmentPath(env, 'win32')];
   const registry = [
     ['HKCU', 'Environment'],
     ['HKLM', 'SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment']
@@ -356,14 +393,33 @@ async function installOne(
   prerequisite: WindowsPrerequisiteCheck,
   env: Record<string, string | undefined>
 ): Promise<string | undefined> {
-  const args = ['install', '--id', prerequisite.wingetId, '--exact', '--accept-source-agreements', '--accept-package-agreements'];
+  const args = [
+    'install', '--id', prerequisite.wingetId, '--exact',
+    ...(prerequisite.id === 'bun' ? ['--version', WINDOWS_BUN_VERSION] : []),
+    '--accept-source-agreements', '--accept-package-agreements'
+  ];
   let result;
   try {
     result = await runner(winget, args, { env: withoutCredentials(env), platform: 'win32', timeoutMs: 15 * 60_000 });
   } catch (error) {
     return `WinGet could not install ${prerequisite.label}: ${redactSensitive(error instanceof Error ? error.message : String(error), env)}`;
   }
-  if (result.exitCode !== 0) return commandFailure(winget, args, result, env).message;
+  if (result.exitCode !== 0 && prerequisite.id === 'bun' && noUpdateApplicable(result.exitCode)) {
+    const forcedArgs = [
+      'install', '--id', prerequisite.wingetId, '--exact', '--version', WINDOWS_BUN_VERSION,
+      '--force', '--accept-source-agreements', '--accept-package-agreements'
+    ];
+    try {
+      result = await runner(winget, forcedArgs, { env: withoutCredentials(env), platform: 'win32', timeoutMs: 15 * 60_000 });
+    } catch (error) {
+      return `WinGet could not force ${prerequisite.label}: ${redactSensitive(error instanceof Error ? error.message : String(error), env)}`;
+    }
+    // A forced install can still report update-not-applicable when the exact
+    // version is already present. Treat that code like the initial no-update
+    // result and let the post-refresh executable verification decide.
+    if (result.exitCode !== 0 && !noUpdateApplicable(result.exitCode)) return commandFailure(winget, forcedArgs, result, env).message;
+  }
+  if (result.exitCode !== 0 && !noUpdateApplicable(result.exitCode)) return commandFailure(winget, args, result, env).message;
   return undefined;
 }
 
@@ -375,9 +431,6 @@ export async function installWindowsPrerequisites(options: InstallWindowsPrerequ
   let report = await verifyWindowsPrerequisites(options);
   if (report.ok) return report;
   const missing = report.checks.filter((item) => !item.ok);
-  let consent = options.consent;
-  if (typeof consent === 'function') consent = await consent(missing);
-  if (consent !== true) throw new PrerequisiteConsentError(report);
   const winget = options.wingetExecutable ?? env.WINGET_EXECUTABLE ?? await resolveExecutable('winget', { platform: 'win32', env });
   if (!winget) throw new Error('WinGet was not found. Install App Installer from Microsoft, then run Install.cmd again.');
   const wingetFailures: string[] = [];

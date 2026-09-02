@@ -280,8 +280,12 @@ async function launchProjectUnlocked(
     DSH_RPGMAKER_RUNTIME: paths.runtimeDir,
     DSH_RPGMAKER_LOG_DIR: paths.logsDir,
     DSH_RPGMAKER_CACHE_DIR: paths.cacheDir,
-    DSH_FORGEJO_MCP_COMMAND: env.DSH_FORGEJO_MCP_COMMAND ?? forgejoMcpExecutablePath(paths.programRoot),
-    ...(options.extraEnv ?? {})
+    // The installed program tree owns this command.  Do not let a stale
+    // DSH-derived environment override the receipt-backed Forgejo binary.
+    ...(options.extraEnv ?? {}),
+    // Keep the app-owned value last so stale caller/ambient overrides cannot
+    // relocate the Forgejo MCP command during a production launch.
+    DSH_FORGEJO_MCP_COMMAND: forgejoMcpExecutablePath(paths.programRoot)
   };
   const rawArgs = [...(options.dshArgs ?? [])];
   const args = options.bindWeb ? addFixedWebBinding(rawArgs) : rawArgs;

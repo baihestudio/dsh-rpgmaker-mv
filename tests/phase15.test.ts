@@ -84,26 +84,41 @@ describe('windows install recovery contracts', () => {
     try {
       const programRoot = join(root, 'chosen', 'program');
       const entrypoint = join(programRoot, 'desktop-host', 'Resources', 'app', 'payload', 'sidecar', 'dsh-rpgmaker-sidecar.js');
+      const programFiles = join(root, 'program-files');
+      const nodeExecutable = join(programFiles, 'nodejs', 'node.exe');
+      await mkdir(dirname(nodeExecutable), { recursive: true });
+      await writeFile(nodeExecutable, 'disposable node');
       let loadedRoot = '';
+      let launchOptions: Record<string, unknown> | undefined;
       const running = runRpgMakerSidecar({
         DSH_RPGMAKER_INSTALLATION_ROOT: join(root, 'legacy-root-that-must-be-ignored'),
+        DSH_HOME: join(root, 'legacy-data', 'state'),
         LOCALAPPDATA: join(root, 'wrong-local-app-data'),
+        ProgramFiles: programFiles,
       }, {
         platform: 'win32',
         entrypointPath: entrypoint,
         loadProductLauncher: async (actualRoot) => {
           loadedRoot = actualRoot;
           return {
-            launchRpgmakerProject: async () => ({
-              child: childWithExit(0),
-              releaseSession: async () => undefined,
-            }),
+            launchRpgmakerProject: async (options) => {
+              launchOptions = options;
+              return {
+                child: childWithExit(0),
+                releaseSession: async () => undefined,
+              };
+            },
           };
         },
       });
 
       await expect(running).resolves.toBe(0);
       expect(loadedRoot).toBe(programRoot);
+      expect(launchOptions).toMatchObject({
+        installationRoot: dirname(programRoot),
+        localStateRoot: join(root, 'wrong-local-app-data', 'BaiheStudio', 'DSH-RPGMaker-MV'),
+        jsExecutable: nodeExecutable,
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

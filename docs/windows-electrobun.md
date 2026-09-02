@@ -54,12 +54,15 @@ inject a packaged entrypoint and test-owned local-state root through the
 sidecar dependency seam; there is no legacy default installation-root fallback
 in the packaged process.
 
-It dynamically loads `src/rpgmaker.ts` from the installed program tree,
-reusing the existing DSH runtime bootstrap, MCP/profile preparation, session
-lease, fixed `127.0.0.1:3081` binding, launch log, and project-neutral
-workspace behavior. The sidecar passes DSH's explicit `--no-open` flag and
-does not provide a browser opener; the native WebView2 host loads the loopback
-page after readiness.
+It dynamically loads `src/rpgmaker.ts` from the installed program tree and
+consumes the receipt-backed runtime, MCP/profile, preset, composition, and
+live-contract artifacts committed by `Install.cmd`. The normal sidecar launch
+does not bootstrap packages, repair the profile, regenerate presets, or run
+MCP `tools/list`; it performs cheap path/ownership/port/readiness checks, uses
+a direct `node.exe` for MCP children, and keeps Bun only as the desktop-host
+runtime. The sidecar passes DSH's explicit `--no-open` flag and does not
+provide a browser opener; the native WebView2 host loads the loopback page
+after readiness.
 
 Staging does not deploy or repair that installed product tree. Native smoke
 tests must therefore use an installation produced from the same product

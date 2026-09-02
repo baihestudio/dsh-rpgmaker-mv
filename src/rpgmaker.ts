@@ -1,22 +1,23 @@
 import { cp, mkdir, mkdtemp, readFile, realpath, rename as fsRename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawn } from 'node:child_process';
 
-import { bootstrapRuntime, resolveDshEntrypoint, type BootstrapOptions, type BootstrapResult } from './bootstrap';
-import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
-import { resolveExecutable } from './executable';
-import { commandFailure, redactSensitive, runCommand, withoutCredentials, type CommandRunner } from './process';
+import { bootstrapRuntime, resolveDshEntrypoint, verifyRuntime, type BootstrapOptions, type BootstrapResult } from './bootstrap';
+import { PRODUCT_NAME, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
+import { resolveExecutable, resolveWindowsNode } from './executable';
+import { commandFailure, prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, withoutCredentials, type CommandRunner } from './process';
 import { pathExists } from './project';
 import { addFixedWebBinding, ensureLaunchPort, launchProject, type LaunchOptions, type LaunchResult } from './launcher';
-import { prepareMcporterRuntime, mcporterRuntimeDirFor, type McporterRuntimeOptions, type McporterRuntimeVerification } from './mcport';
+import { prepareMcporterRuntime, verifyMcporterRuntime, mcporterRuntimeDirFor, type McporterRuntimeOptions, type McporterRuntimeVerification } from './mcport';
 import {
   JS_RUNNER_ENV,
   MCPORTER_RUNTIME_ENV,
   RPGMAKER_MCP_RUNTIME_ENV,
   WORKSPACE_MCP_AGENT_ROW_ID
 } from './workspace-mcp';
-import { ensureManagedWebProfile, type ManagedWebProfileOptions, type ManagedWebProfileResult } from './managed-web-profile';
-import { resolveReceiptBackedHarnessPaths } from './installation-root';
+import { ensureManagedWebProfile, verifyManagedWebProfile, type ManagedWebProfileOptions, type ManagedWebProfileResult } from './managed-web-profile';
+import { defaultLocalStateRoot, resolveReceiptBackedHarnessPaths } from './installation-root';
 
 export const RPGMAKER_MV_MCP_PACKAGE = '@xerolo44/rpgmaker-mv-mcp';
 export const RPGMAKER_MV_MCP_VERSION = '0.1.0';
@@ -73,6 +74,41 @@ export interface RpgMakerLaunchPreparation {
 export interface RpgMakerScripts {
   mv: string;
   mz: string;
+}
+
+/** A single JSON-RPC MCP tool definition returned by `tools/list`. */
+export interface McpToolDefinition {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+}
+
+export interface McpSchemaProbeRequest {
+  command: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string | undefined>;
+  platform: string;
+}
+
+export interface McpSchemaProbeResult {
+  tools: McpToolDefinition[];
+}
+
+export type McpSchemaProbe = (request: McpSchemaProbeRequest) => Promise<McpSchemaProbeResult>;
+
+export interface RpgMakerMcpContractEngineResult {
+  engine: 'mv' | 'mz';
+  toolCount: number;
+  manifestDigest?: string;
+  errors: string[];
+  valid: boolean;
+}
+
+export interface RpgMakerMcpContractValidation {
+  valid: boolean;
+  errors: string[];
+  engines: { mv: RpgMakerMcpContractEngineResult; mz: RpgMakerMcpContractEngineResult };
 }
 
 export interface RpgMakerPresetDeploymentOptions extends PathOptions {
@@ -542,20 +578,218 @@ async function removeOwnedPreset(presetRoot: string, presetId: string): Promise<
   await rm(presetDir, { recursive: true, force: true });
 }
 
-export async function resolveMcpRunner(options: { jsExecutable?: string; nodeExecutable?: string; projectPath?: string }, platform: string, env: Record<string, string | undefined>): Promise<string> {
-  const candidate = options.jsExecutable ?? options.nodeExecutable ?? env.NODE_EXECUTABLE;
-  const direct = candidate ? await resolveExecutable(candidate, { platform, env }) : undefined;
-  const expectedBasename = (value: string | undefined): value is string => {
-    if (!value) return false;
-    const name = basename(value).toLowerCase();
-    return platform === 'win32' ? name === 'node.exe' : name === 'node';
+function mcpDiagnostic(value: unknown, env: Record<string, string | undefined>): string {
+  const text = redactSensitive(value instanceof Error ? value.message : String(value), env).trim();
+  if (text.length <= 2_000) return text;
+  return `[diagnostic truncated]\n${text.slice(0, 2_000 - '[diagnostic truncated]\n'.length)}`;
+}
+
+/** Ask one installed MCP entrypoint for its complete JSON-RPC tools/list. */
+export async function defaultMcpSchemaProbe(request: McpSchemaProbeRequest): Promise<McpSchemaProbeResult> {
+  const invocation = prepareProcessInvocation(request.command, request.args, request.platform, request.env);
+  const child = spawn(invocation.command, invocation.args, {
+    cwd: request.cwd,
+    env: Object.fromEntries(Object.entries(withoutCredentials(request.env)).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+    shell: false,
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  let buffer = '';
+  let stderr = '';
+  let processFailure: Error | undefined;
+  let closed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  type PendingResponse = { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void };
+  const pending = new Map<string, PendingResponse>();
+  const rejectPending = (error: Error): void => {
+    processFailure ??= error;
+    for (const { reject } of pending.values()) reject(error);
+    pending.clear();
   };
-  if (expectedBasename(direct)) return direct;
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+  child.stdout?.on('data', (chunk: string) => {
+    buffer += chunk;
+    // A malformed or unexpectedly verbose server must not turn diagnostics
+    // into an unbounded memory sink.
+    if (buffer.length > 8 * 1024 * 1024) buffer = buffer.slice(-8 * 1024 * 1024);
+    let newline = buffer.indexOf('\n');
+    while (newline >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line) {
+        try {
+          const message = JSON.parse(line) as { id?: unknown; result?: Record<string, unknown>; error?: { message?: string } };
+          if (message.id !== undefined) {
+            const response = pending.get(String(message.id));
+            if (response) {
+              pending.delete(String(message.id));
+              if (message.error) response.reject(new RpgMakerStartupError(`MCP request failed: ${message.error.message ?? 'unknown MCP error'}`));
+              else response.resolve(message as Record<string, unknown>);
+            }
+          }
+        } catch {
+          // Human diagnostics on stdout are ignored; stderr is retained only
+          // for the bounded failure summary if the protocol never responds.
+        }
+      }
+      newline = buffer.indexOf('\n');
+    }
+  });
+  child.stderr?.on('data', (chunk: string) => {
+    stderr = `${stderr}${chunk}`.slice(-8_000);
+  });
+  child.once('error', (error) => rejectPending(new RpgMakerStartupError(`MCP server could not start: ${mcpDiagnostic(error, request.env)}`)));
+  child.once('close', (code, signal) => {
+    closed = true;
+    if (pending.size > 0) rejectPending(new RpgMakerStartupError(`MCP server exited before tools/list (${signal ? `signal ${signal}` : `code ${code ?? 1}`}${stderr.trim() ? `: ${mcpDiagnostic(stderr, request.env)}` : ''})`));
+  });
+  timer = setTimeout(() => rejectPending(new RpgMakerStartupError('MCP tools/list timed out after 60 seconds.')), 60_000);
+  timer.unref?.();
+  const requestResponse = (id: number, method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    if (processFailure) return Promise.reject(processFailure);
+    if (closed) return Promise.reject(new RpgMakerStartupError('MCP server exited before tools/list.'));
+    return new Promise<Record<string, unknown>>((resolveResponse, rejectResponse) => {
+      const key = String(id);
+      pending.set(key, { resolve: resolveResponse, reject: rejectResponse });
+      try {
+        child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`, (error) => {
+          if (!error) return;
+          pending.delete(key);
+          rejectResponse(new RpgMakerStartupError(`MCP request could not be written: ${mcpDiagnostic(error, request.env)}`));
+        });
+      } catch (error) {
+        pending.delete(key);
+        rejectResponse(new RpgMakerStartupError(`MCP request could not be written: ${mcpDiagnostic(error, request.env)}`));
+      }
+    });
+  };
+  try {
+    await requestResponse(1, 'initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'dsh-rpgmaker-mv-installer', version: '0.2.0' } });
+    child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`);
+    const response = await requestResponse(2, 'tools/list', {});
+    const result = response.result as { tools?: McpToolDefinition[] } | undefined;
+    return { tools: Array.isArray(result?.tools) ? result.tools : [] };
+  } finally {
+    if (timer) clearTimeout(timer);
+    child.stdin?.end();
+    if (child.exitCode === null && child.signalCode === null) {
+      try {
+        await terminateProcessTree(child, { cwd: request.cwd, env: request.env, platform: request.platform });
+      } catch {
+        // The response is already authoritative; a server that exits while
+        // stdin closes should not turn a successful contract check into a
+        // cleanup failure.
+      }
+    }
+  }
+}
+
+interface McpContractModule {
+  verifyManifest: (engine: 'mv' | 'mz', manifestOverride?: unknown) => { errors: string[] };
+  validateDiscoveredTools: (tools: unknown, engine: 'mv' | 'mz') => { errors: string[] };
+  contractFor: (engine: 'mv' | 'mz') => { digest?: string };
+}
+
+async function loadMcpContractModule(): Promise<McpContractModule> {
+  // Source runs resolve the bundle beside the repository's `src/` tree,
+  // while a compiled installer is launched from the Release root.  Keep both
+  // locations explicit so live install validation does not depend on Bun's
+  // compiled `import.meta.url` representation.
+  let sourcePath: string | undefined;
+  try {
+    sourcePath = fileURLToPath(new URL('../bundle/dsh-workspace-mcp/lib/contract.js', import.meta.url));
+  } catch {
+    // Bun may expose a virtual URL for an embedded compiled module.  The
+    // executable-root candidate below remains available in that case.
+  }
+  const executableRoot = dirname(process.execPath);
+  const modulePaths = [
+    ...(sourcePath ? [sourcePath] : []),
+    join(executableRoot, 'bundle', 'dsh-workspace-mcp', 'lib', 'contract.js')
+  ];
+  for (const path of [...new Set(modulePaths)]) {
+    if (await pathExists(path)) return await import(`${pathToFileURL(path).href}?contract=${Date.now()}`) as unknown as McpContractModule;
+  }
+  throw new RpgMakerStartupError(`Pinned RPG Maker MCP contract module was not found beside the Release bundle: ${modulePaths.at(0) ?? join(executableRoot, 'bundle')}`);
+}
+
+async function makeMcpContractProject(parent: string, engine: 'mv' | 'mz'): Promise<string> {
+  await mkdir(parent, { recursive: true });
+  const project = await mkdtemp(join(parent, `.rpgmaker-${engine}-contract-`));
+  await mkdir(join(project, 'data'), { recursive: true });
+  await mkdir(join(project, 'js'), { recursive: true });
+  await writeFile(join(project, engine === 'mv' ? 'Game.rpgproject' : 'game.rmmzproject'), '{}\n');
+  await writeFile(join(project, 'data', 'System.json'), '{"gameTitle":"DSH contract fixture"}\n');
+  return project;
+}
+
+/** Validate both pinned RPG Maker MCP contracts against live installed servers. */
+export async function validateRpgMakerMcpContracts(options: {
+  runtimeDir: string;
+  nodeExecutable: string;
+  installationCacheDir: string;
+  platform?: string;
+  env?: Record<string, string | undefined>;
+  schemaProbe?: McpSchemaProbe;
+}): Promise<RpgMakerMcpContractValidation> {
+  const platform = options.platform ?? process.platform;
+  if (platform !== 'win32') throw new RpgMakerStartupError('RPG Maker MCP contract validation is supported on Windows only.');
+  const env = withoutCredentials(options.env ?? process.env);
+  const contract = await loadMcpContractModule();
+  const runtime = await verifyRpgMakerMcpRuntime(options.runtimeDir, platform);
+  const errors: string[] = [];
+  const engines: { mv: RpgMakerMcpContractEngineResult; mz: RpgMakerMcpContractEngineResult } = {
+    mv: { engine: 'mv', toolCount: 0, errors: [], valid: false },
+    mz: { engine: 'mz', toolCount: 0, errors: [], valid: false }
+  };
+  for (const engine of ['mv', 'mz'] as const) {
+    const result = engines[engine];
+    const staticErrors = contract.verifyManifest(engine).errors;
+    result.errors.push(...staticErrors);
+    result.manifestDigest = contract.contractFor(engine).digest;
+    const executable = runtime.engines[engine].executable;
+    if (!executable) result.errors.push(`installed RPG Maker ${engine.toUpperCase()} MCP entrypoint was not found`);
+    let project: string | undefined;
+    try {
+      if (executable) {
+        project = await makeMcpContractProject(options.installationCacheDir, engine);
+        const args = engine === 'mv' ? [executable, '--project', project] : [executable];
+        const probe = options.schemaProbe ?? defaultMcpSchemaProbe;
+        const discovered = await probe({
+          command: options.nodeExecutable,
+          args,
+          cwd: project,
+          env: { ...env, RPGMAKER_PROJECT_PATH: project },
+          platform
+        });
+        result.toolCount = discovered.tools.length;
+        result.errors.push(...contract.validateDiscoveredTools(discovered.tools, engine).errors);
+      }
+    } catch (error) {
+      result.errors.push(mcpDiagnostic(error, env));
+    } finally {
+      if (project) await rm(project, { recursive: true, force: true }).catch(() => undefined);
+    }
+    result.valid = result.errors.length === 0;
+    errors.push(...result.errors.map((error) => `${engine.toUpperCase()} MCP contract: ${error}`));
+  }
+  return { valid: errors.length === 0, errors, engines };
+}
+
+export async function resolveMcpRunner(options: { jsExecutable?: string; nodeExecutable?: string; projectPath?: string }, platform: string, env: Record<string, string | undefined>): Promise<string> {
   if (platform === 'win32') {
-    const nodeExe = await resolveExecutable('node.exe', { platform, env });
-    if (expectedBasename(nodeExe)) return nodeExe;
+    const candidate = options.jsExecutable ?? options.nodeExecutable ?? env.NODE_EXECUTABLE;
+    const direct = candidate
+      ? await resolveWindowsNode({ platform, env: { ...env, NODE_EXECUTABLE: candidate } })
+      : await resolveWindowsNode({ platform, env });
+    if (direct) return direct;
     throw new RpgMakerStartupError('Windows MCP startup requires a resolved direct node.exe; cmd.exe, command.com, and package-manager shims are not valid JavaScript runners.');
   }
+  const candidate = options.jsExecutable ?? options.nodeExecutable ?? env.NODE_EXECUTABLE;
+  const direct = candidate ? await resolveExecutable(candidate, { platform, env }) : undefined;
+  const expectedBasename = (value: string | undefined): value is string => Boolean(value) && basename(value!).toLowerCase() === 'node';
+  if (expectedBasename(direct)) return direct;
   const node = await resolveExecutable('node', { platform, env });
   if (expectedBasename(node)) return node;
   throw new RpgMakerStartupError('MCP startup requires a resolved direct node executable; shell command shims are not valid JavaScript runners.');
@@ -780,6 +1014,161 @@ export async function prepareRpgMakerLaunch(options: RpgMakerLaunchOptions): Pro
   };
 }
 
+/**
+ * Load the committed install artifacts for a normal desktop launch.
+ *
+ * This path is intentionally read-only: it verifies the receipt-backed DSH,
+ * MCPorter, RPG Maker MCP, profile, preset, and composition files, but never
+ * invokes a package manager, rewrites a profile, regenerates presets, or asks
+ * either MCP server for `tools/list`.  Install/repair owns those expensive
+ * operations and commits a receipt only after they succeed.
+ */
+export async function loadCommittedRpgMakerLaunch(options: RpgMakerLaunchOptions): Promise<RpgMakerLaunchPreparation> {
+  const platform = options.platform ?? process.platform;
+  if (platform !== 'win32') throw new RpgMakerStartupError('RPG Maker Agent is supported on Windows only.');
+  const ambientEnv = options.env ?? process.env;
+  // Production startup has one fixed local-state default.  Legacy DSH path
+  // variables are accepted only when a caller explicitly injects a test seam;
+  // they must never relocate a normal Start Menu launch.
+  const localStateRoot = options.localStateRoot
+    ?? options.mutableRoot
+    ?? defaultLocalStateRoot(ambientEnv);
+  const { paths, receipt } = await resolveReceiptBackedHarnessPaths({
+    ...options,
+    platform,
+    env: ambientEnv,
+    localStateRoot,
+    mutableRoot: localStateRoot
+  });
+  if (!receipt) {
+    throw new RpgMakerStartupError(`No committed installation receipt was found under ${localStateRoot}; run Install.cmd to complete installation.`);
+  }
+  const sameCommittedPath = (left: string, right: string): boolean => platform === 'win32'
+    ? left.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase() === right.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase()
+    : resolve(left) === resolve(right);
+  const committedRuntimeDir = join(paths.programRoot, 'runtime', 'dsh');
+  const env = { ...ambientEnv, DSH_HOME: paths.dshHome };
+  const agentPreset = options.agentPreset ?? RPGMAKER_PRESET_ID;
+  if (!CUSTOM_AGENT_PRESET_IDS.includes(agentPreset as typeof CUSTOM_AGENT_PRESET_IDS[number])) {
+    throw new RpgMakerStartupError(`Unknown RPG Maker agent preset: ${agentPreset}`);
+  }
+
+  // Resolve and verify the direct Node runner once.  Bun belongs to the
+  // packaged desktop host and is never accepted as the MCP child runner.
+  const jsRunner = await resolveMcpRunner(options, platform, withoutCredentials(env));
+  const runtime = await verifyRuntime(committedRuntimeDir, {
+    platform,
+    env: withoutCredentials(env),
+    nodeExecutable: jsRunner,
+    npmExecutable: options.npmExecutable,
+    commandRunner: options.commandRunner
+  });
+  if (!runtime.valid) throw new RpgMakerStartupError(`Pinned DSH runtime is not usable: ${runtime.errors.join('; ')}`);
+  const dshExecutable = options.dshExecutable ?? runtime.dshExecutable ?? await resolveDshEntrypoint(committedRuntimeDir, platform);
+  if (!dshExecutable) throw new RpgMakerStartupError('Pinned DSH executable was not found; run Install.cmd to repair the committed installation.');
+  if (!(await pathExists(dshExecutable))) throw new RpgMakerStartupError(`DSH executable does not exist: ${dshExecutable}. Run Install.cmd to repair the committed installation.`);
+  if (options.dshExecutable) {
+    const normalizeRuntimePath = (value: string): string => platform === 'win32' ? value.toLowerCase() : value;
+    const runtimeRoot = `${normalizeRuntimePath(resolve(committedRuntimeDir))}${sep}`;
+    const requested = normalizeRuntimePath(resolve(options.dshExecutable));
+    if (requested !== normalizeRuntimePath(resolve(committedRuntimeDir)) && !requested.startsWith(runtimeRoot)) {
+      throw new RpgMakerStartupError(`The requested DSH executable is outside the committed runtime: ${options.dshExecutable}. Run Install.cmd to repair the committed installation.`);
+    }
+  }
+
+  const ownershipPath = join(paths.programRoot, PROGRAM_OWNERSHIP_FILE);
+  const ownership = await readJson(ownershipPath);
+  if (ownership?.owner !== PROGRAM_OWNER || ownership.product !== PRODUCT_NAME || ownership.format !== 1) {
+    throw new RpgMakerStartupError(`Committed program ownership is invalid at ${ownershipPath}; run Install.cmd to repair the installation.`);
+  }
+
+  const mcporterRuntimeDir = resolve(mcporterRuntimeDirFor(paths));
+  if (options.mcporterRuntimeDir && !sameCommittedPath(options.mcporterRuntimeDir, mcporterRuntimeDir)) {
+    throw new RpgMakerStartupError(`The requested MCPorter runtime is not the committed app-owned runtime: ${options.mcporterRuntimeDir}. Run Install.cmd to repair the committed installation.`);
+  }
+  const mcporter = await verifyMcporterRuntime(mcporterRuntimeDir, platform);
+  if (!mcporter.valid) throw new RpgMakerStartupError(`Pinned MCPorter runtime is not usable: ${mcporter.errors.join('; ')}`);
+
+  const rpgmakerRuntimeDir = resolve(join(paths.programRoot, 'runtime', 'mcp'));
+  if (options.rpgmakerRuntimeDir && !sameCommittedPath(options.rpgmakerRuntimeDir, rpgmakerRuntimeDir)) {
+    throw new RpgMakerStartupError(`The requested RPG Maker MCP runtime is not the committed app-owned runtime: ${options.rpgmakerRuntimeDir}. Run Install.cmd to repair the committed installation.`);
+  }
+  const mcp = await verifyRpgMakerMcpRuntime(rpgmakerRuntimeDir, platform);
+  const mvScript = mcp.engines.mv.executable;
+  const mzScript = mcp.engines.mz.executable;
+  if (!mcp.valid || !mvScript || !mzScript) throw new RpgMakerStartupError(`Pinned RPG Maker MCP runtime is not usable: ${mcp.errors.join('; ')}`);
+
+  const managedWebProfile = await verifyManagedWebProfile({
+    platform,
+    env,
+    dshHome: paths.dshHome,
+    mutableRoot: paths.mutableRoot,
+    installationRoot: paths.installationRoot,
+    runtimeDir: committedRuntimeDir,
+    dshExecutable,
+    nodeExecutable: jsRunner,
+    npmExecutable: options.npmExecutable,
+    pnpmRuntimeDir: options.pnpmRuntimeDir,
+    commandRunner: options.commandRunner
+  });
+  if (!managedWebProfile.valid) throw new RpgMakerStartupError(`Managed Web profile is not usable: ${managedWebProfile.errors.join('; ')}`);
+
+  const codePresetPath = await findCodeComposition(committedRuntimeDir);
+  const presetRoot = join(paths.dshHome, '.agent-presets');
+  const presetDir = join(presetRoot, agentPreset);
+  const compositionPath = join(paths.dshHome, 'rpgmaker-mv', 'cordis.patch.yml');
+  const requiredFiles = [
+    [join(paths.programRoot, 'install.json'), 'committed installation metadata'],
+    [presetDir, 'committed RPG Maker Agent preset'],
+    [join(presetDir, 'agent.cordis.yml'), 'committed RPG Maker Agent composition'],
+    [join(presetDir, PRESET_OWNERSHIP_FILE), 'RPG Maker Agent preset ownership marker'],
+    [compositionPath, 'committed RPG Maker Host composition']
+  ] as const;
+  for (const [path, label] of requiredFiles) {
+    if (!(await pathExists(path))) throw new RpgMakerStartupError(`${label} is missing at ${path}; run Install.cmd to repair the committed installation.`);
+  }
+  const metadata = await readJson(join(paths.programRoot, 'install.json'));
+  if (metadata?.owner !== PROGRAM_OWNER
+    || metadata.product !== PRODUCT_NAME
+    || metadata.format !== 1
+    || typeof metadata.programRoot !== 'string'
+    || !sameCommittedPath(metadata.programRoot, paths.programRoot)
+    || typeof metadata.localStateRoot !== 'string'
+    || !sameCommittedPath(metadata.localStateRoot, paths.mutableRoot)
+    || typeof metadata.installationRoot !== 'string'
+    || !sameCommittedPath(metadata.installationRoot, paths.installationRoot)
+    || typeof metadata.mutableRoot !== 'string'
+    || !sameCommittedPath(metadata.mutableRoot, paths.mutableRoot)
+    || typeof metadata.dshHome !== 'string'
+    || !sameCommittedPath(metadata.dshHome, paths.dshHome)
+    || typeof metadata.runtimeDir !== 'string'
+    || !sameCommittedPath(metadata.runtimeDir, committedRuntimeDir)
+    || typeof metadata.installationCacheDir !== 'string'
+    || !sameCommittedPath(metadata.installationCacheDir, paths.installationCacheDir)) {
+    throw new RpgMakerStartupError(`Committed installation metadata is invalid at ${join(paths.programRoot, 'install.json')}; run Install.cmd to repair the installation.`);
+  }
+  const presetOwnership = await readJson(join(presetDir, PRESET_OWNERSHIP_FILE));
+  if (presetOwnership?.owner !== 'dsh-rpgmaker-mv' || presetOwnership.presetId !== agentPreset) {
+    throw new RpgMakerStartupError(`Committed RPG Maker Agent preset ownership is invalid at ${presetDir}; run Install.cmd to repair the committed installation.`);
+  }
+  const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome, presetRoot);
+  if (!timeoutPolicy.valid) throw new RpgMakerStartupError(`DSH timeout policy composition is not usable: ${timeoutPolicy.errors.join('; ')}`);
+
+  return {
+    dshExecutable,
+    mcporterRuntimeDir,
+    rpgmakerRuntimeDir,
+    rpgmakerScripts: { mv: mvScript, mz: mzScript },
+    jsRunner,
+    presetRoot,
+    presetDir,
+    codePresetPath,
+    compositionPath,
+    agentPreset,
+    managedWebProfile: { ...managedWebProfile, materialized: false }
+  };
+}
+
 export interface RpgMakerLaunchResult extends LaunchResult {
   deployment: RpgMakerLaunchPreparation;
 }
@@ -792,9 +1181,25 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
     throw new RpgMakerStartupError('The project-neutral launch does not accept --project; choose a workspace in DSH Web.');
   }
   if (options.dshArgs) addFixedWebBinding(options.dshArgs);
-  await ensureLaunchPort({ ...options, bindWeb: true, webHost: WINDOWS_DSH_HOST, webPort: WINDOWS_DSH_PORT });
-  const deployment = await prepareRpgMakerLaunch(options);
-  const { paths } = await resolveReceiptBackedHarnessPaths(options);
+  const ambientEnv = options.env ?? process.env;
+  const localStateRoot = options.localStateRoot
+    ?? options.mutableRoot
+    ?? defaultLocalStateRoot(ambientEnv);
+  const committedPaths = await resolveReceiptBackedHarnessPaths({
+    ...options,
+    localStateRoot,
+    mutableRoot: localStateRoot
+  });
+  const committedOptions: RpgMakerLaunchOptions = {
+    ...options,
+    installationRoot: committedPaths.paths.installationRoot,
+    localStateRoot: committedPaths.paths.localStateRoot,
+    mutableRoot: committedPaths.paths.mutableRoot,
+    runtimeDir: join(committedPaths.paths.programRoot, 'runtime', 'dsh')
+  };
+  await ensureLaunchPort({ ...committedOptions, bindWeb: true, webHost: WINDOWS_DSH_HOST, webPort: WINDOWS_DSH_PORT });
+  const deployment = await loadCommittedRpgMakerLaunch(committedOptions);
+  const { paths } = committedPaths;
   const env = { ...(options.env ?? process.env), DSH_HOME: paths.dshHome };
   const ownedEnvironment = {
     [MCPORTER_RUNTIME_ENV]: deployment.mcporterRuntimeDir,
@@ -802,7 +1207,7 @@ export async function launchRpgmakerProject(options: RpgMakerLaunchOptions): Pro
     [JS_RUNNER_ENV]: deployment.jsRunner
   };
   const result = await launchProject({
-    ...options,
+    ...committedOptions,
     env,
     nodeExecutable: deployment.jsRunner,
     dshExecutable: deployment.dshExecutable,

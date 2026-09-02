@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { findCodeComposition, installPreset, launchRpgmakerProject, RpgMakerStartupError, resolveMcpRunner, verifyRpgMakerMcpRuntime, RPGMAKER_MV_MCP_PACKAGE, RPGMAKER_MV_MCP_VERSION, RPGMAKER_MV_MCP_INTEGRITY, RPGMAKER_MZ_MCP_PACKAGE, RPGMAKER_MZ_MCP_VERSION, RPGMAKER_MZ_MCP_INTEGRITY } from '../src/rpgmaker';
+import { findCodeComposition, installPreset, prepareRpgMakerLaunch, RpgMakerStartupError, resolveMcpRunner, verifyRpgMakerMcpRuntime, RPGMAKER_MV_MCP_PACKAGE, RPGMAKER_MV_MCP_VERSION, RPGMAKER_MV_MCP_INTEGRITY, RPGMAKER_MZ_MCP_PACKAGE, RPGMAKER_MZ_MCP_VERSION, RPGMAKER_MZ_MCP_INTEGRITY, type RpgMakerLaunchOptions } from '../src/rpgmaker';
+import { launchProject } from '../src/launcher';
 import { DSH_VERSION } from '../src/config';
 import { backupIgnoreGuidance } from '../src/project';
 
@@ -165,7 +166,7 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
       const ambientDshHome = join(root, 'ambient-dsh-home');
       const preparationHomes: Record<string, string | undefined> = {};
       let launch: { args: string[]; cwd?: string; env?: Record<string, string | undefined> } | undefined;
-      const result = await launchRpgmakerProject({
+      const launchOptions: RpgMakerLaunchOptions = {
         platform: 'win32',
         dshHome,
         env: { DSH_HOME: ambientDshHome },
@@ -232,7 +233,21 @@ describe('RPG Maker MCP runtime, preset composition, and launch', () => {
           launch = { args, cwd: options.cwd, env: options.env };
           return child;
         }
+      };
+      const deployment = await prepareRpgMakerLaunch(launchOptions);
+      const launched = await launchProject({
+        ...launchOptions,
+        dshExecutable: deployment.dshExecutable,
+        nodeExecutable: deployment.jsRunner,
+        bindWeb: true,
+        dshArgs: ['--profile', 'web', '--patch', deployment.compositionPath, '--no-open'],
+        extraEnv: {
+          DSH_RPGMAKER_MCPORTER_RUNTIME: deployment.mcporterRuntimeDir,
+          DSH_RPGMAKER_MCP_RUNTIME: deployment.rpgmakerRuntimeDir,
+          DSH_RPGMAKER_JS_RUNNER: deployment.jsRunner
+        }
       });
+      const result = { ...launched, deployment };
       const neutral = join(root, 'program', 'neutral');
       expect(preparationHomes).toEqual({
         dsh: dshHome,

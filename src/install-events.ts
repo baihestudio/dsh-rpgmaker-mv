@@ -197,11 +197,19 @@ export function createInstallationSession(options: InstallationSessionOptions = 
   return new InstallationSession(options);
 }
 
-export type InstallationRendererMode = 'interactive' | 'plain' | 'ndjson';
+/**
+ * Installation output is deliberately one append-only renderer.  Keeping a
+ * named mode in the evidence contract lets older evidence remain readable,
+ * but there is no alternate terminal/stream renderer to select at runtime.
+ */
+export type InstallationRendererMode = 'plain';
 
 export function rendererMode(options: InstallationRendererModeOptions = {}): InstallationRendererMode {
-  if (options.mode) return options.mode;
-  return options.stdoutIsTTY ?? process.stdout.isTTY ? 'interactive' : 'plain';
+  // `mode` and `stdoutIsTTY` are retained as an internal seam for callers that
+  // construct evidence directly.  They intentionally do not change output:
+  // every install, redirected run, and test receives the same plain events.
+  void options;
+  return 'plain';
 }
 
 /** Render append-only output without terminal control sequences. */
@@ -214,9 +222,4 @@ export function renderPlainEvent(event: SessionEvent): string {
   const capacity = event.capacity ? ` [${event.capacity.requiredBytes} bytes required; ${event.capacity.availableBytes === undefined ? 'available space unknown' : `${event.capacity.availableBytes} bytes available`}]` : '';
   const detail = event.error?.message ? `: ${event.error.message}` : '';
   return `${prefix}${name} ${event.status}${operation}${capacity}${progress}${elapsed}${detail}`;
-}
-
-/** NDJSON keeps the exact event stream available to automation callers. */
-export function renderNdjsonEvent(event: SessionEvent): string {
-  return `${JSON.stringify(event)}\n`;
 }

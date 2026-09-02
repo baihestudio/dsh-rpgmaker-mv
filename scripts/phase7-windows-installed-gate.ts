@@ -13,7 +13,7 @@ import { validateRpgMakerWorkspace } from '../src/project';
 import { verifyManagedWebProfile } from '../src/managed-web-profile';
 import { verifyMcporterRuntime } from '../src/mcport';
 import { PNPM_VERSION, verifyPnpmRuntimeForDoctor } from '../src/profile';
-import { resolveExecutable, resolveWindowsPwsh } from '../src/executable';
+import { resolveExecutable, resolveWindowsNode, resolveWindowsPwsh } from '../src/executable';
 import { atLeast, verifyWindowsPrerequisites } from '../src/prerequisites';
 import { buildReleaseZip, inspectReleaseZip, INSTALLER_EXECUTABLE_NAME, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { INSTALLATION_CAPACITY_FORMULA, INSTALLATION_STAGING_HEADROOM_BYTES, readInstallationReceipt } from '../src/installation-root';
@@ -276,11 +276,14 @@ function cleanEnvironment(root: string, nodeExecutable?: string): Record<string,
   safe.USERPROFILE = join(root, 'UserProfile');
   safe.TEMP = join(root, 'Temp');
   safe.TMP = safe.TEMP;
-  delete safe.BUN_INSTALL;
   const nodeDir = nodeExecutable ? dirname(nodeExecutable).replaceAll('/', '\\').toLowerCase() : undefined;
   const path = (safe.PATH ?? '').split(';').filter((entry) => {
     const normalized = entry.replaceAll('/', '\\').replace(/[\\]+$/, '').toLowerCase();
-    return !/\\bbun(?:\\.exe)?\\b/i.test(normalized) && (!nodeDir || normalized !== nodeDir);
+    // Keep the verified Bun installation visible: Bun is now an explicit
+    // desktop-host prerequisite, not an intentionally absent runtime. Node is
+    // still passed explicitly to the installer so the gate can prove that
+    // direct runner selection does not depend on PATH order.
+    return !nodeDir || normalized !== nodeDir;
   }).join(';');
   safe.NPM_CONFIG_CACHE = join(root, 'NpmCache');
   safe.npm_config_cache = safe.NPM_CONFIG_CACHE;
@@ -387,10 +390,9 @@ async function stopInstalledLaunch(started: StartedProcess, env: Record<string, 
 }
 
 export async function resolveInstalledNode(env: Record<string, string | undefined> = process.env): Promise<string> {
-  const requested = env.NODE_EXECUTABLE ?? 'node.exe';
-  const nodeExecutable = await resolveExecutable(requested, { platform: 'win32', env });
-  if (!nodeExecutable || basename(nodeExecutable).toLowerCase() !== 'node.exe') {
-    throw new Error(`The installed-release gate requires a direct native node.exe runner; ${nodeExecutable ? `resolved ${nodeExecutable}` : `${requested} was not found`}.`);
+  const nodeExecutable = await resolveWindowsNode({ platform: 'win32', env });
+  if (!nodeExecutable) {
+    throw new Error(`The installed-release gate requires a direct native node.exe runner; ${env.NODE_EXECUTABLE ?? 'node.exe'} was not found.`);
   }
   return nodeExecutable;
 }
@@ -534,7 +536,6 @@ async function main(): Promise<void> {
     assert.equal(host.valid, true, `fresh Release desktop host verification failed: ${host.errors.join('; ')}`);
     const help = await runCommand(installer, ['--help'], { cwd: extractedRelease, env: targetEnv, platform: 'win32', timeoutMs: 60_000 });
     assert.equal(help.exitCode, 0, `standalone installer help failed: ${diagnostic(help.stderr || help.stdout, targetEnv)}`);
-    assert.equal(/Bun was not found|Node was not found/i.test(`${help.stdout}\n${help.stderr}`), false, 'standalone help reported a runtime prerequisite failure');
 
     // The batch wrapper must classify its launch context itself.  Exercise the
     // helper's deterministic seam for both Explorer and terminal parents, then
@@ -558,7 +559,7 @@ async function main(): Promise<void> {
       '--node-executable', nodeExecutable,
       ...(npmExecutable ? ['--npm-executable', npmExecutable] : []),
       ...(pwshExecutable ? ['--pwsh-executable', pwshExecutable] : []),
-      '--plain', '--non-interactive'
+      '--non-interactive'
     ], extractedRelease, targetEnv);
     assert.match(install.stdout, /INSTALL .*succeeded/);
     const firstReceipt = await readInstallationReceipt(localStateRoot);
@@ -582,7 +583,7 @@ async function main(): Promise<void> {
       '--node-executable', nodeExecutable,
       ...(npmExecutable ? ['--npm-executable', npmExecutable] : []),
       ...(pwshExecutable ? ['--pwsh-executable', pwshExecutable] : []),
-      '--plain', '--non-interactive'
+      '--non-interactive'
     ], extractedRelease, targetEnv);
     assert.match(repair.stdout, /INSTALL .*succeeded/);
     const secondReceipt = await readInstallationReceipt(localStateRoot);
@@ -616,7 +617,7 @@ async function main(): Promise<void> {
       dsh: DSH_VERSION,
       externalPrerequisites: prerequisites.checks.map((check) => ({ id: check.id, version: check.version, executable: check.executable })),
       provisioned: { sourceRoot, releaseArchive, extractedRelease, installationRoot, programRoot, localStateRoot, dshHome, shortcutPath, npmCache: targetEnv.NPM_CONFIG_CACHE },
-      standalone: { installer, helpExitCode: help.exitCode, wrapperHelpExitCode: wrapperHelp.exitCode, explorerContextExitCode: explorerContext.exitCode, terminalContextExitCode: terminalContext.exitCode, nodeOnTargetPath: false, bunOnTargetPath: false },
+      standalone: { installer, helpExitCode: help.exitCode, wrapperHelpExitCode: wrapperHelp.exitCode, explorerContextExitCode: explorerContext.exitCode, terminalContextExitCode: terminalContext.exitCode, nodeExecutable, bunExecutable: prerequisites.executablePaths.bun },
       install: { terminalEvent: install.stdout.split(/\r?\n/).find((line) => line.startsWith('INSTALL ')), receipt: firstReceipt },
       repair: { terminalEvent: repair.stdout.split(/\r?\n/).find((line) => line.startsWith('INSTALL ')), receipt: secondReceipt },
       runtimes: { dsh: true, mcporter: true, rpgmakerMcp: true, pnpm: true, profile: repairedProfile.valid, host: firstHost.valid, shortcut: true },

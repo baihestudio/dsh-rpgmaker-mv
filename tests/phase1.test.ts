@@ -733,7 +733,7 @@ describe('doctor and launcher seams', () => {
       expect(stdout).toMatch(/PHASE 1\/8 destination started/);
       expect(stdout).toMatch(/estimated capacity: .* bytes required/);
       expect(stdout).not.toContain('\u001b');
-      expect(stderr).toMatch(/prerequisite|consent|Node/i);
+      expect(stderr).toMatch(/prerequisite|WinGet|Node/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
