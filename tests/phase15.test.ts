@@ -132,7 +132,9 @@ describe('windows install recovery contracts', () => {
       const secret = 'phase15-sidecar-secret';
       const bearer = 'phase15-bearer-secret';
       const basic = 'phase15-basic-secret';
-      const original = new Error(`startup failed DEEPSEEK_API_KEY=${secret}; token=${secret}; Authorization: Bearer ${bearer}; authorization: Basic ${basic}; ${'x'.repeat(3000)}`);
+      const authorizationEqualsBearer = 'phase15-authorization-equals-bearer-secret';
+      const authorizationEqualsBasic = 'phase15-authorization-equals-basic-secret';
+      const original = new Error(`startup failed DEEPSEEK_API_KEY=${secret}; token=${secret}; Authorization=Bearer ${authorizationEqualsBearer}; Authorization=Basic ${authorizationEqualsBasic}; Authorization: Bearer ${bearer}; authorization: Basic ${basic}; ${'x'.repeat(3000)}`);
       await expect(runRpgMakerSidecar({}, {
         platform: 'win32',
         entrypointPath: entrypoint,
@@ -142,7 +144,7 @@ describe('windows install recovery contracts', () => {
       })).rejects.toBe(original);
 
       const line = (await readFile(join(localStateRoot, 'logs', 'launcher.log'), 'utf8')).trim();
-      const diagnostic = JSON.parse(line) as { at: string; event: string; operation: string; category: string; summary: string; modulePath?: string };
+      const diagnostic = JSON.parse(line) as { at: string; event: string; operation: string; category: string; summary: string; cause?: string; modulePath?: string };
       expect(diagnostic).toMatchObject({
         at: '2026-09-01T00:00:00.000Z',
         event: SIDECAR_STARTUP_FAILURE_EVENT,
@@ -154,6 +156,10 @@ describe('windows install recovery contracts', () => {
       expect(line).not.toContain(secret);
       expect(line).not.toContain(bearer);
       expect(line).not.toContain(basic);
+      expect(line).not.toContain(authorizationEqualsBearer);
+      expect(line).not.toContain(authorizationEqualsBasic);
+      expect(line).toContain('[redacted]');
+      expect(diagnostic.cause).toContain('startup failed');
       expect(diagnostic.summary.length).toBeLessThanOrEqual(2_000);
 
       const writeFailure = new Error('the original startup failure');

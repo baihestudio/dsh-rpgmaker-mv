@@ -80,8 +80,6 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   releaseRoot: string;
   /** Inject live MCP tools/list for disposable install tests. */
   mcpSchemaProbe?: McpSchemaProbe;
-  /** Alias retained for the product's existing schema-probe seam. */
-  schemaProbe?: McpSchemaProbe;
   installationRoot?: string;
   localStateRoot?: string;
   renderer?: InstallationRendererMode;
@@ -598,7 +596,7 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
       // Live MCP contract checks are part of the committed-install gate.  The
       // injected command-runner path is intentionally kept filesystem-only for
       // ordinary disposable tests; those tests opt in with a schema probe seam.
-      const schemaProbe = options.mcpSchemaProbe ?? options.schemaProbe;
+      const schemaProbe = options.mcpSchemaProbe;
       if (schemaProbe || !options.commandRunner) {
         const nodeExecutable = options.nodeExecutable ?? prerequisites.executablePaths.node;
         if (!nodeExecutable) throw new Error('A verified direct node.exe is required for live RPG Maker MCP contract validation.');
@@ -779,7 +777,7 @@ async function buildInstallerExecutable(options: ReleaseZipOptions, sourceRoot: 
   const env = options.env ?? process.env;
   const runner = options.commandRunner ?? runCommand;
   const bun = options.bunExecutable ?? env.BUN_EXECUTABLE ?? await resolveExecutable('bun', { platform: options.platform, env });
-  if (!bun) throw new ReleaseGateError('A build-time Bun executable is required to compile installer.exe. Target machines do not need Bun.');
+  if (!bun) throw new ReleaseGateError('A build-time Bun executable is required to compile installer.exe; Windows targets also require the packaged desktop host Bun runtime.');
   const output = join(staging, INSTALLER_EXECUTABLE_NAME);
   const entry = join(sourceRoot, 'src', 'installer.ts');
   const args = ['build', entry, '--compile', '--target=bun-windows-x64', '--outfile', output];

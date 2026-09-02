@@ -22,7 +22,7 @@ committing its installation receipt; an incomplete Release fails closed.
 
 `Install.cmd` is a thin zero-argument wrapper around `installer.exe`. Unsupported arguments fail clearly. It asks its own Windows process-tree helper whether the batch file was launched by Explorer and pauses only in that case; terminal and redirected invocations return immediately without relying on a caller-set environment variable. The separate confirmation before closing an actively running owned Agent remains an upgrade safety check.
 
-The four direct package dependencies and six bundle layers belong to one DSH-managed profile state. DSH's `web` template layers (`@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`) remain in-box template bundles rather than profile dependencies. If a package command or final verification fails after initializing that state, the installer reports the materialization failure and restores the prior working profile (and its app-owned workspace bundle); rerun `Install.cmd` to complete the profile setup. Credentials, recent workspaces, presets, caches, logs, and other mutable state remain outside this rollback boundary.
+The four direct package dependencies and six bundle layers belong to one DSH-managed profile state. DSH's `web` template layers (`@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`) remain in-box template bundles rather than profile dependencies. If a package command or final verification fails after initializing that state, the installer reports the materialization failure and restores the prior working profile and complete app-managed bundle root (both brand and workspace bundles); rerun `Install.cmd` to complete the profile setup. Credentials, recent workspaces, presets, caches, logs, and other mutable state remain outside this rollback boundary.
 
 No Git clone or manual package command is needed. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported fresh-install, upgrade, and repair path; a previous runtime is retained by the staged runtime swap for recovery. If an owned Agent is running during an upgrade, the installer asks once whether to close it and stops only that owned process tree. Declining leaves the installed tree and mutable state untouched. If post-swap bootstrap, metadata, profile, contract, or shortcut verification fails, the prior program tree and complete managed bundle root are restored and the failed new tree is retained as a named diagnostic/recovery directory.
 
@@ -198,8 +198,8 @@ installation, local-state, shortcut, and npm-cache roots using normal npm
 registry access. It verifies the compiled standalone installer, desktop host,
 Node-based DSH/MCP runtimes, app-owned pnpm/profile, receipt, shortcut, final
 session event, timing JSON, and redacted log. It removes the program tree and
-runs repair against the same receipt to prove root reuse and the absence of a
-Bun dependency. Only gate-owned artifacts are removed; a true clean-machine
+runs repair against the same receipt to prove root reuse and the packaged host's
+exact Bun verification. Only gate-owned artifacts are removed; a true clean-machine
 prerequisite-install VM gate remains unverified and outside this run.
 
 ## Doctor and repair

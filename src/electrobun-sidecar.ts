@@ -82,7 +82,11 @@ function safeDiagnosticSummary(summary: string, env: Record<string, string | und
  * key-oriented pass before printing.
  */
 function redactDiagnosticCredentials(value: string): string {
-  return value.replace(
+  const authorization = value.replace(
+    /(authorization\s*[:=]\s*)(?:(?:bearer|basic)\s+)?("[^"]*"|'[^']*'|[^\s,;}]+)/gi,
+    '$1[redacted]'
+  );
+  return authorization.replace(
     /((?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret|token)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}]+)/gi,
     '$1[redacted]'
   );
@@ -164,8 +168,10 @@ function startupDiagnosticDetails(
     // messages in the product use a colon to append child output, so retain
     // only the text before that separator. A Windows drive colon is not
     // followed by whitespace and is therefore preserved.
-    const lead = message.split(/[;\r\n]/, 1)[0]?.split(/:\s+/, 1)[0]?.trim();
-    return safeDiagnosticSummary(`${name}${lead ? `: ${lead}` : ''}`, env);
+    const marker = '[diagnostic truncated]\n';
+    const messageWithoutMarker = message.startsWith(marker) ? message.slice(marker.length) : message;
+    const lead = messageWithoutMarker.split(/[;\r\n]/, 1)[0]?.split(/:\s+/, 1)[0]?.trim();
+    return safeDiagnosticSummary(`${name}${lead ? `: ${lead}` : ''}${message.startsWith(marker) ? ' [diagnostic truncated]' : ''}`, env);
   })();
   if (operation === 'load-installed-launcher') {
     const modulePath = programRoot ? installedProductLauncherPath(programRoot) : undefined;

@@ -3,7 +3,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 
-import { bootstrapRuntime, resolveDshEntrypoint, verifyRuntime, type BootstrapOptions, type BootstrapResult } from './bootstrap';
+import { bootstrapRuntime, resolveDshEntrypoint, type BootstrapOptions, type BootstrapResult } from './bootstrap';
 import { PRODUCT_NAME, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
 import { resolveExecutable, resolveWindowsNode } from './executable';
 import { commandFailure, prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, withoutCredentials, type CommandRunner } from './process';
@@ -109,6 +109,15 @@ export interface RpgMakerMcpContractValidation {
   valid: boolean;
   errors: string[];
   engines: { mv: RpgMakerMcpContractEngineResult; mz: RpgMakerMcpContractEngineResult };
+}
+
+export interface RpgMakerMcpContractValidationOptions {
+  runtimeDir: string;
+  nodeExecutable: string;
+  installationCacheDir: string;
+  platform?: string;
+  env?: Record<string, string | undefined>;
+  schemaProbe?: McpSchemaProbe;
 }
 
 export interface RpgMakerPresetDeploymentOptions extends PathOptions {
@@ -725,14 +734,7 @@ async function makeMcpContractProject(parent: string, engine: 'mv' | 'mz'): Prom
 }
 
 /** Validate both pinned RPG Maker MCP contracts against live installed servers. */
-export async function validateRpgMakerMcpContracts(options: {
-  runtimeDir: string;
-  nodeExecutable: string;
-  installationCacheDir: string;
-  platform?: string;
-  env?: Record<string, string | undefined>;
-  schemaProbe?: McpSchemaProbe;
-}): Promise<RpgMakerMcpContractValidation> {
+export async function validateRpgMakerMcpContracts(options: RpgMakerMcpContractValidationOptions): Promise<RpgMakerMcpContractValidation> {
   const platform = options.platform ?? process.platform;
   if (platform !== 'win32') throw new RpgMakerStartupError('RPG Maker MCP contract validation is supported on Windows only.');
   const env = withoutCredentials(options.env ?? process.env);
@@ -1053,18 +1055,10 @@ export async function loadCommittedRpgMakerLaunch(options: RpgMakerLaunchOptions
     throw new RpgMakerStartupError(`Unknown RPG Maker agent preset: ${agentPreset}`);
   }
 
-  // Resolve and verify the direct Node runner once.  Bun belongs to the
-  // packaged desktop host and is never accepted as the MCP child runner.
+  // Resolve the direct Node runner used by the MCP children. Bun belongs to
+  // the packaged desktop host and is never accepted as the MCP child runner.
   const jsRunner = await resolveMcpRunner(options, platform, withoutCredentials(env));
-  const runtime = await verifyRuntime(committedRuntimeDir, {
-    platform,
-    env: withoutCredentials(env),
-    nodeExecutable: jsRunner,
-    npmExecutable: options.npmExecutable,
-    commandRunner: options.commandRunner
-  });
-  if (!runtime.valid) throw new RpgMakerStartupError(`Pinned DSH runtime is not usable: ${runtime.errors.join('; ')}`);
-  const dshExecutable = options.dshExecutable ?? runtime.dshExecutable ?? await resolveDshEntrypoint(committedRuntimeDir, platform);
+  const dshExecutable = options.dshExecutable ?? await resolveDshEntrypoint(committedRuntimeDir, platform);
   if (!dshExecutable) throw new RpgMakerStartupError('Pinned DSH executable was not found; run Install.cmd to repair the committed installation.');
   if (!(await pathExists(dshExecutable))) throw new RpgMakerStartupError(`DSH executable does not exist: ${dshExecutable}. Run Install.cmd to repair the committed installation.`);
   if (options.dshExecutable) {

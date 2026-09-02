@@ -2091,7 +2091,11 @@ describe('Windows release gate foundations', () => {
       });
       expect(fastLaunch.deployment.managedWebProfile.materialized).toBe(false);
       const fastCalls = calls.slice(callsBeforeFastLaunch);
-      expect(fastCalls.some((call) => call.args[0] === 'ci' || call.args.includes('plugin') || call.args.includes('--dump-config') || call.args.includes('tools/list'))).toBe(false);
+      expect(fastCalls.some((call) => call.args[0] === 'ci'
+        || call.args.includes('plugin')
+        || call.args.includes('--dump-config')
+        || call.args.includes('tools/list')
+        || (call.args.includes('-e') && call.args.some((arg) => /koffi/i.test(arg))))).toBe(false);
       fastChild.exitCode = 0;
       fastChild.emit('exit', 0);
       await fastLaunch.releaseSession();
