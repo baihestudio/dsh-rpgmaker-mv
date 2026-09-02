@@ -160,6 +160,7 @@ describe('Electrobun RPG Maker adapter', () => {
       sidecar: { entrypoint: ELECTROBUN_SIDECAR, args: [] },
       readiness: { url: 'http://127.0.0.1:3081/' },
       navigation: { url: 'http://127.0.0.1:3081/' },
+      authentication: { tokenExchangeUrl: 'http://127.0.0.1:3081/' },
       supervisor: { executable: ELECTROBUN_SUPERVISOR },
     });
   });

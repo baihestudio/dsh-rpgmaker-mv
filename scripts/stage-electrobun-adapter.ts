@@ -48,6 +48,9 @@ export const ELECTROBUN_PRODUCT_MANIFEST = {
   navigation: {
     url: 'http://127.0.0.1:3081/'
   },
+  authentication: {
+    tokenExchangeUrl: 'http://127.0.0.1:3081/'
+  },
   window: {
     title: 'RPG Maker Agent',
     width: 1280,
