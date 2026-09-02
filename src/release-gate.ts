@@ -34,7 +34,7 @@ import {
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 import { withHarnessLock } from './lock';
 import { commitInstallationReceipt, defaultInstallationRoot, defaultLocalStateRoot, INSTALLATION_CAPACITY_BASIS, INSTALLATION_CAPACITY_FORMULA, INSTALLATION_STAGING_HEADROOM_BYTES, inspectInstallationReceipt, measureReleasePayloadBytes, readInstallationReceipt, resolveRecordedInstallationRoot, validateInstallationRoot, type InstallationCapacity } from './installation-root';
-import { createInstallationSession, rendererMode, type InstallationEventListener, type InstallationOperation, type InstallationRendererMode } from './install-events';
+import { createInstallationSession, type InstallationEventListener, type InstallationOperation } from './install-events';
 import { createInstallRunEvidence, type InstallRunEvidence } from './install-evidence';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
@@ -82,7 +82,6 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   mcpSchemaProbe?: McpSchemaProbe;
   installationRoot?: string;
   localStateRoot?: string;
-  renderer?: InstallationRendererMode;
   operation?: InstallationOperation;
   onEvent?: InstallationEventListener;
   nonInteractive?: boolean;
@@ -706,13 +705,11 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
   const receiptInspection = await inspectInstallationReceipt(localStateRoot);
   const receipt = receiptInspection.receipt;
   const operation: InstallationOperation = options.operation ?? (receipt ? (await exists(receipt.programRoot) ? 'upgrade' : 'repair') : 'install');
-  const mode = rendererMode({ mode: options.renderer });
   const session = createInstallationSession({ operation, now: options.now, onEvent: options.onEvent });
   const evidence = createInstallRunEvidence({
     localStateRoot,
     installationRoot: options.installationRoot ?? receipt?.installationRoot ?? '',
     operation,
-    renderer: mode,
     productVersion: PRODUCT_VERSION,
     runtimeVersion: DSH_VERSION,
     now: options.now,

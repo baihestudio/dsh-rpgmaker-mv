@@ -10,7 +10,6 @@ import { launchProject } from '../src/launcher';
 import { acquireHarnessLock } from '../src/lock';
 import { runCli } from '../src/cli';
 import { installerArguments } from '../src/installer';
-import { rendererMode } from '../src/install-events';
 import { childExitCode, executeCommand, prepareProcessInvocation, ProcessTerminationError } from '../src/process';
 import { validateMvProject } from '../src/project';
 
@@ -757,7 +756,6 @@ describe('doctor and launcher seams', () => {
 
   test('timing records keep product and runtime versions distinct', async () => {
     expect(PRODUCT_VERSION).not.toBe(DSH_VERSION);
-    expect(rendererMode({ stdoutIsTTY: false })).toBe('plain');
   });
 
   test('Windows .cmd DSH shims are invoked through cmd.exe without using the project path as command text', () => {

@@ -3,7 +3,7 @@ import { appendFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import { redactSensitive, type CommandResult } from './process';
-import type { InstallationOperation, InstallationRendererMode, InstallPhaseName, SessionEvent } from './install-events';
+import type { InstallationOperation, InstallPhaseName, SessionEvent } from './install-events';
 import type { InstallationCapacity } from './installation-root';
 
 export const INSTALL_TIMING_SCHEMA_VERSION = 1;
@@ -28,7 +28,7 @@ export interface InstallTimingRecord {
   startedAt: string;
   endedAt: string;
   totalDurationMs: number;
-  renderer: InstallationRendererMode;
+  renderer: 'plain';
   finalStatus: Exclude<SessionEvent['status'], 'started'>;
   installationRoot: string;
   localStateRoot: string;
@@ -45,7 +45,6 @@ export interface InstallRunEvidenceOptions {
   localStateRoot: string;
   installationRoot: string;
   operation: InstallationOperation;
-  renderer: InstallationRendererMode;
   productVersion?: string;
   runtimeVersion?: string;
   runId?: string;
@@ -109,7 +108,7 @@ export class InstallRunEvidence {
       operation: this.options.operation,
       productVersion: this.options.productVersion ?? 'unknown',
       runtimeVersion: this.options.runtimeVersion ?? 'unknown',
-      renderer: this.options.renderer,
+      renderer: 'plain',
       installationRoot: this.options.installationRoot,
       localStateRoot: this.options.localStateRoot
     };
@@ -179,7 +178,7 @@ export class InstallRunEvidence {
       startedAt: this.startedAt.toISOString(),
       endedAt: endedAt.toISOString(),
       totalDurationMs: Math.max(0, endedAt.getTime() - this.startedAt.getTime()),
-      renderer: this.options.renderer,
+      renderer: 'plain',
       finalStatus: status,
       installationRoot: this.options.installationRoot,
       localStateRoot: this.options.localStateRoot,

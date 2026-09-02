@@ -56,11 +56,6 @@ export interface InstallationSessionOptions {
   onEvent?: InstallationEventListener;
 }
 
-export interface InstallationRendererModeOptions {
-  mode?: InstallationRendererMode;
-  stdoutIsTTY?: boolean;
-}
-
 export interface InstallationSessionEmitInput extends Omit<SessionEvent, 'operation' | 'at'> {
   at?: string;
 }
@@ -195,21 +190,6 @@ export class InstallationSession {
 
 export function createInstallationSession(options: InstallationSessionOptions = {}): InstallationSession {
   return new InstallationSession(options);
-}
-
-/**
- * Installation output is deliberately one append-only renderer.  Keeping a
- * named mode in the evidence contract lets older evidence remain readable,
- * but there is no alternate terminal/stream renderer to select at runtime.
- */
-export type InstallationRendererMode = 'plain';
-
-export function rendererMode(options: InstallationRendererModeOptions = {}): InstallationRendererMode {
-  // `mode` and `stdoutIsTTY` are retained as an internal seam for callers that
-  // construct evidence directly.  They intentionally do not change output:
-  // every install, redirected run, and test receives the same plain events.
-  void options;
-  return 'plain';
 }
 
 /** Render append-only output without terminal control sequences. */

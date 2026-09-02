@@ -52,7 +52,6 @@ describe('windows install recovery contracts', () => {
         localStateRoot: root,
         installationRoot: join(root, 'selected-root'),
         operation: 'install',
-        renderer: 'plain',
         productVersion: '0.1.0',
         runtimeVersion: '0.1.1-rc.2',
         runId: 'phase15-run',
@@ -67,13 +66,15 @@ describe('windows install recovery contracts', () => {
         event: INSTALL_RUN_STARTED_EVENT,
         runId: 'phase15-run',
         operation: 'install',
+        renderer: 'plain',
         installationRoot: join(root, 'selected-root'),
         localStateRoot: root,
       });
       expect(firstLine).not.toContain(secret);
       expect(firstLine.length).toBeGreaterThan(0);
 
-      await evidence.finish('failed', { error: `DEEPSEEK_API_KEY=${secret}` });
+      const timing = await evidence.finish('failed', { error: `DEEPSEEK_API_KEY=${secret}` });
+      expect(timing.renderer).toBe('plain');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

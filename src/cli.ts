@@ -7,7 +7,7 @@ import { WINDOWS_DSH_HOST, WINDOWS_DSH_PORT } from './config';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, uninstallWindowsRelease } from './release-gate';
 import { pickInstallationRoot, type PortConflictAction, type ExistingSessionOpener, type PortProbe } from './windows';
 import { createInstallationRenderer } from './install-renderer';
-import { rendererMode, type InstallationEventListener } from './install-events';
+import type { InstallationEventListener } from './install-events';
 import { defaultLocalStateRoot } from './installation-root';
 import { createInterface } from 'node:readline/promises';
 import { stdin as processStdin, stdout as processStdout } from 'node:process';
@@ -200,8 +200,7 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
     if (parsed.command === 'install' || parsed.command === 'repair') {
       const localStateRoot = option(parsed.values, 'local-state-root') ?? option(parsed.values, 'mutable-root') ?? defaultLocalStateRoot(dependencies.env ?? process.env);
       let installationRoot = option(parsed.values, 'installation-root');
-      const mode = rendererMode();
-      const eventListener = dependencies.installEventListener ?? createInstallationRenderer(mode, io);
+      const eventListener = dependencies.installEventListener ?? createInstallationRenderer(io);
       // This flag only suppresses the first-install destination picker.  It
       // never changes the renderer or prerequisite policy.
       const nonInteractive = parsed.flags.has('non-interactive');
@@ -248,7 +247,6 @@ export async function runCli(argv: string[] = process.argv.slice(2), dependencie
         wingetExecutable: option(parsed.values, 'winget-executable'),
         desktopHostRoot: option(parsed.values, 'desktop-host-root'),
         requireDesktopHost: parsed.flags.has('require-desktop-host') ? true : undefined,
-        renderer: mode,
         onEvent: eventListener,
         nonInteractive,
         commandRunner: dependencies.commandRunner

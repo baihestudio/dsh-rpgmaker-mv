@@ -1,4 +1,4 @@
-import { renderPlainEvent, type InstallationEventListener, type InstallationRendererMode } from './install-events';
+import { renderPlainEvent, type InstallationEventListener } from './install-events';
 
 export interface InstallationRendererIO {
   stdout: { write: (text: string) => unknown };
@@ -11,7 +11,7 @@ function boundedError(message: string | undefined, limit = 2_000): string | unde
 }
 
 /** One append-only renderer for every terminal, redirected, and test run. */
-export function createInstallationRenderer(_mode: InstallationRendererMode, io: InstallationRendererIO): InstallationEventListener {
+export function createInstallationRenderer(io: InstallationRendererIO): InstallationEventListener {
   return (event) => {
     const rendered = renderPlainEvent(event);
     const detail = event.kind === 'session' && event.status !== 'succeeded'

@@ -70,11 +70,13 @@ revision, with its complete `src/` module graph; mixing a newly staged adapter
 with an older partial installation is unsupported. A stable release must ship
 the product and adapter as one version-coherent installation.
 
-For a disposable smoke that reuses installed read-only binaries while putting
-mutable DSH state in a test-owned Windows temporary directory, set
-`DSH_RPGMAKER_DATA_ROOT` and `DSH_HOME` for the host process. Do not run the
-smoke while another DSH session owns port 3081. The adapter does not stop or
-modify a user's running DSH session.
+For disposable adapter tests that reuse installed read-only binaries while
+putting mutable DSH state in a test-owned Windows temporary directory, inject
+the packaged entrypoint and local-state root through the existing sidecar
+dependency seam. Do not set `DSH_RPGMAKER_DATA_ROOT` or `DSH_HOME` as a native
+production-launch recipe: the packaged sidecar intentionally ignores those
+ambient overrides. Do not run the smoke while another DSH session owns port
+3081. The adapter does not stop or modify a user's running DSH session.
 
 To package a release, provide the already-built host output as a
 `--desktop-host-root` payload to the product release script. The product gate
