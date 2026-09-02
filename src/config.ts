@@ -3,7 +3,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 
 export const DSH_PACKAGE_NAME = '@deepseek-ai/dsh';
 export const DSH_VERSION = '0.1.1-rc.2';
-export const PRODUCT_VERSION = '0.2.0';
+export const PRODUCT_VERSION = '0.2.1';
 export const DSH_NPM_INTEGRITY = 'sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==';
 export const DSH_RUNTIME_NAME = 'dsh-rpgmaker-runtime';
 export const PRODUCT_VENDOR = 'BaiheStudio';

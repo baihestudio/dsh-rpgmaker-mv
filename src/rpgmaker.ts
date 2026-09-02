@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 
 import { bootstrapRuntime, resolveDshEntrypoint, type BootstrapOptions, type BootstrapResult } from './bootstrap';
-import { PRODUCT_NAME, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
+import { PRODUCT_NAME, PRODUCT_VERSION, PROGRAM_OWNER, PROGRAM_OWNERSHIP_FILE, WINDOWS_DSH_HOST, WINDOWS_DSH_PORT, type PathOptions } from './config';
 import { resolveExecutable, resolveWindowsNode } from './executable';
 import { commandFailure, prepareProcessInvocation, redactSensitive, runCommand, terminateProcessTree, withoutCredentials, type CommandRunner } from './process';
 import { pathExists } from './project';
@@ -674,7 +674,7 @@ export async function defaultMcpSchemaProbe(request: McpSchemaProbeRequest): Pro
     });
   };
   try {
-    await requestResponse(1, 'initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'dsh-rpgmaker-mv-installer', version: '0.2.0' } });
+    await requestResponse(1, 'initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'dsh-rpgmaker-mv-installer', version: PRODUCT_VERSION } });
     child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`);
     const response = await requestResponse(2, 'tools/list', {});
     const result = response.result as { tools?: McpToolDefinition[] } | undefined;
