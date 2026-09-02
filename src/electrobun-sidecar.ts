@@ -347,6 +347,9 @@ export async function runRpgMakerSidecar(
       bindWeb: true,
       webHost: '127.0.0.1',
       webPort: 3081,
+      // DSH alpha.3 prints its one-time launch-token URL to stdout. Give that
+      // process a session console instead of persisting the credential in logs.
+      newConsole: true,
       // Electrobun owns the native WebView. Never open a second browser window
       // from the product sidecar.
       openExistingSession: async () => undefined,

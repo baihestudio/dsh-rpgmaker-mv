@@ -68,6 +68,7 @@ describe('Electrobun RPG Maker adapter', () => {
       bindWeb: true,
       webHost: '127.0.0.1',
       webPort: 3081,
+      newConsole: true,
     });
     // The product launcher turns this explicit sidecar setting into DSH's
     // `--no-open` argument; the native WebView remains the sole UI opener.
