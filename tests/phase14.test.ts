@@ -281,7 +281,7 @@ describe('desktop host release payload', () => {
       const payload = await makeHost(root);
       const bin = join(root, 'bin');
       await mkdir(bin, { recursive: true });
-      const executables = ['node.exe', 'npm.cmd', 'python.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', 'magick.exe', 'winget.exe'];
+      const executables = ['node.exe', 'bun.exe', 'npm.cmd', 'python.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', 'magick.exe', 'winget.exe'];
       for (const name of executables) await writeFile(join(bin, name), 'fixture');
       const runtime = join(root, 'runtime');
       await makeMinimalDshRuntime(runtime);
@@ -296,6 +296,7 @@ describe('desktop host release payload', () => {
         if (args.includes('--dump-config')) return { exitCode: 0, stdout: '- id: timeout-policy\n  name: "@deepseek-ai/dsh-tool-call-timeout-policy"\n- id: agent-presets\n', stderr: '' };
         if (name === 'node.exe' && args[0] === '-p') return { exitCode: 0, stdout: 'iron\n', stderr: '' };
         if (name === 'node.exe') return { exitCode: 0, stdout: 'v22.18.0\n', stderr: '' };
+        if (name === 'bun.exe') return { exitCode: 0, stdout: '1.3.14\n', stderr: '' };
         if (name === 'npm.cmd') return { exitCode: 0, stdout: '10.8.2\n', stderr: '' };
         if (name === 'python.exe') return { exitCode: 0, stdout: 'Python 3.13.15\n', stderr: '' };
         if (name === 'pwsh.exe') return { exitCode: 0, stdout: 'PowerShell 7.4.6\n', stderr: '' };
@@ -326,7 +327,6 @@ describe('desktop host release payload', () => {
         imageMagickExecutable: join(bin, 'magick.exe'),
         wingetExecutable: join(bin, 'winget.exe'),
         commandRunner: runner,
-        consent: true,
         prepareAgentDependencies: async () => undefined,
         createShortcut: async (options) => {
           shortcutTarget = options.targetPath;
@@ -367,7 +367,6 @@ describe('desktop host release payload', () => {
         coreutilsExecutable: join(bin, 'coreutils-manager.exe'),
         imageMagickExecutable: join(bin, 'magick.exe'),
         commandRunner: runner,
-        consent: true,
         ownedProcessRecords: [{ pid: 501, parentPid: 1, executablePath: join(program, 'desktop-host', 'app', 'RPG Maker Agent.exe') }],
         ownedAgentConsent: () => true,
         stopOwnedProcessTree: async (pid) => { stopped.push(pid); },
@@ -403,7 +402,6 @@ describe('desktop host release payload', () => {
         coreutilsExecutable: join(bin, 'coreutils-manager.exe'),
         imageMagickExecutable: join(bin, 'magick.exe'),
         commandRunner: runner,
-        consent: true,
         prepareAgentDependencies: async () => undefined,
         writeInstallMetadata: async () => { throw new Error('simulated metadata failure'); },
         createShortcut: async () => shortcut,

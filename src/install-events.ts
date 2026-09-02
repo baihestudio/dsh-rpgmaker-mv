@@ -56,11 +56,6 @@ export interface InstallationSessionOptions {
   onEvent?: InstallationEventListener;
 }
 
-export interface InstallationRendererModeOptions {
-  mode?: InstallationRendererMode;
-  stdoutIsTTY?: boolean;
-}
-
 export interface InstallationSessionEmitInput extends Omit<SessionEvent, 'operation' | 'at'> {
   at?: string;
 }
@@ -197,13 +192,6 @@ export function createInstallationSession(options: InstallationSessionOptions = 
   return new InstallationSession(options);
 }
 
-export type InstallationRendererMode = 'interactive' | 'plain' | 'ndjson';
-
-export function rendererMode(options: InstallationRendererModeOptions = {}): InstallationRendererMode {
-  if (options.mode) return options.mode;
-  return options.stdoutIsTTY ?? process.stdout.isTTY ? 'interactive' : 'plain';
-}
-
 /** Render append-only output without terminal control sequences. */
 export function renderPlainEvent(event: SessionEvent): string {
   const prefix = event.kind === 'session' ? 'INSTALL' : `PHASE ${event.ordinal ?? '?'}${event.totalPhases ? `/${event.totalPhases}` : ''}`;
@@ -214,9 +202,4 @@ export function renderPlainEvent(event: SessionEvent): string {
   const capacity = event.capacity ? ` [${event.capacity.requiredBytes} bytes required; ${event.capacity.availableBytes === undefined ? 'available space unknown' : `${event.capacity.availableBytes} bytes available`}]` : '';
   const detail = event.error?.message ? `: ${event.error.message}` : '';
   return `${prefix}${name} ${event.status}${operation}${capacity}${progress}${elapsed}${detail}`;
-}
-
-/** NDJSON keeps the exact event stream available to automation callers. */
-export function renderNdjsonEvent(event: SessionEvent): string {
-  return `${JSON.stringify(event)}\n`;
 }

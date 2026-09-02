@@ -6,7 +6,7 @@ The AI production agent for RPG Maker MV and MZ
 
 ## Windows Release ZIP (Phase 7)
 
-For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The standalone compiled installer opens a folder picker before downloading, verifies the bundled desktop host, then obtains one explicit consent before any WinGet install or repair. It requires Node.js LTS 22+ with npm, installs the pinned DSH and RPG Maker MCPs, and creates the per-user Start Menu shortcut **RPG Maker Agent** targeting the native host. Re-running the same command upgrades an owned installation after one explicit running-Agent close confirmation. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
+For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The zero-argument installer emits stable append-only plain output for eight phases, automatically repairs and verifies the supported Windows prerequisites (including exact Bun 1.3.14), installs the pinned DSH/MV/MZ runtimes and managed profile, validates composition and live MCP contracts, and creates the **RPG Maker Agent** Start Menu shortcut. On a first install choose the destination; re-running `Install.cmd` repairs or upgrades the recorded root after the separate running-Agent close confirmation. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
 
 The full first-run, repair, port-conflict, workspace-selection, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata, removes the installation-location receipt so a reinstall can choose a different root, and preserves rollback/recovery state, mutable state, credentials, logs, and projects; `uninstall.ps1 -Purge` is explicit.
 
@@ -17,7 +17,7 @@ Contributors can still run the underlying bootstrap and doctor scripts from Powe
 ./doctor.ps1
 ```
 
-The harness keeps the official DeepSeek Harness runtime in an app-owned tree and never forks or edits DSH. Installation materializes one exact app-managed `web` profile with four direct managed package dependencies and six ordered DSH bundle layers: the in-box `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app` template layers, followed by pinned Web and image-generation packages plus the release-owned brand and workspace MCP bundles. Startup repairs that same profile when it is stale; Doctor reports its read-only health without changing profile state. Windows is the only supported product platform.
+The harness keeps the official DeepSeek Harness runtime in an app-owned tree and never forks or edits DSH. Installation materializes one exact app-managed `web` profile with four direct managed package dependencies and six ordered DSH bundle layers: the in-box `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app` template layers, followed by pinned Web and image-generation packages plus the release-owned brand and workspace MCP bundles. Install/repair owns profile materialization; normal startup only verifies the committed profile, while Doctor reports read-only health without changing profile state. Windows is the only supported product platform.
 
 The real workspace acceptance uses only disposable state: `bun run phase2:real`
 prepares the project-neutral Host from a neutral landing directory, checks the
@@ -32,16 +32,23 @@ source and desktop-host roots:
 bun run phase7:windows-installed -- --source-root (Get-Location).Path --desktop-host-root C:\temp\built-desktop-host
 ```
 
-It builds a fresh archive, runs the compiled installer with Node and Bun absent
-from its target `PATH`, performs a receipt-driven repair, verifies the host,
-Node-based runtimes, app-owned pnpm/profile, shortcut, timing record, and
-redacted log, and cleans only its disposable roots.
+It builds a fresh archive, runs the compiled installer with disposable
+prerequisite/runtime roots, performs a receipt-driven repair, verifies the
+host, exact Node/Bun runtimes, app-owned pnpm/profile, shortcut, timing record,
+MCP contracts, and redacted log, and cleans only its disposable roots. A true
+clean-machine WinGet provisioning gate remains an explicit expensive check.
 
 ### Install and repair
 
 `bootstrap.ps1` builds a fresh staging tree with the exact DSH package and npm integrity declared in [`src/config.ts`](src/config.ts), copies the release-owned `runtime-manifests/dsh/package.json` and `package-lock.json`, runs `npm ci`, verifies the exact package/lock facts and `koffi` with Node, then swaps it into place. The Release also carries equivalent locked manifests for MCPorter, RPG Maker MCP, and app-owned pnpm; target setup never generates a lock from the registry. A previous runtime is retained in a timestamped rollback directory. A failed install or verification removes only its own staging directory and leaves the active runtime untouched; older DSH releases are not accepted. If process termination or rollback cannot be confirmed, the lock reports a degraded state and preserves recoverable staging/rollback paths for manual recovery. Re-running against a valid runtime is a no-op; bootstrap, doctor, and launch serialize short runtime operations through the operation lock. A live DSH child also holds a session lease that prevents bootstrap or a second launch from swapping the runtime, while doctor remains available.
 
-On Windows, the selected installation root owns program files, runtimes, and disposable cache. The fixed local state root remains `%LOCALAPPDATA%\\BaiheStudio\\DSH-RPGMaker-MV` for settings, credentials, logs, locks, and the installation-location receipt. Set `DSH_RPGMAKER_INSTALLATION_ROOT`, `DSH_HOME`, `DSH_RPGMAKER_DATA_ROOT`, or `DSH_RPGMAKER_RUNTIME` for a test-owned or alternate location. The doctor checks the actual executable paths and versions visible to the launcher, rather than trusting package-manager metadata.
+On Windows, the selected installation root owns program files, runtimes, and disposable cache. The fixed local state root remains `%LOCALAPPDATA%\\BaiheStudio\\DSH-RPGMaker-MV` for settings, credentials, logs, locks, and the installation-location receipt. The packaged sidecar derives the program root from its own installed location and supplies this local-state root explicitly, so stale `DSH_*` path variables cannot relocate a Start Menu launch. Test seams may inject roots. The doctor checks the actual executable paths and versions visible to the launcher, rather than trusting package-manager metadata. Missing prerequisites are repaired automatically, including exact Bun `1.3.14`; a WinGet no-update result is followed by refresh and verification.
+
+If your network requires a proxy, set `HTTP_PROXY`, `HTTPS_PROXY`,
+`npm_config_proxy`, and/or `npm_config_https_proxy` before installation. A
+local preflight may use `http://127.0.0.1:17890` as an example endpoint; proxy
+settings are process-scoped and are never persisted. In PowerShell support
+commands, use `npm.cmd` when execution policy blocks `npm.ps1`.
 
 ### Launch DSH Web
 
@@ -52,11 +59,14 @@ On Windows, the selected installation root owns program files, runtimes, and dis
 The Windows launcher is project-neutral: it never opens a folder picker, reads
 recent projects, writes app-owned project-selection state, or accepts
 `launch --project`. The Release ZIP carries the prebuilt
-`bundle/dsh-workspace-mcp` package and generated MV/MZ manifests. Launch
-prepares and verifies the source-pinned DSH, pnpm, MCPorter, and Xerolo MV/Redseb MZ MCP runtimes (declared in [`src/config.ts`](src/config.ts), [`src/profile.ts`](src/profile.ts), [`src/mcport.ts`](src/mcport.ts), and [`src/rpgmaker.ts`](src/rpgmaker.ts)), the exact app-managed `web` profile (four direct packages and six
-ordered bundle layers: the DSH base/web-app template followed by Web, image
-generation, brand, and workspace MCP), the default preset, and the effective composition before
-starting official DSH. DSH starts in
+`bundle/dsh-workspace-mcp` package and generated MV/MZ manifests. Install or
+repair prepares and verifies the source-pinned DSH, pnpm, MCPorter, and Xerolo
+MV/Redseb MZ MCP runtimes, the exact app-managed `web` profile, the default
+preset, the effective composition, and live MCP contracts. Normal startup
+consumes those committed artifacts and performs only cheap ownership,
+required-file, fixed-port, and process-readiness checks; it does not run npm,
+pnpm, WinGet, registry downloads, profile repair, preset generation, or live
+`tools/list` enumeration. DSH starts in
 an app-owned neutral landing directory; choose and switch RPG Maker folders in
 DSH Web. `rpgmaker` is the default preset. New Agents default to
 `deepseek-v4-flash-vision-exp`; the normal
@@ -100,10 +110,12 @@ Tests use disposable runtime, DSH home, credential, and MV/MZ project directorie
 
 ## Phase 2: RPG Maker Agent and MCP editing loop
 
-`launch.ps1` prepares the exact-pinned app-owned MCPorter and dual-engine RPG Maker runtimes,
-the complete managed `web` profile (including the local `dsh-workspace-mcp`
-Host bundle), the default `rpgmaker` preset, and a project-neutral
-`web --dump-config` composition before launch. The picker displays
+`Install.cmd` prepares the exact-pinned app-owned MCPorter and dual-engine RPG
+Maker runtimes, the complete managed `web` profile (including the local
+`dsh-workspace-mcp` Host bundle), the default `rpgmaker` preset, the
+project-neutral `web --dump-config` composition, and both live MCP contracts.
+`launch.ps1` then consumes those committed artifacts without package-manager,
+profile, preset, composition, or live schema repair. The picker displays
 `🐒 制作猿`. The access layer supplies stable `rpgmaker_<raw engine tool name>` tools
 synchronously and validates the live workspace connection before the first request.
 Invalid or ambiguous workspaces fail before a server starts.
@@ -151,10 +163,10 @@ runtime paths and no credentials. The pinned DSH Code preset is read from the
 installed runtime and is not edited. Neither app-owned Host patch inserts the
 timeout policy: the pinned DSH `web` profile owns the official
 `id: timeout-policy` / `@deepseek-ai/dsh-tool-call-timeout-policy` row at Host
-scope. Launch preparation and Doctor validate `web --dump-config` and require
+scope. Install and Doctor validate `web --dump-config` and require
 exactly one effective official row in the custom Agent preset; the
-preset compositions never contain it. Re-running preparation rewrites the
-app-owned patch, repairing older generated patches that inserted a duplicate.
+preset compositions never contain it. Rerun `Install.cmd` to rewrite the
+app-owned patch and repair a stale committed composition.
 
 MZ workspaces use Redseb's pinned 119-tool editing surface, including targeted
 database/map/event/tile writes, dry-run previews, and project/reference

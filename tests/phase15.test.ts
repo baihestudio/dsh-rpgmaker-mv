@@ -52,7 +52,6 @@ describe('windows install recovery contracts', () => {
         localStateRoot: root,
         installationRoot: join(root, 'selected-root'),
         operation: 'install',
-        renderer: 'plain',
         productVersion: '0.1.0',
         runtimeVersion: '0.1.1-rc.2',
         runId: 'phase15-run',
@@ -67,13 +66,15 @@ describe('windows install recovery contracts', () => {
         event: INSTALL_RUN_STARTED_EVENT,
         runId: 'phase15-run',
         operation: 'install',
+        renderer: 'plain',
         installationRoot: join(root, 'selected-root'),
         localStateRoot: root,
       });
       expect(firstLine).not.toContain(secret);
       expect(firstLine.length).toBeGreaterThan(0);
 
-      await evidence.finish('failed', { error: `DEEPSEEK_API_KEY=${secret}` });
+      const timing = await evidence.finish('failed', { error: `DEEPSEEK_API_KEY=${secret}` });
+      expect(timing.renderer).toBe('plain');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -84,26 +85,41 @@ describe('windows install recovery contracts', () => {
     try {
       const programRoot = join(root, 'chosen', 'program');
       const entrypoint = join(programRoot, 'desktop-host', 'Resources', 'app', 'payload', 'sidecar', 'dsh-rpgmaker-sidecar.js');
+      const programFiles = join(root, 'program-files');
+      const nodeExecutable = join(programFiles, 'nodejs', 'node.exe');
+      await mkdir(dirname(nodeExecutable), { recursive: true });
+      await writeFile(nodeExecutable, 'disposable node');
       let loadedRoot = '';
+      let launchOptions: Record<string, unknown> | undefined;
       const running = runRpgMakerSidecar({
         DSH_RPGMAKER_INSTALLATION_ROOT: join(root, 'legacy-root-that-must-be-ignored'),
+        DSH_HOME: join(root, 'legacy-data', 'state'),
         LOCALAPPDATA: join(root, 'wrong-local-app-data'),
+        ProgramFiles: programFiles,
       }, {
         platform: 'win32',
         entrypointPath: entrypoint,
         loadProductLauncher: async (actualRoot) => {
           loadedRoot = actualRoot;
           return {
-            launchRpgmakerProject: async () => ({
-              child: childWithExit(0),
-              releaseSession: async () => undefined,
-            }),
+            launchRpgmakerProject: async (options) => {
+              launchOptions = options;
+              return {
+                child: childWithExit(0),
+                releaseSession: async () => undefined,
+              };
+            },
           };
         },
       });
 
       await expect(running).resolves.toBe(0);
       expect(loadedRoot).toBe(programRoot);
+      expect(launchOptions).toMatchObject({
+        installationRoot: dirname(programRoot),
+        localStateRoot: join(root, 'wrong-local-app-data', 'BaiheStudio', 'DSH-RPGMaker-MV'),
+        jsExecutable: nodeExecutable,
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -117,7 +133,9 @@ describe('windows install recovery contracts', () => {
       const secret = 'phase15-sidecar-secret';
       const bearer = 'phase15-bearer-secret';
       const basic = 'phase15-basic-secret';
-      const original = new Error(`startup failed DEEPSEEK_API_KEY=${secret}; token=${secret}; Authorization: Bearer ${bearer}; authorization: Basic ${basic}; ${'x'.repeat(3000)}`);
+      const authorizationEqualsBearer = 'phase15-authorization-equals-bearer-secret';
+      const authorizationEqualsBasic = 'phase15-authorization-equals-basic-secret';
+      const original = new Error(`startup failed DEEPSEEK_API_KEY=${secret}; token=${secret}; Authorization=Bearer ${authorizationEqualsBearer}; Authorization=Basic ${authorizationEqualsBasic}; Authorization: Bearer ${bearer}; authorization: Basic ${basic}; ${'x'.repeat(3000)}`);
       await expect(runRpgMakerSidecar({}, {
         platform: 'win32',
         entrypointPath: entrypoint,
@@ -127,7 +145,7 @@ describe('windows install recovery contracts', () => {
       })).rejects.toBe(original);
 
       const line = (await readFile(join(localStateRoot, 'logs', 'launcher.log'), 'utf8')).trim();
-      const diagnostic = JSON.parse(line) as { at: string; event: string; operation: string; category: string; summary: string; modulePath?: string };
+      const diagnostic = JSON.parse(line) as { at: string; event: string; operation: string; category: string; summary: string; cause?: string; modulePath?: string };
       expect(diagnostic).toMatchObject({
         at: '2026-09-01T00:00:00.000Z',
         event: SIDECAR_STARTUP_FAILURE_EVENT,
@@ -139,6 +157,10 @@ describe('windows install recovery contracts', () => {
       expect(line).not.toContain(secret);
       expect(line).not.toContain(bearer);
       expect(line).not.toContain(basic);
+      expect(line).not.toContain(authorizationEqualsBearer);
+      expect(line).not.toContain(authorizationEqualsBasic);
+      expect(line).toContain('[redacted]');
+      expect(diagnostic.cause).toContain('startup failed');
       expect(diagnostic.summary.length).toBeLessThanOrEqual(2_000);
 
       const writeFailure = new Error('the original startup failure');

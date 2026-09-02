@@ -8,8 +8,8 @@ import { DSH_VERSION, environmentPath, legacyStartMenuShortcutPath, pathDelimite
 import { resolveExecutable, resolveWindowsPwsh } from './executable';
 import { FORGEJO_MCP_EXECUTABLE_NAME, FORGEJO_MCP_LICENSE_NAME, FORGEJO_MCP_MANIFEST_NAME, FORGEJO_MCP_RUNTIME_RELATIVE, forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from './forgejo-mcp';
 import { redactSensitive, withoutCredentials, runCommand, type CommandRunner } from './process';
-import { installWindowsPrerequisites, PrerequisiteConsentError, type PrerequisiteConsent, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
-import { deployRpgMakerPresets, prepareRpgMakerMcpRuntime, RPGMAKER_MCP_MANIFEST_RELATIVE } from './rpgmaker';
+import { installWindowsPrerequisites, type WindowsPrerequisiteOptions, type WindowsPrerequisiteReport } from './prerequisites';
+import { deployRpgMakerPresets, prepareRpgMakerMcpRuntime, validateRpgMakerMcpContracts, type McpSchemaProbe, type RpgMakerMcpContractValidation, RPGMAKER_MCP_MANIFEST_RELATIVE } from './rpgmaker';
 import { MCPORTER_MANIFEST_RELATIVE, prepareMcporterRuntime } from './mcport';
 import { PNPM_MANIFEST_RELATIVE } from './profile';
 import { DSH_BRAND_BUNDLE_RELATIVE, ensureManagedWebProfile } from './managed-web-profile';
@@ -34,7 +34,7 @@ import {
 import { createStartMenuShortcut, ensureHarnessLayout, uninstallHarness, type ShortcutCreationOptions, type UninstallOptions, type UninstallResult } from './windows';
 import { withHarnessLock } from './lock';
 import { commitInstallationReceipt, defaultInstallationRoot, defaultLocalStateRoot, INSTALLATION_CAPACITY_BASIS, INSTALLATION_CAPACITY_FORMULA, INSTALLATION_STAGING_HEADROOM_BYTES, inspectInstallationReceipt, measureReleasePayloadBytes, readInstallationReceipt, resolveRecordedInstallationRoot, validateInstallationRoot, type InstallationCapacity } from './installation-root';
-import { createInstallationSession, rendererMode, type InstallationEventListener, type InstallationOperation, type InstallationRendererMode } from './install-events';
+import { createInstallationSession, type InstallationEventListener, type InstallationOperation } from './install-events';
 import { createInstallRunEvidence, type InstallRunEvidence } from './install-evidence';
 
 export const RELEASE_ARCHIVE_NAME = 'DSH-RPGMaker-MV-Windows.zip';
@@ -78,10 +78,10 @@ export interface InstallReleaseOptions extends PathOptions, WindowsPrerequisiteO
   platform?: string;
   env?: Record<string, string | undefined>;
   releaseRoot: string;
-  consent?: PrerequisiteConsent;
+  /** Inject live MCP tools/list for disposable install tests. */
+  mcpSchemaProbe?: McpSchemaProbe;
   installationRoot?: string;
   localStateRoot?: string;
-  renderer?: InstallationRendererMode;
   operation?: InstallationOperation;
   onEvent?: InstallationEventListener;
   nonInteractive?: boolean;
@@ -127,6 +127,7 @@ export interface InstallReleaseResult {
   timingPath?: string;
   logPath?: string;
   timing?: import('./install-evidence').InstallTimingRecord;
+  mcpContracts?: RpgMakerMcpContractValidation;
 }
 
 export interface ReleaseZipOptions {
@@ -251,6 +252,7 @@ function generatedEnvironment(env: Record<string, string | undefined>, paths: Ha
     DSH_RPGMAKER_CACHE_DIR: paths.installationCacheDir,
     NODE_EXECUTABLE: prerequisites.executablePaths.node,
     NPM_EXECUTABLE: prerequisites.executablePaths.npm,
+    BUN_EXECUTABLE: prerequisites.executablePaths.bun,
     NPM_CONFIG_CACHE: join(paths.installationCacheDir, 'npm-cache'),
     npm_config_cache: join(paths.installationCacheDir, 'npm-cache')
   };
@@ -271,7 +273,8 @@ function installMetadata(
   prerequisites: WindowsPrerequisiteReport,
   now: () => Date,
   launchTarget: string,
-  desktopHost: DesktopHostCopyResult | undefined
+  desktopHost: DesktopHostCopyResult | undefined,
+  mcpContracts?: RpgMakerMcpContractValidation
 ): string {
   return `${JSON.stringify({
     owner: PROGRAM_OWNER,
@@ -300,7 +303,17 @@ function installMetadata(
         ...(desktopHost.sidecarProvenance ? { sidecarProvenance: desktopHost.sidecarProvenance } : {})
       }
     } : {}),
-    prerequisites: prerequisites.checks.map((check) => ({ id: check.id, label: check.label, version: check.version, versions: check.versions, executable: check.executable }))
+    prerequisites: prerequisites.checks.map((check) => ({ id: check.id, label: check.label, version: check.version, versions: check.versions, executable: check.executable })),
+    ...(mcpContracts ? {
+      mcpContracts: {
+        valid: mcpContracts.valid,
+        engines: Object.fromEntries(Object.entries(mcpContracts.engines).map(([engine, result]) => [engine, {
+          toolCount: result.toolCount,
+          manifestDigest: result.manifestDigest,
+          valid: result.valid
+        }]))
+      }
+    } : {})
   }, null, 2)}\n`;
 }
 
@@ -467,27 +480,18 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
     throw new ReleaseGateError(`The installed RPG Maker Agent could not be safely closed before upgrade: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  let prerequisites: WindowsPrerequisiteReport;
-  try {
-    prerequisites = await installWindowsPrerequisites({
-      ...options,
-      platform,
-      env,
-      commandRunner,
-      nodeExecutable: options.nodeExecutable,
-      npmExecutable: options.npmExecutable,
-      pwshExecutable: options.pwshExecutable,
-      gitExecutable: options.gitExecutable,
-      coreutilsExecutable: options.coreutilsExecutable,
-      wingetExecutable: options.wingetExecutable,
-      consent: options.consent
-    });
-  } catch (error) {
-    if (error instanceof PrerequisiteConsentError) {
-      for (const item of error.report.checks) evidence?.prerequisite(item.id, item.ok ? 'verified' : 'failed');
-    }
-    throw error;
-  }
+  const prerequisites = await installWindowsPrerequisites({
+    ...options,
+    platform,
+    env,
+    commandRunner,
+    nodeExecutable: options.nodeExecutable,
+    npmExecutable: options.npmExecutable,
+    pwshExecutable: options.pwshExecutable,
+    gitExecutable: options.gitExecutable,
+    coreutilsExecutable: options.coreutilsExecutable,
+    wingetExecutable: options.wingetExecutable,
+  });
   for (const item of prerequisites.checks) evidence?.prerequisite(item.id, item.ok ? 'verified' : 'failed');
   finishPhase();
   await ensureHarnessLayout({
@@ -531,6 +535,7 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
     startPhase('runtime', 'install and verify the pinned DSH runtime');
     let bootstrap: BootstrapResult;
     let shortcutPath: string;
+    let mcpContracts: RpgMakerMcpContractValidation | undefined;
     try {
       const forgejoMcp = await verifyForgejoMcpRuntime({ platform, env, programRoot: paths.programRoot, commandRunner });
       if (!forgejoMcp.valid) throw new Error(`App-owned Forgejo MCP is not usable: ${forgejoMcp.errors.join('; ')}`);
@@ -587,6 +592,23 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
         npmExecutable: options.npmExecutable ?? prerequisites.executablePaths.npm ?? await resolveExecutable('npm', { platform, env: installedEnv }),
         commandRunner
       });
+      // Live MCP contract checks are part of the committed-install gate.  The
+      // injected command-runner path is intentionally kept filesystem-only for
+      // ordinary disposable tests; those tests opt in with a schema probe seam.
+      const schemaProbe = options.mcpSchemaProbe;
+      if (schemaProbe || !options.commandRunner) {
+        const nodeExecutable = options.nodeExecutable ?? prerequisites.executablePaths.node;
+        if (!nodeExecutable) throw new Error('A verified direct node.exe is required for live RPG Maker MCP contract validation.');
+        mcpContracts = await validateRpgMakerMcpContracts({
+          runtimeDir: join(paths.programRoot, 'runtime', 'mcp'),
+          nodeExecutable,
+          installationCacheDir: paths.installationCacheDir,
+          platform,
+          env: installedEnv,
+          schemaProbe
+        });
+        if (!mcpContracts.valid) throw new Error(`RPG Maker MCP live contract validation failed: ${mcpContracts.errors.join('; ')}`);
+      }
       finishPhase();
       startPhase('profile', 'materialize managed Web profile and presets');
       const dshExecutable = bootstrap.verification.dshExecutable ?? await resolveDshEntrypoint(paths.runtimeDir, platform);
@@ -606,7 +628,7 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
       const metadataPath = join(paths.programRoot, 'install.json');
       const metadataWriter = options.writeInstallMetadata ?? ((path: string, content: string) => writeFile(path, content, 'utf8'));
       const launchTarget = desktopHost?.installedLaunchTarget ?? 'Launch.cmd';
-      await metadataWriter(metadataPath, installMetadata(paths, prerequisites, now, launchTarget, desktopHost));
+      await metadataWriter(metadataPath, installMetadata(paths, prerequisites, now, launchTarget, desktopHost, mcpContracts));
       if (!(await exists(metadataPath))) throw new Error('Install metadata was not written.');
       finishPhase();
       startPhase('shortcut', 'create Start Menu shortcut');
@@ -662,7 +684,7 @@ async function installWindowsReleaseCore(options: InstallReleaseOptions, session
     }
     await rm(shortcutBackup, { force: true });
     const launchTarget = desktopHost?.installedLaunchTarget ?? 'Launch.cmd';
-    return { releaseRoot, paths, prerequisites, bootstrap, shortcutPath, desktopHost, launchTarget, ...(oldMoved ? { rollbackRoot } : {}) };
+    return { releaseRoot, paths, prerequisites, bootstrap, shortcutPath, desktopHost, launchTarget, ...(mcpContracts ? { mcpContracts } : {}), ...(oldMoved ? { rollbackRoot } : {}) };
   } catch (error) {
     if (stagingActive) await rm(staging, { recursive: true, force: true });
     if (error instanceof ReleaseGateError) throw error;
@@ -683,13 +705,11 @@ export async function installWindowsRelease(options: InstallReleaseOptions): Pro
   const receiptInspection = await inspectInstallationReceipt(localStateRoot);
   const receipt = receiptInspection.receipt;
   const operation: InstallationOperation = options.operation ?? (receipt ? (await exists(receipt.programRoot) ? 'upgrade' : 'repair') : 'install');
-  const mode = rendererMode({ mode: options.renderer });
   const session = createInstallationSession({ operation, now: options.now, onEvent: options.onEvent });
   const evidence = createInstallRunEvidence({
     localStateRoot,
     installationRoot: options.installationRoot ?? receipt?.installationRoot ?? '',
     operation,
-    renderer: mode,
     productVersion: PRODUCT_VERSION,
     runtimeVersion: DSH_VERSION,
     now: options.now,
@@ -754,7 +774,7 @@ async function buildInstallerExecutable(options: ReleaseZipOptions, sourceRoot: 
   const env = options.env ?? process.env;
   const runner = options.commandRunner ?? runCommand;
   const bun = options.bunExecutable ?? env.BUN_EXECUTABLE ?? await resolveExecutable('bun', { platform: options.platform, env });
-  if (!bun) throw new ReleaseGateError('A build-time Bun executable is required to compile installer.exe. Target machines do not need Bun.');
+  if (!bun) throw new ReleaseGateError('A build-time Bun executable is required to compile installer.exe; Windows targets also require the packaged desktop host Bun runtime.');
   const output = join(staging, INSTALLER_EXECUTABLE_NAME);
   const entry = join(sourceRoot, 'src', 'installer.ts');
   const args = ['build', entry, '--compile', '--target=bun-windows-x64', '--outfile', output];

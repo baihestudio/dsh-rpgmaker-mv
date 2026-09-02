@@ -33,6 +33,7 @@ export const DSH_IMAGEGEN_VERSION = '0.2.2';
 export const DSH_BRAND_PACKAGE = '@baihestudio/dsh-rpgmaker-brand';
 export const DSH_BRAND_VERSION = '0.1.0';
 export const DSH_BRAND_BUNDLE_RELATIVE = join('bundle', 'dsh-rpgmaker-brand');
+const DSH_BRAND_DATA_BUNDLE_RELATIVE = join('rpgmaker-mv', 'bundle', 'dsh-rpgmaker-brand');
 const DSH_RUNTIME_MARKER = 'dshRpgMaker';
 const DSH_RUNTIME_MARKER_REVISION = 3;
 
@@ -81,9 +82,9 @@ interface ManagedProfileSnapshot {
   profileDir: string;
   profileBackup: string;
   profileExisted: boolean;
-  bundleDir: string;
-  bundleBackup: string;
-  bundleExisted: boolean;
+  bundleRoot: string;
+  bundleRootBackup: string;
+  bundleRootExisted: boolean;
 }
 
 interface DesiredPackage {
@@ -234,7 +235,13 @@ function rawProfileBundles(manifest: JsonObject | undefined): unknown[] | undefi
 interface ManagedWebProfileStructure {
   errors: string[];
   profileDir: string;
+  bundleRoot: string;
+  brandBundleDir: string;
   workspaceBundleDir: string;
+}
+
+function brandBundleDirFor(paths: Pick<HarnessPaths, 'dshHome'>): string {
+  return join(paths.dshHome, DSH_BRAND_DATA_BUNDLE_RELATIVE);
 }
 
 /**
@@ -249,6 +256,10 @@ async function inspectManagedWebProfileStructure(paths: HarnessPaths, platform: 
   const profileDirReal = await canonicalPath(profileDir);
   const dataRoot = resolve(join(paths.dshHome, 'rpgmaker-mv'));
   const dataRootReal = await canonicalPath(dataRoot);
+  const bundleRoot = resolve(join(dataRoot, 'bundle'));
+  const bundleRootReal = await canonicalPath(bundleRoot);
+  const brandBundleDir = resolve(brandBundleDirFor(paths));
+  const brandBundleReal = await canonicalPath(brandBundleDir);
   const workspaceBundleDir = resolve(workspaceMcpBundleDirFor(paths));
   const workspaceBundleReal = await canonicalPath(workspaceBundleDir);
   const errors: string[] = [];
@@ -262,13 +273,21 @@ async function inspectManagedWebProfileStructure(paths: HarnessPaths, platform: 
   if (!pathIsWithin(dshHomeReal, dataRootReal, platform)) {
     errors.push(`workspace MCP data root ${dataRoot} escapes canonical DSH_HOME ${paths.dshHome}`);
   }
-  if (!pathIsStrictlyWithin(dataRootReal, workspaceBundleReal, platform)) {
-    errors.push(`workspace MCP bundle target ${workspaceBundleDir} escapes the app-managed data root ${dataRoot}`);
+  if (!pathIsStrictlyWithin(dataRootReal, bundleRootReal, platform)) {
+    errors.push(`managed bundle root ${bundleRoot} escapes the app-managed data root ${dataRoot}`);
+  }
+  if (!pathIsStrictlyWithin(bundleRootReal, brandBundleReal, platform)) {
+    errors.push(`brand bundle target ${brandBundleDir} escapes the app-managed bundle root ${bundleRoot}`);
+  }
+  if (!pathIsStrictlyWithin(bundleRootReal, workspaceBundleReal, platform)) {
+    errors.push(`workspace MCP bundle target ${workspaceBundleDir} escapes the app-managed bundle root ${bundleRoot}`);
   }
 
   return {
     errors,
     profileDir,
+    bundleRoot,
+    brandBundleDir,
     workspaceBundleDir
   };
 }
@@ -474,12 +493,13 @@ export async function verifyManagedWebProfile(options: ManagedWebProfileOptions 
   const { paths } = await resolveReceiptBackedHarnessPaths(options);
   const platform = options.platform ?? process.platform;
   const structure = await inspectManagedWebProfileStructure(paths, platform);
-  const { profileDir, workspaceBundleDir } = structure;
-  const brandBundleDir = resolve(join(paths.programRoot, DSH_BRAND_BUNDLE_RELATIVE));
+  const { profileDir, brandBundleDir, workspaceBundleDir } = structure;
   const sources = await inspectManagedWebSources(paths, platform);
   const errors = [...structure.errors, ...sources.errors];
   if (sources.valid) {
+    const brand = DESIRED_PACKAGES.find(({ source }) => source === 'brand')!;
     const workspace = DESIRED_PACKAGES.find(({ source }) => source === 'workspace')!;
+    errors.push(...(await verifyPackageRoot(brand, sources.brandSource, `app-owned ${brand.packageName} bundle`, 'canonical bundle directory', platform)).errors);
     errors.push(...(await verifyPackageRoot(workspace, sources.workspaceSource, 'workspace MCP source bundle', 'canonical bundle directory', platform)).errors);
   }
   const manifest = await readJson(join(profileDir, 'package.json'));
@@ -530,17 +550,17 @@ export async function verifyManagedWebProfile(options: ManagedWebProfileOptions 
 async function snapshotManagedWebProfile(
   paths: HarnessPaths,
   profileDir: string,
-  bundleDir: string
+  bundleRoot: string
 ): Promise<ManagedProfileSnapshot> {
   const root = await mkdtemp(join(paths.dshHome, '.managed-web-profile-rollback-'));
   const profileBackup = join(root, 'profile');
-  const bundleBackup = join(root, 'workspace-bundle');
+  const bundleRootBackup = join(root, 'bundle');
   const profileExisted = await exists(profileDir);
-  const bundleExisted = await exists(bundleDir);
+  const bundleRootExisted = await exists(bundleRoot);
   try {
     if (profileExisted) await cp(profileDir, profileBackup, { recursive: true, force: false, errorOnExist: true });
-    if (bundleExisted) await cp(bundleDir, bundleBackup, { recursive: true, force: false, errorOnExist: true });
-    return { root, profileDir, profileBackup, profileExisted, bundleDir, bundleBackup, bundleExisted };
+    if (bundleRootExisted) await cp(bundleRoot, bundleRootBackup, { recursive: true, force: false, errorOnExist: true });
+    return { root, profileDir, profileBackup, profileExisted, bundleRoot, bundleRootBackup, bundleRootExisted };
   } catch (error) {
     await rm(root, { recursive: true, force: true }).catch(() => undefined);
     throw error;
@@ -553,14 +573,14 @@ async function restoreManagedWebProfile(snapshot: ManagedProfileSnapshot): Promi
     await mkdir(dirname(snapshot.profileDir), { recursive: true });
     await cp(snapshot.profileBackup, snapshot.profileDir, { recursive: true, force: false, errorOnExist: true });
   }
-  await rm(snapshot.bundleDir, { recursive: true, force: true });
-  if (snapshot.bundleExisted) {
-    await mkdir(dirname(snapshot.bundleDir), { recursive: true });
-    await cp(snapshot.bundleBackup, snapshot.bundleDir, { recursive: true, force: false, errorOnExist: true });
+  await rm(snapshot.bundleRoot, { recursive: true, force: true });
+  if (snapshot.bundleRootExisted) {
+    await mkdir(dirname(snapshot.bundleRoot), { recursive: true });
+    await cp(snapshot.bundleRootBackup, snapshot.bundleRoot, { recursive: true, force: false, errorOnExist: true });
   }
 }
 
-async function replaceWorkspaceBundle(source: string, target: string, platform: string): Promise<void> {
+async function replaceManagedBundle(source: string, target: string, platform: string): Promise<void> {
   if (samePath(source, target, platform)) return;
   const parent = dirname(target);
   await mkdir(parent, { recursive: true });
@@ -638,9 +658,8 @@ async function ensureManagedWebProfileUnlocked(options: ManagedWebProfileOptions
   }
 
   const sources = await requireManagedWebSources(paths, platform);
-  const brandBundleDir = resolve(join(paths.programRoot, DSH_BRAND_BUNDLE_RELATIVE));
-  const workspaceBundleDir = resolve(workspaceMcpBundleDirFor(paths));
-  const workspaceSource = sources.workspaceSource;
+  const structure = await inspectManagedWebProfileStructure(paths, platform);
+  const { bundleRoot, brandBundleDir, workspaceBundleDir } = structure;
 
   // The app-owned pnpm runtime is resolved exactly once for this attempt and
   // its environment is reused for all four DSH plugin additions.
@@ -649,9 +668,10 @@ async function ensureManagedWebProfileUnlocked(options: ManagedWebProfileOptions
   if (!dsh) throw new Error('Pinned DSH executable was not found; cannot materialize the managed Web profile.');
   const invocation = await resolveDshInvocation(dsh, options, env);
   const profileDir = profileDirFor(paths, MANAGED_WEB_PROFILE);
-  const snapshot = await snapshotManagedWebProfile(paths, profileDir, workspaceBundleDir);
+  const snapshot = await snapshotManagedWebProfile(paths, profileDir, bundleRoot);
   try {
-    await replaceWorkspaceBundle(workspaceSource, workspaceBundleDir, platform);
+    await replaceManagedBundle(sources.brandSource, brandBundleDir, platform);
+    await replaceManagedBundle(sources.workspaceSource, workspaceBundleDir, platform);
     await rm(profileDir, { recursive: true, force: true });
     await mkdir(paths.dshHome, { recursive: true });
     for (const desired of DESIRED_PACKAGES) {

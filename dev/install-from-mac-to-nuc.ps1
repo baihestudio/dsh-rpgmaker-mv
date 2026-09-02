@@ -56,7 +56,7 @@ try {
 
   Push-Location $extractRoot
   try {
-    & $installer -RemainingArgs @('--yes', '--plain', '--non-interactive')
+    & $installer -NonInteractive
   } finally {
     Pop-Location
   }

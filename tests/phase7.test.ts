@@ -13,10 +13,10 @@ import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../s
 import { PNPM_VERSION } from '../src/profile';
 import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, DSH_WEB_PACKAGE, DSH_WEB_VERSION, MANAGED_WEB_PROFILE_BUNDLE_NAMES, verifyManagedWebProfile } from '../src/managed-web-profile';
 import { DSH_RUNTIME_PEER_DEPENDENCIES, findDshExecutable } from '../src/bootstrap';
-import { CUSTOM_AGENT_PRESET_IDS, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
+import { CUSTOM_AGENT_PRESET_IDS, launchRpgmakerProject, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
 import { RPGMAKER_MV_MCP_INTEGRITY, RPGMAKER_MV_MCP_PACKAGE, RPGMAKER_MV_MCP_VERSION, RPGMAKER_MZ_MCP_INTEGRITY, RPGMAKER_MZ_MCP_PACKAGE, RPGMAKER_MZ_MCP_VERSION } from '../src/rpgmaker';
 import { JS_RUNNER_ENV, RPGMAKER_MCP_RUNTIME_ENV, WORKSPACE_MCP_AGENT_ENTRYPOINT, WORKSPACE_MCP_BUNDLE_ARCHIVE_RELATIVE, WORKSPACE_MCP_BUNDLE_RELATIVE } from '../src/workspace-mcp';
-import { installWindowsPrerequisites, PrerequisiteConsentError, verifyWindowsPrerequisites } from '../src/prerequisites';
+import { installWindowsPrerequisites, verifyWindowsPrerequisites } from '../src/prerequisites';
 import { addFixedWebBinding, launchProject } from '../src/launcher';
 import { runCli } from '../src/cli';
 import { runDoctor } from '../src/doctor';
@@ -89,7 +89,7 @@ function child(): EventEmitter & { exitCode: number | null; signalCode: string |
 async function prerequisiteBin(root: string): Promise<{ bin: string; env: Record<string, string> }> {
   const bin = join(root, 'fake prerequisite bin');
   await mkdir(bin, { recursive: true });
-  for (const name of ['node.exe', 'npm.cmd', 'python.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', 'magick.exe']) await writeFile(join(bin, name), 'fixture');
+  for (const name of ['node.exe', 'npm.cmd', 'bun.exe', 'python.exe', 'pwsh.exe', 'git.exe', 'coreutils-manager.exe', 'find.exe', 'grep.exe', 'magick.exe']) await writeFile(join(bin, name), 'fixture');
   return { bin, env: { PATH: bin, LOCALAPPDATA: join(root, 'Local AppData'), APPDATA: join(root, 'Roaming AppData') } };
 }
 
@@ -105,6 +105,7 @@ function prerequisiteRunner() {
     if (name === 'node.exe' && args[0] === '-p') return { exitCode: 0, stdout: 'iron', stderr: '' };
     if (name === 'node.exe') return { exitCode: 0, stdout: 'v22.18.0', stderr: '' };
     if (name === 'npm.cmd') return { exitCode: 0, stdout: '10.8.2', stderr: '' };
+    if (name === 'bun.exe') return { exitCode: 0, stdout: '1.3.14', stderr: '' };
     if (name === 'python.exe') return { exitCode: 0, stdout: 'Python 3.13.15', stderr: '' };
     if (name === 'pwsh.exe') return { exitCode: 0, stdout: 'PowerShell 7.4.6', stderr: '' };
     if (name === 'git.exe') return { exitCode: 0, stdout: 'git version 2.45.0', stderr: '' };
@@ -617,16 +618,15 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('requires explicit consent before WinGet prerequisite installation and verifies all supported identities', async () => {
+  test('automatically repairs missing prerequisites and verifies all supported identities', async () => {
     const root = await temp('phase7-prerequisites');
     try {
       const { bin, env } = await prerequisiteBin(root);
       const report = await verifyWindowsPrerequisites({ platform: 'win32', env, commandRunner: prerequisiteRunner() });
       expect(report.ok).toBe(true);
-      expect(report.checks.map((check) => check.id)).toEqual(['node', 'python', 'powershell', 'git', 'coreutils', 'imagemagick']);
+      expect(report.checks.map((check) => check.id)).toEqual(['node', 'bun', 'python', 'powershell', 'git', 'coreutils', 'imagemagick']);
       const missing = await verifyWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, commandRunner: prerequisiteRunner() });
       expect(missing.ok).toBe(false);
-      await expect(installWindowsPrerequisites({ platform: 'win32', env: { PATH: join(root, 'missing') }, consent: false, commandRunner: prerequisiteRunner() })).rejects.toBeInstanceOf(PrerequisiteConsentError);
       let wingetCalls = 0;
       const baseRunner = prerequisiteRunner();
       const wrongVersionRunner = async (command: string, args: string[], options: { cwd?: string }) => {
@@ -638,10 +638,8 @@ describe('Windows release gate foundations', () => {
         if (basename(command).toLowerCase() === 'node.exe' && args[0] === '-p') return { exitCode: 0, stdout: 'false', stderr: '' };
         return baseRunner(command, args, options);
       };
-      await expect(installWindowsPrerequisites({ platform: 'win32', env, consent: false, wingetExecutable: 'winget.exe', commandRunner: wrongVersionRunner })).rejects.toBeInstanceOf(PrerequisiteConsentError);
-      expect(wingetCalls).toBe(0);
-      await expect(installWindowsPrerequisites({ platform: 'win32', env, consent: true, wingetExecutable: 'winget.exe', commandRunner: wrongVersionRunner })).rejects.toThrow(/verification still fails/i);
-      expect(wingetCalls).toBe(1);
+      await expect(installWindowsPrerequisites({ platform: 'win32', env: { ...env, PATH: join(root, 'missing') }, wingetExecutable: 'winget.exe', commandRunner: wrongVersionRunner })).rejects.toThrow(/verification still fails/i);
+      expect(wingetCalls).toBe(7);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -667,12 +665,11 @@ describe('Windows release gate foundations', () => {
       const report = await installWindowsPrerequisites({
         platform: 'win32',
         env: { ...env, PATH: join(root, 'missing') },
-        consent: true,
         wingetExecutable: 'winget.exe',
         commandRunner: runner
       });
       expect(report.ok).toBe(true);
-      expect(wingetCalls).toBe(6);
+      expect(wingetCalls).toBe(7);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -772,15 +769,15 @@ describe('Windows release gate foundations', () => {
       expect(compile.exitCode).toBe(0);
       expect(await Bun.file(installer).exists()).toBe(true);
       const powershell = process.env.PWSH_EXECUTABLE ?? 'powershell.exe';
-      const direct = await runCommand(powershell, ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(release, 'install.ps1'), '--yes', '--plain', '--non-interactive'], { cwd: release, env, platform: 'win32', timeoutMs: 30_000 });
+      const direct = await runCommand(powershell, ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(release, 'install.ps1'), '-NonInteractive'], { cwd: release, env, platform: 'win32', timeoutMs: 30_000 });
       expect(direct.exitCode).toBe(0);
       const directArgs = JSON.parse(await readFile(capture, 'utf8')) as string[];
-      expect(directArgs).toEqual(expect.arrayContaining(['install', '--release-root', release, '--yes', '--plain', '--non-interactive']));
+      expect(directArgs).toEqual(expect.arrayContaining(['install', '--release-root', release, '--non-interactive']));
       const command = env.ComSpec ?? env.COMSPEC ?? 'cmd.exe';
-      const viaCmd = await runCommand(command, ['/d', '/v:off', '/s', '/c', `call "${join(release, 'Install.cmd')}" --yes --plain --non-interactive`], { cwd: release, env, platform: 'win32', timeoutMs: 30_000 });
+      const viaCmd = await runCommand(command, ['/d', '/v:off', '/s', '/c', `call "${join(release, 'Install.cmd')}"`], { cwd: release, env, platform: 'win32', timeoutMs: 30_000 });
       expect(viaCmd.exitCode).toBe(0);
       const cmdArgs = JSON.parse(await readFile(capture, 'utf8')) as string[];
-      expect(cmdArgs).toEqual(expect.arrayContaining(['--yes', '--plain', '--non-interactive']));
+      expect(cmdArgs).toEqual(['install', '--release-root', release]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1296,7 +1293,6 @@ describe('Windows release gate foundations', () => {
         mutableRoot: mutable,
         dshHome: state,
         commandRunner,
-        consent: true,
         prepareAgentDependencies: async ({ paths }) => {
           dependencyPreparations += 1;
           expect(paths.programRoot).toBe(program);
@@ -1363,7 +1359,6 @@ describe('Windows release gate foundations', () => {
           mutableRoot: mutable,
           dshHome: join(mutable, 'state'),
           commandRunner: prerequisiteRunner(),
-          consent: true,
           prepareAgentDependencies
         })).rejects.toThrow(/required maintenance artifact/i);
         expect(await readInstallationReceipt(mutable)).toBeUndefined();
@@ -1425,7 +1420,6 @@ describe('Windows release gate foundations', () => {
         dshHome: state,
         npmExecutable: npm,
         commandRunner,
-        consent: true,
         createShortcut: async ({ targetPath }) => {
           const shortcut = join(root, 'Start Menu', 'RPG Maker Agent.lnk');
           await mkdir(dirname(shortcut), { recursive: true });
@@ -1451,7 +1445,7 @@ describe('Windows release gate foundations', () => {
       expect(calls.some((call) => call.args.includes('plugin') && call.args.includes(`${DSH_WEB_PACKAGE}@${DSH_WEB_VERSION}`))).toBe(true);
       expect(calls.flatMap((call) => call.args)).not.toContain('@tta-lab/dsh-web');
       expect(calls.some((call) => call.args.includes('plugin') && call.args.includes(`${DSH_IMAGEGEN_PACKAGE}@${DSH_IMAGEGEN_VERSION}`))).toBe(true);
-      expect(calls.some((call) => call.args.includes('plugin') && call.args.includes(`file:${join(program, DSH_BRAND_BUNDLE_RELATIVE)}`))).toBe(true);
+      expect(calls.some((call) => call.args.includes('plugin') && call.args.includes(`file:${join(state, 'rpgmaker-mv', DSH_BRAND_BUNDLE_RELATIVE)}`))).toBe(true);
       expect(await Bun.file(join(state, 'profiles', 'web', 'node_modules', ...DSH_BRAND_PACKAGE.split('/'), 'assets', 'maker-ape-logo.png')).exists()).toBe(true);
       expect((JSON.parse(await readFile(join(state, 'profiles', 'web', 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }).dsh?.profile?.bundles).toEqual([...MANAGED_WEB_PROFILE_BUNDLE_NAMES]);
       expect((JSON.parse(await readFile(join(program, DSH_BRAND_BUNDLE_RELATIVE, 'package.json'), 'utf8')) as { exports?: Record<string, string> }).exports?.['./package.json']).toBe('./package.json');
@@ -1649,7 +1643,6 @@ describe('Windows release gate foundations', () => {
         mutableRoot: mutable,
         dshHome: join(mutable, 'state'),
         commandRunner: prerequisiteRunner(),
-        consent: true,
         prepareAgentDependencies
       })).rejects.toThrow(/prior program tree was restored/i);
       expect(await readFile(join(program, 'old-tree.txt'), 'utf8')).toBe('prior Forgejo runtime\n');
@@ -1687,7 +1680,6 @@ describe('Windows release gate foundations', () => {
           mutableRoot: mutable,
           dshHome: state,
           commandRunner,
-          consent: true,
           prepareAgentDependencies,
           ...(failure === 'metadata' ? { writeInstallMetadata: async () => { throw new Error('metadata fixture failure'); } } : {}),
           ...(failure === 'shortcut' ? { createShortcut: async () => { throw new Error('shortcut fixture failure'); } } : {})
@@ -1721,7 +1713,6 @@ describe('Windows release gate foundations', () => {
         mutableRoot: mutable,
         dshHome: join(mutable, 'state'),
         commandRunner: prerequisiteRunner(),
-        consent: true,
         prepareAgentDependencies,
         writeInstallMetadata: async () => { throw new Error('first install metadata failure'); }
       })).rejects.toThrow(/no prior program tree existed; the install path is inactive/i);
@@ -1854,7 +1845,6 @@ describe('Windows release gate foundations', () => {
         installationRoot,
         localStateRoot,
         commandRunner: prerequisiteRunner(),
-        consent: true,
         prepareAgentDependencies,
         onEvent: (event) => { events.push(event); }
       })).rejects.toThrow(/receipt .*invalid.*refusing to start another installation/i);
@@ -2012,7 +2002,6 @@ describe('Windows release gate foundations', () => {
         dshHome: state,
         npmExecutable: npm,
         commandRunner: runner,
-        consent: true,
         createShortcut: async () => {
           await mkdir(dirname(shortcut), { recursive: true });
           await writeFile(shortcut, 'fixture shortcut');
@@ -2036,7 +2025,6 @@ describe('Windows release gate foundations', () => {
         dshHome: state,
         npmExecutable: npm,
         commandRunner: runner,
-        consent: true,
         createShortcut: async () => shortcut
       });
       expect((await verifyForgejoMcpRuntime({ platform: 'win32', env, programRoot: program, commandRunner: runner })).valid).toBe(true);
@@ -2091,6 +2079,26 @@ describe('Windows release gate foundations', () => {
       expect(repairedPreparation.managedWebProfile.materialized).toBe(true);
       expect(repairedPreparation.managedWebProfile.packages).toHaveLength(4);
       expect((await verifyManagedWebProfile({ platform: 'win32', env, dshHome: state, installationRoot, mutableRoot: mutable, runtimeDir: join(program, 'runtime', 'dsh') })).valid).toBe(true);
+
+      const callsBeforeFastLaunch = calls.length;
+      const fastChild = child();
+      const fastLaunch = await launchRpgmakerProject({
+        ...launchOptions,
+        portAlreadyChecked: true,
+        portProbe: async () => true,
+        openExistingSession: async () => undefined,
+        spawnInteractive: () => fastChild
+      });
+      expect(fastLaunch.deployment.managedWebProfile.materialized).toBe(false);
+      const fastCalls = calls.slice(callsBeforeFastLaunch);
+      expect(fastCalls.some((call) => call.args[0] === 'ci'
+        || call.args.includes('plugin')
+        || call.args.includes('--dump-config')
+        || call.args.includes('tools/list')
+        || (call.args.includes('-e') && call.args.some((arg) => /koffi/i.test(arg))))).toBe(false);
+      fastChild.exitCode = 0;
+      fastChild.emit('exit', 0);
+      await fastLaunch.releaseSession();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
