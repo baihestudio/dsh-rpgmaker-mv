@@ -3,7 +3,7 @@
 ## Install from the Release ZIP
 
 1. Download the Windows Release ZIP and extract it to a temporary folder.
-2. Double-click `Install.cmd`. It accepts no arguments and emits one append-only plain line for each of the eight phases: destination, prerequisites, runtime, tools, profile, metadata, shortcut, and verification.
+2. Open a terminal in the extracted folder and run `.\installer.exe`. With no arguments it starts installation and emits one append-only plain line for each of the eight phases: destination, prerequisites, runtime, tools, profile, metadata, shortcut, and verification.
 3. On a first install, choose the destination in the native folder picker (or invoke `installer.exe install --release-root <path> --non-interactive --installation-root <path>` in automation). The selected root may be on any local drive; the default is the per-user Programs location. Re-running the installer reuses the recorded root.
 4. Missing or invalid prerequisites are repaired automatically with WinGet and verified again. The set is:
    - Node.js LTS 22+ and npm (`OpenJS.NodeJS.LTS`)
@@ -20,11 +20,11 @@ The installable Release also carries the freshly compiled `installer.exe` and
 both generated maintenance artifacts into the selected program tree before
 committing its installation receipt; an incomplete Release fails closed.
 
-`Install.cmd` is a thin zero-argument wrapper around `installer.exe`. Unsupported arguments fail clearly. It asks its own Windows process-tree helper whether the batch file was launched by Explorer and pauses only in that case; terminal and redirected invocations return immediately without relying on a caller-set environment variable. The separate confirmation before closing an actively running owned Agent remains an upgrade safety check.
+`installer.exe` is the only supported installation entrypoint. Run it from a terminal in the extracted Release root; explicit maintenance and automation options are available through the same executable. The separate confirmation before closing an actively running owned Agent remains an upgrade safety check.
 
-The four direct package dependencies and six bundle layers belong to one DSH-managed profile state. DSH's `web` template layers (`@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`) remain in-box template bundles rather than profile dependencies. If a package command or final verification fails after initializing that state, the installer reports the materialization failure and restores the prior working profile and complete app-managed bundle root (both brand and workspace bundles); rerun `Install.cmd` to complete the profile setup. Credentials, recent workspaces, presets, caches, logs, and other mutable state remain outside this rollback boundary.
+The four direct package dependencies and six bundle layers belong to one DSH-managed profile state. DSH's `web` template layers (`@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`) remain in-box template bundles rather than profile dependencies. If a package command or final verification fails after initializing that state, the installer reports the materialization failure and restores the prior working profile and complete app-managed bundle root (both brand and workspace bundles); rerun `.\installer.exe` to complete the profile setup. Credentials, recent workspaces, presets, caches, logs, and other mutable state remain outside this rollback boundary.
 
-No Git clone or manual package command is needed. Install is per-user and does not require elevation. Re-running `Install.cmd` is the supported fresh-install, upgrade, and repair path; a previous runtime is retained by the staged runtime swap for recovery. If an owned Agent is running during an upgrade, the installer asks once whether to close it and stops only that owned process tree. Declining leaves the installed tree and mutable state untouched. If post-swap bootstrap, metadata, profile, contract, or shortcut verification fails, the prior program tree and complete managed bundle root are restored and the failed new tree is retained as a named diagnostic/recovery directory.
+No Git clone or manual package command is needed. Install is per-user and does not require elevation. Re-running `.\installer.exe` is the supported fresh-install, upgrade, and repair path; a previous runtime is retained by the staged runtime swap for recovery. If an owned Agent is running during an upgrade, the installer asks once whether to close it and stops only that owned process tree. Declining leaves the installed tree and mutable state untouched. If post-swap bootstrap, metadata, profile, contract, or shortcut verification fails, the prior program tree and complete managed bundle root are restored and the failed new tree is retained as a named diagnostic/recovery directory.
 
 ## Local WSL update helper
 
@@ -38,7 +38,7 @@ nuc-powershell dev/update-local-windows.ps1 \
   -StopRunningDsh
 ```
 
-The helper is development-only. `-StopRunningDsh` explicitly stops DSH processes that hold the installed program tree before the atomic update; without it, the helper refuses to interrupt an active session. It extracts the ZIP into a unique local Windows Temp directory, invokes its normal `install.ps1`, and removes the extracted copy after a successful update. Pass `-KeepExtractedRelease` only when retaining diagnostics is useful.
+The helper is development-only. `-StopRunningDsh` explicitly stops DSH processes that hold the installed program tree before the atomic update; without it, the helper refuses to interrupt an active session. It extracts the ZIP into a unique local Windows Temp directory, invokes `installer.exe` directly, and removes the extracted copy after a successful update. Pass `-KeepExtractedRelease` only when retaining diagnostics is useful.
 
 From this Mac checkout, the equivalent NUC workflow is (the variable is
 required so a Mac/WSL build cannot create a hostless Windows archive):
@@ -101,7 +101,7 @@ and require exactly one official row in the custom preset; the
 preset compositions remain policy-free. The Web package's patch selects
 Organon for stock PTC/Code batched search, registers `web_fetch`, `web_docs`,
 and `web_sgraph`, and keeps DSH's root URL-only `tool-web` disabled. Rerun
-`Install.cmd` to rewrite the app-owned patch and repair a stale committed
+`installer.exe` to rewrite the app-owned patch and repair a stale committed
 composition.
 The access layer shares Host state through the root-context WeakMap and does
 not publish a service into the ROOT realm or filter preset ids itself. The
@@ -137,7 +137,7 @@ inspecting agent changes.
 Every shipped preset uses DSH's native `@deepseek-ai/dsh-mcp-client` to start
 the app-owned `tools/forgejo-mcp/forgejo-mcp.exe` over stdio. It publishes
 upstream tools under the `mcp__forgejo__*` namespace. The Release ZIP includes
-the executable, provenance manifest, and license; `Install.cmd` verifies its
+the executable, provenance manifest, and license; `installer.exe` verifies its
 pinned SHA-256 and `--version` after the program-tree swap. The development
 local-update helper invokes the same transactional installer, so an update also
 adds or replaces this MCP automatically. Do not install Go or a separate MCP
@@ -210,7 +210,7 @@ From the installed program root:
 ./doctor.ps1
 ```
 
-Doctor reports the resolved Node/npm, exact Bun `1.3.14`, Python, PowerShell, Git, Coreutils, global ImageMagick, DSH runtime, MV MCP runtime, MZ MCP runtime, exact managed Web profile, app-owned pnpm, credential metadata, and receipt-backed layout facts without reading credential values. Python is verified independently as a general Agent utility. Each RPG Maker engine check is reported independently. Doctor only verifies the managed profile; it never repairs it. `Install.cmd` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `Install.cmd` again, then rerun Doctor.
+Doctor reports the resolved Node/npm, exact Bun `1.3.14`, Python, PowerShell, Git, Coreutils, global ImageMagick, DSH runtime, MV MCP runtime, MZ MCP runtime, exact managed Web profile, app-owned pnpm, credential metadata, and receipt-backed layout facts without reading credential values. Python is verified independently as a general Agent utility. Each RPG Maker engine check is reported independently. Doctor only verifies the managed profile; it never repairs it. `installer.exe` installs or repairs all agent dependencies together and safely reuses already verified versions. Repair any failed check by running `.\installer.exe` again, then rerun Doctor.
 
 ### Diagnose a selected workspace sandbox
 
@@ -238,11 +238,11 @@ To exercise the installed DSH Windows ACL runner after the read-only checks pass
 
 The probe creates a uniquely named, self-cleaning directory under that workspace; it writes, appends, renames, hashes, and removes a test file through `workspace-write`. As with the first normal DSH workspace-write call, the runner leaves its deterministic workspace ACL grant on the directory as a standing reuse cache. The probe therefore is not read-only, but it never changes project files and should be run only for the explicitly named workspace.
 
-`Install.cmd` intentionally does not inspect or repair user project ACLs: installation runs before a user chooses a workspace and must not take ownership of arbitrary directories. `doctor.ps1` is the detailed, read-only diagnostic; it may run the explicitly requested workspace sandbox probe, but it never repairs the installation.
+`installer.exe` intentionally does not inspect or repair user project ACLs: installation runs before a user chooses a workspace and must not take ownership of arbitrary directories. `doctor.ps1` is the detailed, read-only diagnostic; it may run the explicitly requested workspace sandbox probe, but it never repairs the installation.
 
 ## Uninstall
 
-Double-click `Uninstall.cmd` in the installed program root. Default uninstall validates the harness ownership marker and install metadata before removing program files, app-owned runtimes, cache, the BaiheStudio Start Menu shortcut, and the installation-location receipt. Ordinary install, repair, upgrade, and uninstall preserve sessions, credentials, settings, logs, and projects; projects are never discovered or deleted by the uninstaller. With the receipt removed, the next `Install.cmd` run is a first installation and opens the folder picker again. Unowned or malformed program trees are refused.
+Double-click `Uninstall.cmd` in the installed program root. Default uninstall validates the harness ownership marker and install metadata before removing program files, app-owned runtimes, cache, the BaiheStudio Start Menu shortcut, and the installation-location receipt. Ordinary install, repair, upgrade, and uninstall preserve sessions, credentials, settings, logs, and projects; projects are never discovered or deleted by the uninstaller. With the receipt removed, the next `.\installer.exe` run is a first installation and opens the folder picker again. Unowned or malformed program trees are refused.
 
 If an incomplete older installation reports that its installed `installer.exe` is missing, extract a current Release ZIP and run that Release's `Uninstall.cmd`. Its maintenance executable follows the owned installation-location receipt to the old program tree, applies the same ownership checks, and preserves the same local state.
 

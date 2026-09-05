@@ -432,7 +432,7 @@ export async function installWindowsPrerequisites(options: InstallWindowsPrerequ
   if (report.ok) return report;
   const missing = report.checks.filter((item) => !item.ok);
   const winget = options.wingetExecutable ?? env.WINGET_EXECUTABLE ?? await resolveExecutable('winget', { platform: 'win32', env });
-  if (!winget) throw new Error('WinGet was not found. Install App Installer from Microsoft, then run Install.cmd again.');
+  if (!winget) throw new Error('WinGet was not found. Install App Installer from Microsoft, then run installer.exe again.');
   const wingetFailures: string[] = [];
   for (const prerequisite of missing) {
     const failure = await installOne(runner, winget, prerequisite, env);

@@ -27,3 +27,11 @@ _Avoid_: Tool runtime, bundled dependency
 **Tool runtime**:
 An application-owned executable or package runtime installed beneath the installation root and versioned with RPG Maker Agent.
 _Avoid_: External prerequisite
+
+**Desktop host**:
+The packaged native RPG Maker Agent window that owns startup and the lifetime of its sidecar process.
+_Avoid_: Installer, Agent
+
+**Sidecar**:
+The application-owned background process started by the desktop host to launch and supervise the local DSH Web session for RPG Maker work.
+_Avoid_: Desktop host, installer

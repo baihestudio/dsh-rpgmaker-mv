@@ -1043,7 +1043,7 @@ export async function loadCommittedRpgMakerLaunch(options: RpgMakerLaunchOptions
     mutableRoot: localStateRoot
   });
   if (!receipt) {
-    throw new RpgMakerStartupError(`No committed installation receipt was found under ${localStateRoot}; run Install.cmd to complete installation.`);
+    throw new RpgMakerStartupError(`No committed installation receipt was found under ${localStateRoot}; run installer.exe from the extracted Release to complete installation.`);
   }
   const sameCommittedPath = (left: string, right: string): boolean => platform === 'win32'
     ? left.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase() === right.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase()
@@ -1059,33 +1059,33 @@ export async function loadCommittedRpgMakerLaunch(options: RpgMakerLaunchOptions
   // the packaged desktop host and is never accepted as the MCP child runner.
   const jsRunner = await resolveMcpRunner(options, platform, withoutCredentials(env));
   const dshExecutable = options.dshExecutable ?? await resolveDshEntrypoint(committedRuntimeDir, platform);
-  if (!dshExecutable) throw new RpgMakerStartupError('Pinned DSH executable was not found; run Install.cmd to repair the committed installation.');
-  if (!(await pathExists(dshExecutable))) throw new RpgMakerStartupError(`DSH executable does not exist: ${dshExecutable}. Run Install.cmd to repair the committed installation.`);
+  if (!dshExecutable) throw new RpgMakerStartupError('Pinned DSH executable was not found; run installer.exe from the extracted Release to repair the committed installation.');
+  if (!(await pathExists(dshExecutable))) throw new RpgMakerStartupError(`DSH executable does not exist: ${dshExecutable}. Run installer.exe from the extracted Release to repair the committed installation.`);
   if (options.dshExecutable) {
     const normalizeRuntimePath = (value: string): string => platform === 'win32' ? value.toLowerCase() : value;
     const runtimeRoot = `${normalizeRuntimePath(resolve(committedRuntimeDir))}${sep}`;
     const requested = normalizeRuntimePath(resolve(options.dshExecutable));
     if (requested !== normalizeRuntimePath(resolve(committedRuntimeDir)) && !requested.startsWith(runtimeRoot)) {
-      throw new RpgMakerStartupError(`The requested DSH executable is outside the committed runtime: ${options.dshExecutable}. Run Install.cmd to repair the committed installation.`);
+      throw new RpgMakerStartupError(`The requested DSH executable is outside the committed runtime: ${options.dshExecutable}. Run installer.exe from the extracted Release to repair the committed installation.`);
     }
   }
 
   const ownershipPath = join(paths.programRoot, PROGRAM_OWNERSHIP_FILE);
   const ownership = await readJson(ownershipPath);
   if (ownership?.owner !== PROGRAM_OWNER || ownership.product !== PRODUCT_NAME || ownership.format !== 1) {
-    throw new RpgMakerStartupError(`Committed program ownership is invalid at ${ownershipPath}; run Install.cmd to repair the installation.`);
+    throw new RpgMakerStartupError(`Committed program ownership is invalid at ${ownershipPath}; run installer.exe from the extracted Release to repair the installation.`);
   }
 
   const mcporterRuntimeDir = resolve(mcporterRuntimeDirFor(paths));
   if (options.mcporterRuntimeDir && !sameCommittedPath(options.mcporterRuntimeDir, mcporterRuntimeDir)) {
-    throw new RpgMakerStartupError(`The requested MCPorter runtime is not the committed app-owned runtime: ${options.mcporterRuntimeDir}. Run Install.cmd to repair the committed installation.`);
+    throw new RpgMakerStartupError(`The requested MCPorter runtime is not the committed app-owned runtime: ${options.mcporterRuntimeDir}. Run installer.exe from the extracted Release to repair the committed installation.`);
   }
   const mcporter = await verifyMcporterRuntime(mcporterRuntimeDir, platform);
   if (!mcporter.valid) throw new RpgMakerStartupError(`Pinned MCPorter runtime is not usable: ${mcporter.errors.join('; ')}`);
 
   const rpgmakerRuntimeDir = resolve(join(paths.programRoot, 'runtime', 'mcp'));
   if (options.rpgmakerRuntimeDir && !sameCommittedPath(options.rpgmakerRuntimeDir, rpgmakerRuntimeDir)) {
-    throw new RpgMakerStartupError(`The requested RPG Maker MCP runtime is not the committed app-owned runtime: ${options.rpgmakerRuntimeDir}. Run Install.cmd to repair the committed installation.`);
+    throw new RpgMakerStartupError(`The requested RPG Maker MCP runtime is not the committed app-owned runtime: ${options.rpgmakerRuntimeDir}. Run installer.exe from the extracted Release to repair the committed installation.`);
   }
   const mcp = await verifyRpgMakerMcpRuntime(rpgmakerRuntimeDir, platform);
   const mvScript = mcp.engines.mv.executable;
@@ -1119,7 +1119,7 @@ export async function loadCommittedRpgMakerLaunch(options: RpgMakerLaunchOptions
     [compositionPath, 'committed RPG Maker Host composition']
   ] as const;
   for (const [path, label] of requiredFiles) {
-    if (!(await pathExists(path))) throw new RpgMakerStartupError(`${label} is missing at ${path}; run Install.cmd to repair the committed installation.`);
+    if (!(await pathExists(path))) throw new RpgMakerStartupError(`${label} is missing at ${path}; run installer.exe from the extracted Release to repair the committed installation.`);
   }
   const metadata = await readJson(join(paths.programRoot, 'install.json'));
   if (metadata?.owner !== PROGRAM_OWNER
@@ -1139,11 +1139,11 @@ export async function loadCommittedRpgMakerLaunch(options: RpgMakerLaunchOptions
     || !sameCommittedPath(metadata.runtimeDir, committedRuntimeDir)
     || typeof metadata.installationCacheDir !== 'string'
     || !sameCommittedPath(metadata.installationCacheDir, paths.installationCacheDir)) {
-    throw new RpgMakerStartupError(`Committed installation metadata is invalid at ${join(paths.programRoot, 'install.json')}; run Install.cmd to repair the installation.`);
+    throw new RpgMakerStartupError(`Committed installation metadata is invalid at ${join(paths.programRoot, 'install.json')}; run installer.exe from the extracted Release to repair the installation.`);
   }
   const presetOwnership = await readJson(join(presetDir, PRESET_OWNERSHIP_FILE));
   if (presetOwnership?.owner !== 'dsh-rpgmaker-mv' || presetOwnership.presetId !== agentPreset) {
-    throw new RpgMakerStartupError(`Committed RPG Maker Agent preset ownership is invalid at ${presetDir}; run Install.cmd to repair the committed installation.`);
+    throw new RpgMakerStartupError(`Committed RPG Maker Agent preset ownership is invalid at ${presetDir}; run installer.exe from the extracted Release to repair the committed installation.`);
   }
   const timeoutPolicy = await verifyTimeoutPolicyComposition(paths.dshHome, presetRoot);
   if (!timeoutPolicy.valid) throw new RpgMakerStartupError(`DSH timeout policy composition is not usable: ${timeoutPolicy.errors.join('; ')}`);

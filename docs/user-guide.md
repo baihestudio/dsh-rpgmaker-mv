@@ -5,17 +5,17 @@
 
 ## 安装完成后
 
-首次安装从 Release ZIP 解压后直接运行 `Install.cmd`，在提示框选择程序根目录。
+首次安装从 Release ZIP 解压后，在解压目录的终端中运行 `.\installer.exe`，并在提示框选择程序根目录。
 安装输出是八个阶段的追加式纯文本；没有 spinner、renderer 选项或前置条件确认。
 缺少或版本不符的 Node/npm、PowerShell、Git、Coreutils、ImageMagick、Python 以及桌面
-主机所需的 Bun `1.3.14` 会由 WinGet 自动修复并再次验证。再次运行 `Install.cmd` 是
+主机所需的 Bun `1.3.14` 会由 WinGet 自动修复并再次验证。再次运行 `.\installer.exe` 是
 普通 repair/upgrade 路径，会复用记录的目录；只有关闭正在运行的本产品 Agent 时才会
 出现单独的确认。
 
 安装时验证运行时、profile、preset/composition，以及 MV/MZ MCP 的固定 `tools/list`
 合约。之后从开始菜单启动只读取这些已提交的 artifact，做路径、文件、固定端口和进程
 就绪检查，不重新执行 npm/pnpm/WinGet、下载、preset 修复或 MCP schema 枚举。需要详细
-只读诊断时运行 `doctor.ps1`；修复则再次运行 `Install.cmd`。
+只读诊断时运行 `doctor.ps1`；修复则再次运行 `.\installer.exe`。
 
 如果网络需要代理，可在运行前设置 `HTTP_PROXY`、`HTTPS_PROXY`、`npm_config_proxy` 或
 `npm_config_https_proxy`；`http://127.0.0.1:17890` 仅是可选 preflight 示例，代理不会

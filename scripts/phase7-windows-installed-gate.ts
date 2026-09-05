@@ -537,21 +537,6 @@ async function main(): Promise<void> {
     const help = await runCommand(installer, ['--help'], { cwd: extractedRelease, env: targetEnv, platform: 'win32', timeoutMs: 60_000 });
     assert.equal(help.exitCode, 0, `standalone installer help failed: ${diagnostic(help.stderr || help.stdout, targetEnv)}`);
 
-    // The batch wrapper must classify its launch context itself.  Exercise the
-    // helper's deterministic seam for both Explorer and terminal parents, then
-    // invoke Install.cmd through a redirected terminal-style child.  A
-    // successful terminal invocation must return without an unconditional
-    // pause; an Explorer launch is the only context that preserves the screen.
-    const windowsPowerShell51 = join(sourceEnv.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    const contextHelper = join(extractedRelease, 'scripts', 'detect-explorer-launch.ps1');
-    const explorerContext = await runCommand(windowsPowerShell51, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', contextHelper, '-ParentProcessName', 'explorer.exe'], { cwd: extractedRelease, env: targetEnv, platform: 'win32', timeoutMs: 30_000 });
-    const terminalContext = await runCommand(windowsPowerShell51, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', contextHelper, '-ParentProcessName', 'cmd.exe'], { cwd: extractedRelease, env: targetEnv, platform: 'win32', timeoutMs: 30_000 });
-    assert.equal(explorerContext.exitCode, 0, 'Explorer launch context was not recognized');
-    assert.equal(terminalContext.exitCode, 1, 'terminal launch context was incorrectly classified as Explorer');
-    const wrapperUnsupported = await runCommand(join(extractedRelease, 'Install.cmd'), ['--help'], { cwd: extractedRelease, env: targetEnv, platform: 'win32', timeoutMs: 60_000 });
-    assert.equal(wrapperUnsupported.exitCode, 2, `terminal Install.cmd argument rejection returned the wrong code: ${diagnostic(wrapperUnsupported.stderr || wrapperUnsupported.stdout, targetEnv)}`);
-    assert.match(`${wrapperUnsupported.stdout}\n${wrapperUnsupported.stderr}`, /Install\.cmd does not accept arguments/i);
-
     const install = await runInstaller(installer, [
       'install', '--release-root', extractedRelease,
       '--installation-root', installationRoot,
@@ -618,7 +603,7 @@ async function main(): Promise<void> {
       dsh: DSH_VERSION,
       externalPrerequisites: prerequisites.checks.map((check) => ({ id: check.id, version: check.version, executable: check.executable })),
       provisioned: { sourceRoot, releaseArchive, extractedRelease, installationRoot, programRoot, localStateRoot, dshHome, shortcutPath, npmCache: targetEnv.NPM_CONFIG_CACHE },
-      standalone: { installer, helpExitCode: help.exitCode, wrapperUnsupportedExitCode: wrapperUnsupported.exitCode, explorerContextExitCode: explorerContext.exitCode, terminalContextExitCode: terminalContext.exitCode, nodeExecutable, bunExecutable: prerequisites.executablePaths.bun },
+      standalone: { installer, helpExitCode: help.exitCode, nodeExecutable, bunExecutable: prerequisites.executablePaths.bun },
       install: { terminalEvent: install.stdout.split(/\r?\n/).find((line) => line.startsWith('INSTALL ')), receipt: firstReceipt },
       repair: { terminalEvent: repair.stdout.split(/\r?\n/).find((line) => line.startsWith('INSTALL ')), receipt: secondReceipt },
       runtimes: { dsh: true, mcporter: true, rpgmakerMcp: true, pnpm: true, profile: repairedProfile.valid, host: firstHost.valid, shortcut: true },

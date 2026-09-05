@@ -271,11 +271,11 @@ export async function inspectWorkspaceSandbox(options: WorkspaceSandboxOptions):
   try {
     const runner = await lstat(runnerPath);
     if (!runner.isFile() || runner.isSymbolicLink()) {
-      checks.push(check('workspace-sandbox-probe', 'Workspace sandbox probe', false, 'The pinned DSH Windows ACL runner is missing or unsafe; run Install.cmd to repair the runtime.', runnerPath));
+      checks.push(check('workspace-sandbox-probe', 'Workspace sandbox probe', false, 'The pinned DSH Windows ACL runner is missing or unsafe; run installer.exe from the extracted Release to repair the runtime.', runnerPath));
       return checks;
     }
   } catch {
-    checks.push(check('workspace-sandbox-probe', 'Workspace sandbox probe', false, 'The pinned DSH Windows ACL runner was not found; run Install.cmd to repair the runtime.', runnerPath));
+    checks.push(check('workspace-sandbox-probe', 'Workspace sandbox probe', false, 'The pinned DSH Windows ACL runner was not found; run installer.exe from the extracted Release to repair the runtime.', runnerPath));
     return checks;
   }
 

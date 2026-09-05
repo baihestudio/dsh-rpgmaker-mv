@@ -96,7 +96,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     'installation-receipt',
     'Installation location receipt',
     Boolean(receipt),
-    receipt ? `Receipt records installation root ${receipt.installationRoot}` : 'Installation location receipt is missing; run Install.cmd to complete installation.',
+    receipt ? `Receipt records installation root ${receipt.installationRoot}` : 'Installation location receipt is missing; run installer.exe from the extracted Release to complete installation.',
     paths.installationReceiptPath
   ));
   const prerequisites = await verifyWindowsPrerequisites({
@@ -235,7 +235,7 @@ async function runDoctorUnlocked(options: DoctorOptions, platform: string, env: 
     'app-layout',
     'Per-user DSH state layout',
     layoutOk,
-    layoutOk ? `Installation root uses ${paths.installationRoot}; mutable state uses ${paths.mutableRoot} with DSH_HOME at ${paths.dshHome}` : `Installation layout is incomplete under ${paths.installationRoot}; run Install.cmd or repair the installation`,
+    layoutOk ? `Installation root uses ${paths.installationRoot}; mutable state uses ${paths.mutableRoot} with DSH_HOME at ${paths.dshHome}` : `Installation layout is incomplete under ${paths.installationRoot}; run installer.exe from the extracted Release to repair the installation`,
     paths.mutableRoot
   ));
 
