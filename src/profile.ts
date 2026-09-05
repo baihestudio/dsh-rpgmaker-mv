@@ -1,5 +1,6 @@
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { environmentPath, pathDelimiter, withEnvironmentPath, type HarnessPaths, type PathOptions } from './config';
 import { resolveExecutable } from './executable';
@@ -10,6 +11,10 @@ export const PNPM_NPM_INTEGRITY = 'sha512-NOU4wym1VTAUyo6PRTWZf5YYCh0PYUM5NXRJk1
 export const PNPM_RUNTIME_RELATIVE = join('runtime', 'pnpm');
 export const PNPM_MANIFEST_RELATIVE = join('runtime-manifests', 'pnpm');
 const PNPM_PACKAGE = 'pnpm';
+const WINDOWS_RENAME_RETRY_ATTEMPTS = 20;
+const WINDOWS_RENAME_RETRY_DELAY_MS = 250;
+
+type RenamePath = (from: string, to: string) => Promise<void>;
 
 export interface ProfilePackageOptions extends PathOptions {
   dshExecutable?: string;
@@ -21,6 +26,9 @@ export interface ProfilePackageOptions extends PathOptions {
   npmExecutable?: string;
   nodeExecutable?: string;
   commandRunner?: CommandRunner;
+  /** Test seam for transient Windows filesystem locks during atomic publish. */
+  renamePath?: RenamePath;
+  renameRetryDelayMs?: number;
 }
 
 export interface PnpmRuntime {
@@ -127,9 +135,31 @@ export async function resolveDshInvocation(dsh: string, options: ProfilePackageO
   return { command: runner, prefix: [dsh] };
 }
 
+async function renamePnpmRuntime(
+  from: string,
+  to: string,
+  platform: string,
+  renamePath: RenamePath,
+  retryDelayMs: number
+): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await renamePath(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const retryable = platform === 'win32' && (code === 'EPERM' || code === 'EBUSY');
+      if (!retryable || attempt >= WINDOWS_RENAME_RETRY_ATTEMPTS) throw error;
+      await delay(retryDelayMs);
+    }
+  }
+}
+
 export async function preparePnpmRuntime(options: ProfilePackageOptions, paths: HarnessPaths): Promise<PnpmRuntime> {
   const platform = options.platform ?? process.platform;
   const env = pluginEnvironment(options.env ?? process.env);
+  const renamePath = options.renamePath ?? rename;
+  const renameRetryDelayMs = options.renameRetryDelayMs ?? WINDOWS_RENAME_RETRY_DELAY_MS;
   const explicit = options.pnpmExecutable ?? (options.useAppOwnedPnpm ? undefined : env.PNPM_EXECUTABLE);
   const direct = explicit
     ? await resolveExecutable(explicit, { platform, env })
@@ -162,17 +192,17 @@ export async function preparePnpmRuntime(options: ProfilePackageOptions, paths: 
       if (!executable) throw new Error(`app-owned pnpm ${PNPM_VERSION} failed verification after installation`);
       if (await exists(runtimeDir)) {
         const rollback = `${runtimeDir}.rollback-${Date.now()}`;
-        await rename(runtimeDir, rollback);
+        await renamePnpmRuntime(runtimeDir, rollback, platform, renamePath, renameRetryDelayMs);
         try {
-          await rename(staging, runtimeDir);
+          await renamePnpmRuntime(staging, runtimeDir, platform, renamePath, renameRetryDelayMs);
           owned = false;
         } catch (error) {
-          await rename(rollback, runtimeDir).catch(() => undefined);
+          await renamePnpmRuntime(rollback, runtimeDir, platform, renamePath, renameRetryDelayMs).catch(() => undefined);
           throw error;
         }
         await rm(rollback, { recursive: true, force: true });
       } else {
-        await rename(staging, runtimeDir);
+        await renamePnpmRuntime(staging, runtimeDir, platform, renamePath, renameRetryDelayMs);
         owned = false;
       }
       executable = await verifyPnpmRuntime(runtimeDir, platform);

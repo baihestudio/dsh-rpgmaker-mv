@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { basename, dirname, join, resolve, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,7 @@ import { DSH_NPM_INTEGRITY, DSH_PACKAGE_NAME, DSH_VERSION, PRODUCT_VERSION, PROG
 import { forgejoMcpExecutablePath, verifyForgejoMcpRuntime } from '../src/forgejo-mcp';
 import { buildReleaseZip, inspectReleaseZip, installWindowsRelease, pathsNest, INSTALLER_EXECUTABLE_NAME, INSTALLER_BUILD_EVIDENCE_NAME, WINDOWS_GATE_CLEANUP_HELPER_RELATIVE } from '../src/release-gate';
 import { MCPORTER_NPM_INTEGRITY, MCPORTER_PACKAGE, MCPORTER_VERSION } from '../src/mcport';
-import { PNPM_VERSION } from '../src/profile';
+import { PNPM_VERSION, preparePnpmRuntime } from '../src/profile';
 import { DSH_BRAND_BUNDLE_RELATIVE, DSH_BRAND_PACKAGE, DSH_IMAGEGEN_PACKAGE, DSH_IMAGEGEN_VERSION, DSH_WEB_PACKAGE, DSH_WEB_VERSION, MANAGED_WEB_PROFILE_BUNDLE_NAMES, verifyManagedWebProfile } from '../src/managed-web-profile';
 import { DSH_RUNTIME_PEER_DEPENDENCIES, findDshExecutable } from '../src/bootstrap';
 import { CUSTOM_AGENT_PRESET_IDS, launchRpgmakerProject, prepareRpgMakerLaunch, renderPresetOnlyPatch } from '../src/rpgmaker';
@@ -264,6 +264,39 @@ function defaultInstallRunner(context: { dshHome: string }, calls: Array<{ comma
 }
 
 describe('Windows release gate foundations', () => {
+  test('retries a transient Windows lock while publishing the app-owned pnpm runtime', async () => {
+    const root = await temp('phase7-pnpm-rename-retry');
+    try {
+      const paths = resolveHarnessPaths({
+        platform: 'win32',
+        installationRoot: join(root, 'installation'),
+        localStateRoot: join(root, 'local-state')
+      });
+      let renameCalls = 0;
+      const result = await preparePnpmRuntime({
+        platform: 'win32',
+        useAppOwnedPnpm: true,
+        npmExecutable: 'npm.cmd',
+        manifestRoot: join(REPOSITORY_ROOT, 'runtime-manifests', 'pnpm'),
+        commandRunner: async (_command, args, options) => {
+          if (args[0] === 'ci') await writePnpmRuntime(options.cwd!);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+        renamePath: async (from: string, to: string) => {
+          renameCalls += 1;
+          if (renameCalls < 3) throw Object.assign(new Error('injected transient Windows file lock'), { code: 'EPERM' });
+          await rename(from, to);
+        },
+        renameRetryDelayMs: 1
+      } as Parameters<typeof preparePnpmRuntime>[0], paths);
+
+      expect(renameCalls).toBe(3);
+      expect(result.executable).toContain(join('runtime', 'pnpm'));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('normalizes Windows PATH to one canonical environment key', () => {
     const out = withEnvironmentPath({ Path: 'a;b', DSH_HOME: 'c' }, 'x;y', 'win32');
     expect(Object.keys(out).filter((key) => key.toLowerCase() === 'path')).toEqual(['PATH']);
