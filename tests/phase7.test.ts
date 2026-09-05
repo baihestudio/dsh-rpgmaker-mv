@@ -751,38 +751,6 @@ describe('Windows release gate foundations', () => {
     }
   });
 
-  test('Windows install wrappers forward to the compiled installer without unconditional pauses', async () => {
-    if (process.platform !== 'win32') return;
-    const root = await temp('phase7-wrapper-100%!');
-    try {
-      const release = join(root, 'release 100%!');
-      const capture = join(root, 'wrapper-argv.json');
-      const entry = join(root, 'capture-installer.ts');
-      const installer = join(release, 'installer.exe');
-      await mkdir(join(release, 'scripts'), { recursive: true });
-      await writeFile(join(release, 'install.ps1'), await readFile(join(REPOSITORY_ROOT, 'install.ps1')));
-      await writeFile(join(release, 'Install.cmd'), await readFile(join(REPOSITORY_ROOT, 'Install.cmd')));
-      await writeFile(join(release, 'scripts', 'detect-explorer-launch.ps1'), await readFile(join(REPOSITORY_ROOT, 'scripts', 'detect-explorer-launch.ps1')));
-      await writeFile(entry, 'await Bun.write(process.env.WRAPPER_CAPTURE!, JSON.stringify(process.argv.slice(2)));\n');
-      const env: Record<string, string | undefined> = { ...process.env, WRAPPER_CAPTURE: capture };
-      const compile = await runCommand(process.execPath, ['build', entry, '--compile', '--target=bun-windows-x64', '--outfile', installer], { cwd: root, env, platform: 'win32', timeoutMs: 120_000 });
-      expect(compile.exitCode).toBe(0);
-      expect(await Bun.file(installer).exists()).toBe(true);
-      const powershell = process.env.PWSH_EXECUTABLE ?? 'powershell.exe';
-      const direct = await runCommand(powershell, ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(release, 'install.ps1'), '-NonInteractive'], { cwd: release, env, platform: 'win32', timeoutMs: 30_000 });
-      expect(direct.exitCode).toBe(0);
-      const directArgs = JSON.parse(await readFile(capture, 'utf8')) as string[];
-      expect(directArgs).toEqual(expect.arrayContaining(['install', '--release-root', release, '--non-interactive']));
-      const command = env.ComSpec ?? env.COMSPEC ?? 'cmd.exe';
-      const viaCmd = await runCommand(command, ['/d', '/v:off', '/s', '/c', `call "${join(release, 'Install.cmd')}"`], { cwd: release, env, platform: 'win32', timeoutMs: 30_000 });
-      expect(viaCmd.exitCode).toBe(0);
-      const cmdArgs = JSON.parse(await readFile(capture, 'utf8')) as string[];
-      expect(cmdArgs).toEqual(['install', '--release-root', release]);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   test('doctor includes Node/npm and the installed mutable layout without exposing credentials', async () => {
     const root = await temp('phase7-doctor');
     try {
@@ -1315,7 +1283,7 @@ describe('Windows release gate foundations', () => {
       expect(installLog).not.toContain(npmSecret);
       expect(installLog).toContain('NPM_TOKEN=[redacted]');
       expect(installLog).toContain('npm_config_//registry.npmjs.org/:_authToken=[redacted]');
-      expect(await Bun.file(join(program, 'Install.cmd')).exists()).toBe(true);
+      expect(await Bun.file(join(program, 'installer.exe')).exists()).toBe(true);
       expect(await Bun.file(join(program, PROGRAM_OWNERSHIP_FILE)).exists()).toBe(true);
       const metadata = JSON.parse(await readFile(join(program, 'install.json'), 'utf8'));
       expect(metadata.owner).toBe(PROGRAM_OWNER);
@@ -1689,7 +1657,7 @@ describe('Windows release gate foundations', () => {
         const entries = await readdir(dirname(program));
         const failed = entries.find((entry) => entry.startsWith(`${basename(program)}.failed-`));
         expect(failed).toBeDefined();
-        expect(await Bun.file(join(dirname(program), failed!, 'Install.cmd')).exists()).toBe(true);
+        expect(await Bun.file(join(dirname(program), failed!, 'installer.exe')).exists()).toBe(true);
         expect(await Bun.file(join(program, 'install.json')).exists()).toBe(false);
       } finally {
         await rm(root, { recursive: true, force: true });
@@ -1720,7 +1688,7 @@ describe('Windows release gate foundations', () => {
       const entries = await readdir(dirname(program));
       const failed = entries.find((entry) => entry.startsWith(`${basename(program)}.failed-`));
       expect(failed).toBeDefined();
-      expect(await Bun.file(join(dirname(program), failed!, 'Install.cmd')).exists()).toBe(true);
+      expect(await Bun.file(join(dirname(program), failed!, 'installer.exe')).exists()).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1902,7 +1870,7 @@ describe('Windows release gate foundations', () => {
       const archive = await buildReleaseZip({ sourceRoot: REPOSITORY_ROOT, outputZip: zip, platform: process.platform });
       const inspection = await inspectReleaseZip({ zipPath: archive, platform: process.platform });
       expect(inspection.valid).toBe(true);
-      expect(inspection.entries).toContain('Install.cmd');
+      expect(inspection.entries).toContain('installer.exe');
       expect(inspection.entries).toContain('src/cli.ts');
       expect(inspection.entries).toContain('src/profile.ts');
       expect(inspection.entries.some((entry) => entry === 'dev/reset-nuc-web-profile.ps1' || entry.endsWith('/reset-nuc-web-profile.ps1'))).toBe(false);

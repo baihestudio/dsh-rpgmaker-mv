@@ -42,8 +42,6 @@ export const INSTALLER_EXECUTABLE_NAME = 'installer.exe';
 export const INSTALLER_BUILD_EVIDENCE_NAME = 'installer-build.json';
 export const WINDOWS_GATE_CLEANUP_HELPER_RELATIVE = 'scripts/remove-phase7-gate-root.ps1';
 export const RELEASE_ENTRIES = [
-  'Install.cmd',
-  'install.ps1',
   'Launch.cmd',
   'launch.ps1',
   'Uninstall.cmd',
@@ -907,8 +905,6 @@ export async function inspectReleaseZip(options: { zipPath: string; platform?: s
   if (result.exitCode !== 0) throw new ReleaseGateError(`Release ZIP inspection failed: ${result.stderr || result.stdout}`.trim());
   const entries = result.stdout.split(/\r?\n/).map((entry) => entry.trim().replaceAll('\\', '/').replace(/^\.\//, '')).filter(Boolean);
   const requiredEntries = [
-    'Install.cmd',
-    'install.ps1',
     'Launch.cmd',
     'launch.ps1',
     'Uninstall.cmd',

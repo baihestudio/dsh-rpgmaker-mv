@@ -6,7 +6,7 @@ The AI production agent for RPG Maker MV and MZ
 
 ## Windows Release ZIP (Phase 7)
 
-For users, download the Windows Release ZIP, extract it, and double-click `Install.cmd`. The zero-argument installer emits stable append-only plain output for eight phases, automatically repairs and verifies the supported Windows prerequisites (including exact Bun 1.3.14), installs the pinned DSH/MV/MZ runtimes and managed profile, validates composition and live MCP contracts, and creates the **RPG Maker Agent** Start Menu shortcut. On a first install choose the destination; re-running `Install.cmd` repairs or upgrades the recorded root after the separate running-Agent close confirmation. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
+For users, download and extract the Windows Release ZIP, open a terminal in the extracted directory, and run `.\installer.exe`. The zero-argument installer emits stable append-only plain output for eight phases, automatically repairs and verifies the supported Windows prerequisites (including exact Bun 1.3.14), installs the pinned DSH/MV/MZ runtimes and managed profile, validates composition and live MCP contracts, and creates the **RPG Maker Agent** Start Menu shortcut. On a first install choose the destination; re-running `.\installer.exe` repairs or upgrades the recorded root after the separate running-Agent close confirmation. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for bundled dependency notices.
 
 The full first-run, repair, port-conflict, workspace-selection, and uninstall guide is in [`docs/windows-release.md`](docs/windows-release.md). Uninstall validates ownership metadata, removes the installation-location receipt so a reinstall can choose a different root, and preserves rollback/recovery state, mutable state, credentials, logs, and projects; `uninstall.ps1 -Purge` is explicit.
 
@@ -110,7 +110,7 @@ Tests use disposable runtime, DSH home, credential, and MV/MZ project directorie
 
 ## Phase 2: RPG Maker Agent and MCP editing loop
 
-`Install.cmd` prepares the exact-pinned app-owned MCPorter and dual-engine RPG
+`installer.exe` prepares the exact-pinned app-owned MCPorter and dual-engine RPG
 Maker runtimes, the complete managed `web` profile (including the local
 `dsh-workspace-mcp` Host bundle), the default `rpgmaker` preset, the
 project-neutral `web --dump-config` composition, and both live MCP contracts.
@@ -124,7 +124,7 @@ Every shipped preset mounts the official DSH `@deepseek-ai/dsh-mcp-client`
 for the upstream Forgejo MCP server, so its full tool surface is published with
 names such as `mcp__forgejo__list_repo_issues` and
 `mcp__forgejo__create_issue`. Every Release ZIP includes the app-owned
-`tools/forgejo-mcp/forgejo-mcp.exe`; both a fresh `Install.cmd` run and the
+`tools/forgejo-mcp/forgejo-mcp.exe`; both a fresh `installer.exe` run and the
 transactional local update path verify its pinned SHA-256 and `--version`.
 Users do not install Go or supply an MCP executable. `DSH_FORGEJO_MCP_COMMAND`
 remains an explicit override only.
@@ -165,7 +165,7 @@ timeout policy: the pinned DSH `web` profile owns the official
 `id: timeout-policy` / `@deepseek-ai/dsh-tool-call-timeout-policy` row at Host
 scope. Install and Doctor validate `web --dump-config` and require
 exactly one effective official row in the custom Agent preset; the
-preset compositions never contain it. Rerun `Install.cmd` to rewrite the
+preset compositions never contain it. Rerun `installer.exe` to rewrite the
 app-owned patch and repair a stale committed composition.
 
 MZ workspaces use Redseb's pinned 119-tool editing surface, including targeted
@@ -189,7 +189,7 @@ preset reports that boundary instead of launching an MV runtime.
 
 ## Phase 5: 图片素材
 
-`Install.cmd` installs `ImageMagick.ImageMagick` with WinGet as the Windows-wide
+`installer.exe` installs `ImageMagick.ImageMagick` with WinGet as the Windows-wide
 `magick` command; it is not an app-owned binary or DSH plugin. 制作猿在图片素材
 任务中按需读取 `image-assets` Skill：Kepos 生成或编辑视觉候选，`magick` 进行像素
 缩放、绿幕清理和精灵表准备，并直接接入 RPG Maker 工作流。

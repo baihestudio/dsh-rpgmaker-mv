@@ -56,7 +56,7 @@ in the packaged process.
 
 It dynamically loads `src/rpgmaker.ts` from the installed program tree and
 consumes the receipt-backed runtime, MCP/profile, preset, composition, and
-live-contract artifacts committed by `Install.cmd`. The normal sidecar launch
+live-contract artifacts committed by `installer.exe`. The normal sidecar launch
 does not bootstrap packages, repair the profile, regenerate presets, or run
 MCP `tools/list`; it performs cheap path/ownership/port/readiness checks, uses
 a direct `node.exe` for MCP children, and keeps Bun only as the desktop-host
@@ -94,6 +94,6 @@ descriptor object shaped like:
 { "schemaVersion": 1, "adapterSourceSha256": "...", "sidecarSha256": "..." }
 ```
 
-`Install.cmd` then targets that host from the Start Menu. The host build,
+`installer.exe` then targets that host from the Start Menu. The host build,
 clean-machine provisioning, signing, and update delivery
 remain outside this repository and are not performed by the installer.

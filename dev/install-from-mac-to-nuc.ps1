@@ -49,14 +49,14 @@ $completed = $false
 try {
   New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
   Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
-  $installer = Join-Path $extractRoot 'install.ps1'
+  $installer = Join-Path $extractRoot 'installer.exe'
   if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
-    throw "Release ZIP does not contain install.ps1 at its root: $zipPath"
+    throw "Release ZIP does not contain installer.exe at its root: $zipPath"
   }
 
   Push-Location $extractRoot
   try {
-    & $installer -NonInteractive
+    & $installer install --release-root $extractRoot --non-interactive
   } finally {
     Pop-Location
   }
